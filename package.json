@@ -1,0 +1,14 @@
+{
+  "name": "root",
+  "private": true,
+  "scripts": {
+    "clean-workspace": "workspace clean",
+    "build-workspace": "build-workspace",
+    "test-workspace": "workspace test",
+    "watch-workspace": "watch-workspace"
+  },
+  "devDependencies": {
+    "@proteinjs/build": "^1.0.15",
+    "lerna": "8.1.2"
+  }
+}
