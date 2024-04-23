@@ -1,6 +1,6 @@
 {
   "name": "@proteinjs/conversation",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@proteinjs/util": "1.0.18",
-    "@proteinjs/util-node": "1.0.22",
+    "@proteinjs/util-node": "1.0.23",
     "fs-extra": "11.1.1",
     "openai": "4.4.0",
     "readline-sync": "1.4.10",
