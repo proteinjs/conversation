@@ -29,7 +29,9 @@ export class KeywordToFilesIndexModule implements ConversationModule {
   }
 
   getSystemMessages(): string[] {
-    return [`If you're searching for something, use the ${searchFilesFunctionName} function to find a file matching the search string`];
+    return [
+      `If you're searching for something, use the ${searchFilesFunctionName} function to find a file matching the search string`,
+    ];
   }
 
   getFunctions(): Function[] {
@@ -58,7 +60,10 @@ export class KeywordToFilesIndexModuleFactory implements ConversationModuleFacto
    * @param baseDir - The directory to start the file search from.
    * @returns An index with keywords mapped to file paths.
    */
-  async createKeywordFilesIndex(baseDir: string, globIgnorePatterns: string[] = []): Promise<{ [keyword: string]: string[] }> {
+  async createKeywordFilesIndex(
+    baseDir: string,
+    globIgnorePatterns: string[] = []
+  ): Promise<{ [keyword: string]: string[] }> {
     // Ensure the base directory has a trailing slash
     if (!baseDir.endsWith(path.sep)) baseDir += path.sep;
 

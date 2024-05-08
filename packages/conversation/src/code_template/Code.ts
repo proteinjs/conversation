@@ -33,17 +33,25 @@ export class Code {
   }
 
   private addImports(imports: Import[], conversation: Conversation) {
-    conversation.addSystemMessagesToHistory([this.declarationMessage(imports.map((d) => d.sourceFilePath)), this.importMessage(imports)]);
+    conversation.addSystemMessagesToHistory([
+      this.declarationMessage(imports.map((d) => d.sourceFilePath)),
+      this.importMessage(imports),
+    ]);
   }
 
   private declarationMessage(tsFilePaths: string[]) {
-    const declarationMap = PackageUtil.generateTypescriptDeclarations({ tsFilePaths, includeDependencyDeclarations: true });
+    const declarationMap = PackageUtil.generateTypescriptDeclarations({
+      tsFilePaths,
+      includeDependencyDeclarations: true,
+    });
     const declarations = Object.values(declarationMap).join('\n');
     return `Assume the following code exists in other files:\n${declarations}`;
   }
 
   private importMessage(imports: Omit<Import, 'filePath'>[]) {
-    const importStatements = imports.map((i) => `import { ${i.moduleNames.join(', ')} } from '${i.importPathFromGeneratedFile}'`);
+    const importStatements = imports.map(
+      (i) => `import { ${i.moduleNames.join(', ')} } from '${i.importPathFromGeneratedFile}'`
+    );
     return `Add the following imports:\n${importStatements}`;
   }
 }

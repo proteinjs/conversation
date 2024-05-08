@@ -1,7 +1,13 @@
 import { Fs } from '@proteinjs/util-node';
 import { ConversationModule, ConversationModuleFactory } from '../../ConversationModule';
 import { Function } from '../../Function';
-import { packageFunctions, searchLibrariesFunction, searchLibrariesFunctionName, searchPackagesFunction, searchPackagesFunctionName } from './PackageFunctions';
+import {
+  packageFunctions,
+  searchLibrariesFunction,
+  searchLibrariesFunctionName,
+  searchPackagesFunction,
+  searchPackagesFunctionName,
+} from './PackageFunctions';
 import path from 'path';
 import { searchFilesFunctionName } from '../keyword_to_files_index/KeywordToFilesIndexFunctions';
 import { readFilesFunctionName } from '../conversation_fs/FsFunctions';
@@ -52,11 +58,15 @@ export class PackageModule implements ConversationModule {
    */
   async searchPackages(keyword: string): Promise<string[]> {
     const matchingPackageJsonPaths: string[] = [];
-    const packageJsonFilePaths = await Fs.getFilePathsMatchingGlob(this.repoPath, '**/package.json', ['**/node_modules/**', '**/dist/**']);
+    const packageJsonFilePaths = await Fs.getFilePathsMatchingGlob(this.repoPath, '**/package.json', [
+      '**/node_modules/**',
+      '**/dist/**',
+    ]);
     const packageJsonFileMap = await Fs.readFiles(packageJsonFilePaths);
     for (const packageJsonFilePath of Object.keys(packageJsonFileMap)) {
       const packageJson = JSON.parse(packageJsonFileMap[packageJsonFilePath]);
-      if (packageJson.name.toLowerCase().includes(keyword.toLocaleLowerCase())) matchingPackageJsonPaths.push(packageJsonFilePath);
+      if (packageJson.name.toLowerCase().includes(keyword.toLocaleLowerCase()))
+        matchingPackageJsonPaths.push(packageJsonFilePath);
     }
 
     return matchingPackageJsonPaths;
@@ -69,14 +79,20 @@ export class PackageModule implements ConversationModule {
    */
   async searchLibraries(keyword: string): Promise<Library[]> {
     const matchingLibraries: Library[] = [];
-    const packageJsonFilePaths = await Fs.getFilePathsMatchingGlob(this.repoPath, '**/package.json', ['**/node_modules/**', '**/dist/**']);
+    const packageJsonFilePaths = await Fs.getFilePathsMatchingGlob(this.repoPath, '**/package.json', [
+      '**/node_modules/**',
+      '**/dist/**',
+    ]);
     const packageJsonFileMap = await Fs.readFiles(packageJsonFilePaths);
     for (const packageJsonFilePath of Object.keys(packageJsonFileMap)) {
       const packageJson = JSON.parse(packageJsonFileMap[packageJsonFilePath]);
       const packageJsonFilePathParts = packageJsonFilePath.split(path.sep);
       packageJsonFilePathParts.pop();
       const packageDirectory = packageJsonFilePathParts.join(path.sep);
-      const srcFilePaths = await Fs.getFilePathsMatchingGlob(path.join(packageDirectory, 'src'), '**/*.ts', ['**/node_modules/**', '**/dist/**']);
+      const srcFilePaths = await Fs.getFilePathsMatchingGlob(path.join(packageDirectory, 'src'), '**/*.ts', [
+        '**/node_modules/**',
+        '**/dist/**',
+      ]);
       for (const srcFilePath of srcFilePaths) {
         const fileNameWithExtension = path.basename(srcFilePath);
         if (fileNameWithExtension.includes(keyword)) {

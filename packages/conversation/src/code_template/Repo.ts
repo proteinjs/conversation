@@ -111,13 +111,18 @@ export class RepoFactory {
       this.LOGGER.info(`Loading files for package: ${packageName}`);
       const dirPath = repoParams.packages[packageName].dirPath;
       if (dirPath) {
-        repoParams.packages[packageName].fileDescriptors.push(...(await Fs.getFilesInDirectory(dirPath, ['node_modules', 'dist'])));
+        repoParams.packages[packageName].fileDescriptors.push(
+          ...(await Fs.getFilesInDirectory(dirPath, ['node_modules', 'dist']))
+        );
         for (const fileDescriptor of repoParams.packages[packageName].fileDescriptors) {
-          const typescriptDeclaration = PackageUtil.generateTypescriptDeclarations({ tsFilePaths: [fileDescriptor.path] })[fileDescriptor.path];
+          const typescriptDeclaration = PackageUtil.generateTypescriptDeclarations({
+            tsFilePaths: [fileDescriptor.path],
+          })[fileDescriptor.path];
           const tsFile = Object.assign({ declaration: typescriptDeclaration }, fileDescriptor);
           repoParams.packages[packageName].tsFiles[fileDescriptor.path] = tsFile;
           repoParams.tsFiles[fileDescriptor.path] = tsFile;
-          if (!repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension]) repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension] = [];
+          if (!repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension])
+            repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension] = [];
 
           repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension].push(fileDescriptor.path);
         }

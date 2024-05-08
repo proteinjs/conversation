@@ -44,7 +44,8 @@ export const installPackagesFunction: Function = {
       required: ['packages', 'cwdPath'],
     },
   },
-  call: async (params: { packages: Package[]; cwdPath: string }) => await PackageUtil.installPackages(params.packages, params.cwdPath),
+  call: async (params: { packages: Package[]; cwdPath: string }) =>
+    await PackageUtil.installPackages(params.packages, params.cwdPath),
   instructions: [`To install a package, use the ${installPackagesFunctionName} function`],
 };
 
@@ -68,8 +69,11 @@ const runPackageScriptFunction: Function = {
       required: ['name'],
     },
   },
-  call: async (params: { name: string; cwdPath?: string }) => await PackageUtil.runPackageScript(params.name, params.cwdPath),
-  instructions: [`To run a npm script (such as start, test, or watch), use the ${runPackageScriptFunctionName} function`],
+  call: async (params: { name: string; cwdPath?: string }) =>
+    await PackageUtil.runPackageScript(params.name, params.cwdPath),
+  instructions: [
+    `To run a npm script (such as start, test, or watch), use the ${runPackageScriptFunctionName} function`,
+  ],
 };
 
 export const searchPackagesFunctionName = 'searchPackages';
@@ -136,7 +140,9 @@ export const generateTypescriptDeclarationsFunction = {
     },
   },
   call: async (params: { tsFilePaths: string[] }) => PackageUtil.generateTypescriptDeclarations(params),
-  instructions: [`To generate typescript declarations for a local file, use the ${generateTypescriptDeclarationsFunctionName} function`],
+  instructions: [
+    `To generate typescript declarations for a local file, use the ${generateTypescriptDeclarationsFunctionName} function`,
+  ],
 };
 
 export const npmInstallFunctionName = 'npmInstall';
@@ -183,8 +189,15 @@ export const uninstallPackagesFunction: Function = {
       required: ['packageNames', 'cwdPath'],
     },
   },
-  call: async (params: { packageNames: string[]; cwdPath: string }) => await PackageUtil.uninstallPackages(params.packageNames, params.cwdPath),
+  call: async (params: { packageNames: string[]; cwdPath: string }) =>
+    await PackageUtil.uninstallPackages(params.packageNames, params.cwdPath),
   instructions: [`To uninstall a package, use the ${uninstallPackagesFunctionName} function`],
 };
 
-export const packageFunctions: Function[] = [installPackagesFunction, runPackageScriptFunction, generateTypescriptDeclarationsFunction, npmInstallFunction, uninstallPackagesFunction];
+export const packageFunctions: Function[] = [
+  installPackagesFunction,
+  runPackageScriptFunction,
+  generateTypescriptDeclarationsFunction,
+  npmInstallFunction,
+  uninstallPackagesFunction,
+];

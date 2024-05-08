@@ -88,7 +88,8 @@ export class ConversationFsModerator implements MessageModerator {
         } catch (error) {}
         if (!parsedContent) continue;
 
-        for (const filePath of Object.keys(parsedContent)) readFilesConsolidatedOutput[filePath] = parsedContent[filePath];
+        for (const filePath of Object.keys(parsedContent))
+          readFilesConsolidatedOutput[filePath] = parsedContent[filePath];
 
         readFilesFunctionCallMessageIndexes.push(i);
       }
@@ -97,11 +98,17 @@ export class ConversationFsModerator implements MessageModerator {
     }
 
     if (conversationFileSystem) {
-      conversationFileSystem = new ConversationFsFactory({ logLevel: this.logLevel }).merge(conversationFileSystem, readFilesConsolidatedOutput);
+      conversationFileSystem = new ConversationFsFactory({ logLevel: this.logLevel }).merge(
+        conversationFileSystem,
+        readFilesConsolidatedOutput
+      );
       const content = JSON.stringify({ fileSystem: conversationFileSystem });
       messages[conversationFileSystemMessageIndex].content = content;
     } else {
-      conversationFileSystem = { fileContentMap: readFilesConsolidatedOutput, order: Object.keys(readFilesConsolidatedOutput) };
+      conversationFileSystem = {
+        fileContentMap: readFilesConsolidatedOutput,
+        order: Object.keys(readFilesConsolidatedOutput),
+      };
       messages.push({
         role: 'system',
         content: `Whenever you make a call to readFiles, the file content will be loaded into the { fileSystem } object in the message history. Do not respond with fileSystem's content in a message.`,
@@ -110,7 +117,10 @@ export class ConversationFsModerator implements MessageModerator {
       messages.push({ role: 'system', content });
     }
 
-    const moderatedMessages = messages.filter((message, i) => !readFilesFunctionCallMessageIndexes.includes(i) && !writeFilesFunctionCallMessageIndexes.includes(i));
+    const moderatedMessages = messages.filter(
+      (message, i) =>
+        !readFilesFunctionCallMessageIndexes.includes(i) && !writeFilesFunctionCallMessageIndexes.includes(i)
+    );
     return moderatedMessages;
   }
 }

@@ -1,5 +1,10 @@
 import { fileOrDirectoryExistsFunction, readFilesFunctionName } from '../../fs/conversation_fs/FsFunctions';
-import { generateTypescriptDeclarationsFunction, installPackagesFunction, searchLibrariesFunctionName, searchPackagesFunctionName } from '../../fs/package/PackageFunctions';
+import {
+  generateTypescriptDeclarationsFunction,
+  installPackagesFunction,
+  searchLibrariesFunctionName,
+  searchPackagesFunctionName,
+} from '../../fs/package/PackageFunctions';
 import { ConversationTemplate } from '../ConversationTemplate';
 
 export const createCodeConversationTemplate: ConversationTemplate = {

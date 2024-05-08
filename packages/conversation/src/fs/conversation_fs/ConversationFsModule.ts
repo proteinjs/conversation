@@ -42,7 +42,12 @@ export class ConversationFsModule implements ConversationModule {
   }
 
   getFunctions(): Function[] {
-    return [readFilesFunction(this), writeFilesFunction(this), getRecentlyAccessedFilePathsFunction(this), ...fsFunctions];
+    return [
+      readFilesFunction(this),
+      writeFilesFunction(this),
+      getRecentlyAccessedFilePathsFunction(this),
+      ...fsFunctions,
+    ];
   }
 
   getMessageModerators() {

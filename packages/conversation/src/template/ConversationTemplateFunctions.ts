@@ -38,6 +38,7 @@ export const getConversationTemplateFunction = (repo: ConversationTemplateModule
         required: ['conversationTemplateName'],
       },
     },
-    call: async (params: { conversationTemplateName: string }) => await repo.getConversationTemplate(params.conversationTemplateName),
+    call: async (params: { conversationTemplateName: string }) =>
+      await repo.getConversationTemplate(params.conversationTemplateName),
   };
 };

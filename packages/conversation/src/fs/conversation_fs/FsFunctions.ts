@@ -121,7 +121,9 @@ export const fileOrDirectoryExistsFunction: Function = {
     },
   },
   call: async (params: { path: string }) => await Fs.exists(params.path),
-  instructions: [`To check if a file or folder exists on the local file system, use the ${fileOrDirectoryExistsFunctionName} function`],
+  instructions: [
+    `To check if a file or folder exists on the local file system, use the ${fileOrDirectoryExistsFunctionName} function`,
+  ],
 };
 
 export const getFilePathsMatchingGlobFunctionName = 'getFilePathsMatchingGlob';
@@ -151,7 +153,8 @@ const getFilePathsMatchingGlobFunction: Function = {
       required: ['dirPrefix', 'glob'],
     },
   },
-  call: async (params: { dirPrefix: string; glob: string; globIgnorePatterns?: string[] }) => await Fs.getFilePathsMatchingGlob(params.dirPrefix, params.glob, params.globIgnorePatterns),
+  call: async (params: { dirPrefix: string; glob: string; globIgnorePatterns?: string[] }) =>
+    await Fs.getFilePathsMatchingGlob(params.dirPrefix, params.glob, params.globIgnorePatterns),
   instructions: [`To get file paths matching a glob, use the ${getFilePathsMatchingGlobFunctionName} function`],
 };
 
@@ -199,7 +202,8 @@ const copyFunction: Function = {
       required: ['sourcePath', 'destinationPath'],
     },
   },
-  call: async (params: { sourcePath: string; destinationPath: string }) => await Fs.copy(params.sourcePath, params.destinationPath),
+  call: async (params: { sourcePath: string; destinationPath: string }) =>
+    await Fs.copy(params.sourcePath, params.destinationPath),
   instructions: [`To copy a file or directory, use the ${copyFunctionName} function`],
 };
 
@@ -223,8 +227,16 @@ const moveFunction: Function = {
       required: ['sourcePath', 'destinationPath'],
     },
   },
-  call: async (params: { sourcePath: string; destinationPath: string }) => await Fs.move(params.sourcePath, params.destinationPath),
+  call: async (params: { sourcePath: string; destinationPath: string }) =>
+    await Fs.move(params.sourcePath, params.destinationPath),
   instructions: [`To move a file or directory, use the ${moveFunctionName} function`],
 };
 
-export const fsFunctions: Function[] = [createFolderFunction, fileOrDirectoryExistsFunction, getFilePathsMatchingGlobFunction, renameFunction, copyFunction, moveFunction];
+export const fsFunctions: Function[] = [
+  createFolderFunction,
+  fileOrDirectoryExistsFunction,
+  getFilePathsMatchingGlobFunction,
+  renameFunction,
+  copyFunction,
+  moveFunction,
+];

@@ -2,11 +2,20 @@ import { Logger } from '@proteinjs/util';
 import { ConversationTemplate } from './ConversationTemplate';
 import { createPackageConversationTemplate } from './createPackage/CreatePackageConversationTemplate';
 import { ConversationModule, ConversationModuleFactory } from '../ConversationModule';
-import { getConversationTemplateFunction, getConversationTemplateFunctionName, searchConversationTemplatesFunction, searchConversationTemplatesFunctionName } from './ConversationTemplateFunctions';
+import {
+  getConversationTemplateFunction,
+  getConversationTemplateFunctionName,
+  searchConversationTemplatesFunction,
+  searchConversationTemplatesFunctionName,
+} from './ConversationTemplateFunctions';
 import { createCodeConversationTemplate } from './createCode/CreateCodeConversationTemplate';
 import { createAppTemplate } from './createApp/CreateAppTemplate';
 
-const conversationTemplates: ConversationTemplate[] = [createPackageConversationTemplate, createCodeConversationTemplate, createAppTemplate];
+const conversationTemplates: ConversationTemplate[] = [
+  createPackageConversationTemplate,
+  createCodeConversationTemplate,
+  createAppTemplate,
+];
 
 export type ConversationTemplateModuleParams = {
   conversationTemplates: { [conversationTemplateName: string]: ConversationTemplate };
@@ -31,7 +40,9 @@ export class ConversationTemplateModule implements ConversationModule {
     return conversationNames || [];
   }
 
-  async getConversationTemplate(conversationTemplateName: string): Promise<Omit<ConversationTemplate, 'instructions'> & { instructions: string[] }> {
+  async getConversationTemplate(
+    conversationTemplateName: string
+  ): Promise<Omit<ConversationTemplate, 'instructions'> & { instructions: string[] }> {
     const conversationTemplate = this.params.conversationTemplates[conversationTemplateName];
     if (!conversationTemplate) return {} as any;
 
@@ -59,7 +70,10 @@ export class ConversationTemplateModule implements ConversationModule {
 
 export class ConversationTemplateModuleFactory implements ConversationModuleFactory {
   async createModule(repoPath: string) {
-    const params: ConversationTemplateModuleParams = { conversationTemplates: {}, conversationTemplateKeywordIndex: {} };
+    const params: ConversationTemplateModuleParams = {
+      conversationTemplates: {},
+      conversationTemplateKeywordIndex: {},
+    };
     for (const conversationTemplate of conversationTemplates) {
       params.conversationTemplates[conversationTemplate.name] = conversationTemplate;
       for (const keyword of conversationTemplate.keywords) {

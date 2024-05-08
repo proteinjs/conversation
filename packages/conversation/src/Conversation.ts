@@ -33,12 +33,16 @@ export class Conversation {
 
   constructor(params: ConversationParams) {
     this.params = params;
-    this.history = new MessageHistory({ maxMessages: params.limits?.maxMessagesInHistory, enforceMessageLimit: params.limits?.enforceLimits });
+    this.history = new MessageHistory({
+      maxMessages: params.limits?.maxMessagesInHistory,
+      enforceMessageLimit: params.limits?.enforceLimits,
+    });
     this.logger = new Logger(params.name, params.logLevel);
 
     if (params.modules) this.addModules(params.modules);
 
-    if (typeof params.limits?.enforceLimits === 'undefined' || params.limits.enforceLimits) this.addFunctions('Conversation', [summarizeConversationHistoryFunction(this)]);
+    if (typeof params.limits?.enforceLimits === 'undefined' || params.limits.enforceLimits)
+      this.addFunctions('Conversation', [summarizeConversationHistoryFunction(this)]);
 
     if (params.limits?.tokenLimit) this.tokenLimit = params.limits.tokenLimit;
   }
@@ -47,7 +51,9 @@ export class Conversation {
     for (const module of modules) {
       if (module.getSystemMessages().length < 1) continue;
 
-      this.addSystemMessagesToHistory([`The following are instructions from the ${module.getName()} module: ${module.getSystemMessages().join('. ')}`]);
+      this.addSystemMessagesToHistory([
+        `The following are instructions from the ${module.getName()} module: ${module.getSystemMessages().join('. ')}`,
+      ]);
       this.addFunctions(module.getName(), module.getFunctions());
       this.addMessageModerators(module.getMessageModerators());
     }
@@ -87,9 +93,23 @@ export class Conversation {
     if (encoded.length < this.tokenLimit) return;
 
     const summarizeConversationRequest = `First, call the ${summarizeConversationHistoryFunctionName} function`;
-    await OpenAi.generateResponse([summarizeConversationRequest], model, this.history, this.functions, this.messageModerators, this.params.logLevel);
+    await OpenAi.generateResponse(
+      [summarizeConversationRequest],
+      model,
+      this.history,
+      this.functions,
+      this.messageModerators,
+      this.params.logLevel
+    );
     const referenceSummaryRequest = `If there's a file mentioned in the conversation summary, find and read the file to better respond to my next request. If that doesn't find anything, call the ${searchLibrariesFunctionName} function on other keywords in the conversation summary to find a file to read`;
-    await OpenAi.generateResponse([referenceSummaryRequest], model, this.history, this.functions, this.messageModerators, this.params.logLevel);
+    await OpenAi.generateResponse(
+      [referenceSummaryRequest],
+      model,
+      this.history,
+      this.functions,
+      this.messageModerators,
+      this.params.logLevel
+    );
   }
 
   summarizeConversationHistory(summary: string) {
@@ -138,18 +158,38 @@ export class Conversation {
 
   async generateResponse(messages: string[], model?: TiktokenModel) {
     await this.enforceTokenLimit(messages, model);
-    return await OpenAi.generateResponse(messages, model, this.history, this.functions, this.messageModerators, this.params.logLevel);
+    return await OpenAi.generateResponse(
+      messages,
+      model,
+      this.history,
+      this.functions,
+      this.messageModerators,
+      this.params.logLevel
+    );
   }
 
   async generateCode(description: string[], model?: TiktokenModel) {
     this.logger.info(`Generating code for description:\n${description.join('\n')}`);
-    const code = await OpenAi.generateCode(description, model, this.history, this.functions, this.messageModerators, !this.generatedCode, this.params.logLevel);
+    const code = await OpenAi.generateCode(
+      description,
+      model,
+      this.history,
+      this.functions,
+      this.messageModerators,
+      !this.generatedCode,
+      this.params.logLevel
+    );
     this.logger.info(`Generated code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}`);
     this.generatedCode = true;
     return code;
   }
 
-  async updateCodeFromFile(codeToUpdateFilePath: string, dependencyCodeFilePaths: string[], description: string, model?: TiktokenModel) {
+  async updateCodeFromFile(
+    codeToUpdateFilePath: string,
+    dependencyCodeFilePaths: string[],
+    description: string,
+    model?: TiktokenModel
+  ) {
     const codeToUpdate = await Fs.readFile(codeToUpdateFilePath);
     let dependencyDescription = `Assume the following exists:\n`;
     for (const dependencyCodeFilePath of dependencyCodeFilePaths) {
@@ -162,15 +202,34 @@ export class Conversation {
   }
 
   async updateCode(code: string, description: string, model?: TiktokenModel) {
-    this.logger.info(`Updating code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}\nFrom description: ${description}`);
-    const updatedCode = await OpenAi.updateCode(code, description, model, this.history, this.functions, this.messageModerators, !this.generatedCode, this.params.logLevel);
+    this.logger.info(
+      `Updating code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}\nFrom description: ${description}`
+    );
+    const updatedCode = await OpenAi.updateCode(
+      code,
+      description,
+      model,
+      this.history,
+      this.functions,
+      this.messageModerators,
+      !this.generatedCode,
+      this.params.logLevel
+    );
     this.logger.info(`Updated code:\n${updatedCode.slice(0, 150)}${updatedCode.length > 150 ? '...' : ''}`);
     this.generatedCode = true;
     return updatedCode;
   }
 
   async generateList(description: string[], model?: TiktokenModel) {
-    const list = await OpenAi.generateList(description, model, this.history, this.functions, this.messageModerators, !this.generatedList, this.params.logLevel);
+    const list = await OpenAi.generateList(
+      description,
+      model,
+      this.history,
+      this.functions,
+      this.messageModerators,
+      !this.generatedList,
+      this.params.logLevel
+    );
     this.generatedList = true;
     return list;
   }
