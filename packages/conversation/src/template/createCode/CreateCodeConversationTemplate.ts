@@ -4,14 +4,7 @@ import { ConversationTemplate } from '../ConversationTemplate';
 
 export const createCodeConversationTemplate: ConversationTemplate = {
   name: 'Create code',
-  keywords: [
-    'create code',
-    'implement',
-    'write code',
-    'generate code',
-    'write software',
-    'build something',
-  ],
+  keywords: ['create code', 'implement', 'write code', 'generate code', 'write software', 'build something'],
   description: 'User and ai developing together',
   questions: [],
   instructions: async () => {
@@ -37,5 +30,5 @@ export const createCodeConversationTemplate: ConversationTemplate = {
       `3.c. When writing the code to file, if updating an existing file, be sure to read the file first to not blow away existing code. Be sure to preserve comments as well.`,
       `4. Repeat 3. unless the user asks to switch packages or files`,
     ];
-  }
-}
+  },
+};

@@ -3,7 +3,15 @@ import { Function } from '../../Function';
 import { searchFilesFunctionName } from '../keyword_to_files_index/KeywordToFilesIndexFunctions';
 import { searchLibrariesFunctionName, searchPackagesFunctionName } from '../package/PackageFunctions';
 import { ConversationFsModerator } from './ConversationFsModerator';
-import { fsFunctions, getRecentlyAccessedFilePathsFunction, getRecentlyAccessedFilePathsFunctionName, readFilesFunction, readFilesFunctionName, writeFilesFunction, writeFilesFunctionName } from './FsFunctions';
+import {
+  fsFunctions,
+  getRecentlyAccessedFilePathsFunction,
+  getRecentlyAccessedFilePathsFunctionName,
+  readFilesFunction,
+  readFilesFunctionName,
+  writeFilesFunction,
+  writeFilesFunctionName,
+} from './FsFunctions';
 
 export class ConversationFsModule implements ConversationModule {
   private repoPath: string;
@@ -16,7 +24,7 @@ export class ConversationFsModule implements ConversationModule {
   getName(): string {
     return 'Conversation Fs';
   }
-  
+
   getSystemMessages(): string[] {
     return [
       `Assume the current working directory is: ${this.repoPath} unless specified by the user`,
@@ -34,18 +42,11 @@ export class ConversationFsModule implements ConversationModule {
   }
 
   getFunctions(): Function[] {
-    return [
-      readFilesFunction(this),
-      writeFilesFunction(this),
-      getRecentlyAccessedFilePathsFunction(this),
-      ...fsFunctions
-    ];
+    return [readFilesFunction(this), writeFilesFunction(this), getRecentlyAccessedFilePathsFunction(this), ...fsFunctions];
   }
 
   getMessageModerators() {
-    return [
-      new ConversationFsModerator(),
-    ];
+    return [new ConversationFsModerator()];
   }
 
   pushRecentlyAccessedFilePath(filePaths: string[]) {

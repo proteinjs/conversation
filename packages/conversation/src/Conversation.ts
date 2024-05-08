@@ -10,7 +10,7 @@ import { TiktokenModel, encoding_for_model } from 'tiktoken';
 import { searchLibrariesFunctionName } from './fs/package/PackageFunctions';
 
 export type ConversationParams = {
-  name: string,
+  name: string;
   modules?: ConversationModule[];
   logLevel?: LogLevel;
   limits?: {
@@ -18,7 +18,7 @@ export type ConversationParams = {
     maxMessagesInHistory?: number;
     tokenLimit?: number;
   };
-}
+};
 
 export class Conversation {
   private tokenLimit = 3000;
@@ -36,27 +36,18 @@ export class Conversation {
     this.history = new MessageHistory({ maxMessages: params.limits?.maxMessagesInHistory, enforceMessageLimit: params.limits?.enforceLimits });
     this.logger = new Logger(params.name, params.logLevel);
 
-    if (params.modules)
-      this.addModules(params.modules);
+    if (params.modules) this.addModules(params.modules);
 
-    if (typeof params.limits?.enforceLimits === 'undefined' || params.limits.enforceLimits) {
-      this.addFunctions('Conversation', [
-        summarizeConversationHistoryFunction(this),
-      ]);
-    }
+    if (typeof params.limits?.enforceLimits === 'undefined' || params.limits.enforceLimits) this.addFunctions('Conversation', [summarizeConversationHistoryFunction(this)]);
 
-    if (params.limits?.tokenLimit)
-      this.tokenLimit = params.limits.tokenLimit;
+    if (params.limits?.tokenLimit) this.tokenLimit = params.limits.tokenLimit;
   }
 
   private addModules(modules: ConversationModule[]) {
-    for (let module of modules) {
-      if (module.getSystemMessages().length < 1)
-        continue;
+    for (const module of modules) {
+      if (module.getSystemMessages().length < 1) continue;
 
-      this.addSystemMessagesToHistory([
-        `The following are instructions from the ${module.getName()} module: ${module.getSystemMessages().join('. ')}`,
-      ]);
+      this.addSystemMessagesToHistory([`The following are instructions from the ${module.getName()} module: ${module.getSystemMessages().join('. ')}`]);
       this.addFunctions(module.getName(), module.getFunctions());
       this.addMessageModerators(module.getMessageModerators());
     }
@@ -66,10 +57,9 @@ export class Conversation {
     this.functions.push(...functions);
     let functionInstructions = `The following are instructions from functions in the ${moduleName} module:`;
     let functionInstructionsAdded = false;
-    for (let f of functions) {
+    for (const f of functions) {
       if (f.instructions) {
-        if (!f.instructions || f.instructions.length < 1)
-          continue;
+        if (!f.instructions || f.instructions.length < 1) continue;
 
         functionInstructionsAdded = true;
         const instructionsParagraph = f.instructions.join('. ');
@@ -77,8 +67,7 @@ export class Conversation {
       }
     }
 
-    if (!functionInstructionsAdded)
-      return;
+    if (!functionInstructionsAdded) return;
 
     this.addSystemMessagesToHistory([functionInstructions]);
   }
@@ -88,16 +77,14 @@ export class Conversation {
   }
 
   private async enforceTokenLimit(messages: string[], model?: TiktokenModel) {
-    if (this.params.limits?.enforceLimits === false)
-      return;
-    
+    if (this.params.limits?.enforceLimits === false) return;
+
     const resolvedModel = model ? model : DEFAULT_MODEL;
     const encoder = encoding_for_model(resolvedModel);
     const conversation = this.history.toString() + messages.join('. ');
     const encoded = encoder.encode(conversation);
     console.log(`current tokens: ${encoded.length}`);
-    if (encoded.length < this.tokenLimit)
-      return;
+    if (encoded.length < this.tokenLimit) return;
 
     const summarizeConversationRequest = `First, call the ${summarizeConversationHistoryFunctionName} function`;
     await OpenAi.generateResponse([summarizeConversationRequest], model, this.history, this.functions, this.messageModerators, this.params.logLevel);
@@ -116,7 +103,9 @@ export class Conversation {
   }
 
   addSystemMessagesToHistory(messages: string[], unshift = false) {
-    const chatCompletions: ChatCompletionMessageParam[] = messages.map(message => { return { role: 'system', content: message }});
+    const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
+      return { role: 'system', content: message };
+    });
     if (unshift) {
       this.history.getMessages().unshift(...chatCompletions);
       this.history.prune();
@@ -128,21 +117,23 @@ export class Conversation {
   }
 
   addAssistantMessagesToHistory(messages: string[], unshift = false) {
-    const chatCompletions: ChatCompletionMessageParam[] = messages.map(message => { return { role: 'assistant', content: message }});
+    const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
+      return { role: 'assistant', content: message };
+    });
     if (unshift) {
       this.history.getMessages().unshift(...chatCompletions);
       this.history.prune();
-    } else
-      this.history.push(chatCompletions);
+    } else this.history.push(chatCompletions);
   }
 
   addUserMessagesToHistory(messages: string[], unshift = false) {
-    const chatCompletions: ChatCompletionMessageParam[] = messages.map(message => { return { role: 'user', content: message }});
+    const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
+      return { role: 'user', content: message };
+    });
     if (unshift) {
       this.history.getMessages().unshift(...chatCompletions);
       this.history.prune();
-    } else
-      this.history.push(chatCompletions);
+    } else this.history.push(chatCompletions);
   }
 
   async generateResponse(messages: string[], model?: TiktokenModel) {
@@ -161,7 +152,7 @@ export class Conversation {
   async updateCodeFromFile(codeToUpdateFilePath: string, dependencyCodeFilePaths: string[], description: string, model?: TiktokenModel) {
     const codeToUpdate = await Fs.readFile(codeToUpdateFilePath);
     let dependencyDescription = `Assume the following exists:\n`;
-    for (let dependencyCodeFilePath of dependencyCodeFilePaths) {
+    for (const dependencyCodeFilePath of dependencyCodeFilePaths) {
       const dependencCode = await Fs.readFile(dependencyCodeFilePath);
       dependencyDescription += dependencCode + '\n\n';
     }
@@ -199,9 +190,9 @@ export const summarizeConversationHistoryFunction = (conversation: Conversation)
             description: 'A 1-3 sentence summary of the current chat history',
           },
         },
-        required: ['summary']
+        required: ['summary'],
       },
     },
     call: async (params: { summary: string }) => conversation.summarizeConversationHistory(params.summary),
-  }
-}
+  };
+};

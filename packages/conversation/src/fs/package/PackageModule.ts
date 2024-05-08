@@ -7,15 +7,15 @@ import { searchFilesFunctionName } from '../keyword_to_files_index/KeywordToFile
 import { readFilesFunctionName } from '../conversation_fs/FsFunctions';
 
 export type Library = {
-  fileName: string,
-  filePath: string,
-  packageName: string,
-}
+  fileName: string;
+  filePath: string;
+  packageName: string;
+};
 
 export type LibraryImport = {
-  importStatements: string[],
-  typescriptDeclaration: string,
-}
+  importStatements: string[];
+  typescriptDeclaration: string;
+};
 
 export class PackageModule implements ConversationModule {
   private repoPath: string;
@@ -39,11 +39,7 @@ export class PackageModule implements ConversationModule {
   }
 
   getFunctions(): Function[] {
-    return [
-      ...packageFunctions,
-      searchPackagesFunction(this),
-      searchLibrariesFunction(this),
-    ];
+    return [...packageFunctions, searchPackagesFunction(this), searchLibrariesFunction(this)];
   }
 
   getMessageModerators() {
@@ -58,10 +54,9 @@ export class PackageModule implements ConversationModule {
     const matchingPackageJsonPaths: string[] = [];
     const packageJsonFilePaths = await Fs.getFilePathsMatchingGlob(this.repoPath, '**/package.json', ['**/node_modules/**', '**/dist/**']);
     const packageJsonFileMap = await Fs.readFiles(packageJsonFilePaths);
-    for (let packageJsonFilePath of Object.keys(packageJsonFileMap)) {
+    for (const packageJsonFilePath of Object.keys(packageJsonFileMap)) {
       const packageJson = JSON.parse(packageJsonFileMap[packageJsonFilePath]);
-      if (packageJson.name.toLowerCase().includes(keyword.toLocaleLowerCase()))
-        matchingPackageJsonPaths.push(packageJsonFilePath);
+      if (packageJson.name.toLowerCase().includes(keyword.toLocaleLowerCase())) matchingPackageJsonPaths.push(packageJsonFilePath);
     }
 
     return matchingPackageJsonPaths;
@@ -76,13 +71,13 @@ export class PackageModule implements ConversationModule {
     const matchingLibraries: Library[] = [];
     const packageJsonFilePaths = await Fs.getFilePathsMatchingGlob(this.repoPath, '**/package.json', ['**/node_modules/**', '**/dist/**']);
     const packageJsonFileMap = await Fs.readFiles(packageJsonFilePaths);
-    for (let packageJsonFilePath of Object.keys(packageJsonFileMap)) {
+    for (const packageJsonFilePath of Object.keys(packageJsonFileMap)) {
       const packageJson = JSON.parse(packageJsonFileMap[packageJsonFilePath]);
       const packageJsonFilePathParts = packageJsonFilePath.split(path.sep);
       packageJsonFilePathParts.pop();
       const packageDirectory = packageJsonFilePathParts.join(path.sep);
       const srcFilePaths = await Fs.getFilePathsMatchingGlob(path.join(packageDirectory, 'src'), '**/*.ts', ['**/node_modules/**', '**/dist/**']);
-      for (let srcFilePath of srcFilePaths) {
+      for (const srcFilePath of srcFilePaths) {
         const fileNameWithExtension = path.basename(srcFilePath);
         if (fileNameWithExtension.includes(keyword)) {
           const fileName = path.basename(srcFilePath, path.extname(srcFilePath));

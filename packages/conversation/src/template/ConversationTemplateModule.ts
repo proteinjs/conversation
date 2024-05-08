@@ -6,16 +6,12 @@ import { getConversationTemplateFunction, getConversationTemplateFunctionName, s
 import { createCodeConversationTemplate } from './createCode/CreateCodeConversationTemplate';
 import { createAppTemplate } from './createApp/CreateAppTemplate';
 
-const conversationTemplates: ConversationTemplate[] = [
-  createPackageConversationTemplate,
-  createCodeConversationTemplate,
-  createAppTemplate,
-];
+const conversationTemplates: ConversationTemplate[] = [createPackageConversationTemplate, createCodeConversationTemplate, createAppTemplate];
 
 export type ConversationTemplateModuleParams = {
-  conversationTemplates: { [conversationTemplateName: string]: ConversationTemplate},
-  conversationTemplateKeywordIndex: { [keyword: string]: string[] /** conversationTemplateNames */ }
-}
+  conversationTemplates: { [conversationTemplateName: string]: ConversationTemplate };
+  conversationTemplateKeywordIndex: { [keyword: string]: string[] /** conversationTemplateNames */ };
+};
 
 export class ConversationTemplateModule implements ConversationModule {
   private logger = new Logger(this.constructor.name);
@@ -37,8 +33,7 @@ export class ConversationTemplateModule implements ConversationModule {
 
   async getConversationTemplate(conversationTemplateName: string): Promise<Omit<ConversationTemplate, 'instructions'> & { instructions: string[] }> {
     const conversationTemplate = this.params.conversationTemplates[conversationTemplateName];
-    if (!conversationTemplate)
-      return {} as any;
+    if (!conversationTemplate) return {} as any;
 
     const instructions = await conversationTemplate.instructions();
     return Object.assign(conversationTemplate, { instructions });
@@ -54,10 +49,7 @@ export class ConversationTemplateModule implements ConversationModule {
   }
 
   getFunctions() {
-    return [
-      searchConversationTemplatesFunction(this),
-      getConversationTemplateFunction(this),
-    ];
+    return [searchConversationTemplatesFunction(this), getConversationTemplateFunction(this)];
   }
 
   getMessageModerators() {
@@ -68,11 +60,10 @@ export class ConversationTemplateModule implements ConversationModule {
 export class ConversationTemplateModuleFactory implements ConversationModuleFactory {
   async createModule(repoPath: string) {
     const params: ConversationTemplateModuleParams = { conversationTemplates: {}, conversationTemplateKeywordIndex: {} };
-    for (let conversationTemplate of conversationTemplates) {
+    for (const conversationTemplate of conversationTemplates) {
       params.conversationTemplates[conversationTemplate.name] = conversationTemplate;
-      for (let keyword of conversationTemplate.keywords) {
-        if (!params.conversationTemplateKeywordIndex[keyword])
-          params.conversationTemplateKeywordIndex[keyword] = [];
+      for (const keyword of conversationTemplate.keywords) {
+        if (!params.conversationTemplateKeywordIndex[keyword]) params.conversationTemplateKeywordIndex[keyword] = [];
 
         params.conversationTemplateKeywordIndex[keyword].push(conversationTemplate.name);
       }

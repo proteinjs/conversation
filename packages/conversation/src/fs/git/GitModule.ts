@@ -22,9 +22,7 @@ export class GitModule implements ConversationModule {
   }
 
   getFunctions(): Function[] {
-    return [
-      ...gitFunctions,
-    ];
+    return [...gitFunctions];
   }
 
   getMessageModerators() {
