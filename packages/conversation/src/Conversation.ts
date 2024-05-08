@@ -39,17 +39,24 @@ export class Conversation {
     });
     this.logger = new Logger(params.name, params.logLevel);
 
-    if (params.modules) this.addModules(params.modules);
+    if (params.modules) {
+      this.addModules(params.modules);
+    }
 
-    if (typeof params.limits?.enforceLimits === 'undefined' || params.limits.enforceLimits)
+    if (typeof params.limits?.enforceLimits === 'undefined' || params.limits.enforceLimits) {
       this.addFunctions('Conversation', [summarizeConversationHistoryFunction(this)]);
+    }
 
-    if (params.limits?.tokenLimit) this.tokenLimit = params.limits.tokenLimit;
+    if (params.limits?.tokenLimit) {
+      this.tokenLimit = params.limits.tokenLimit;
+    }
   }
 
   private addModules(modules: ConversationModule[]) {
     for (const module of modules) {
-      if (module.getSystemMessages().length < 1) continue;
+      if (module.getSystemMessages().length < 1) {
+        continue;
+      }
 
       this.addSystemMessagesToHistory([
         `The following are instructions from the ${module.getName()} module: ${module.getSystemMessages().join('. ')}`,
@@ -65,7 +72,9 @@ export class Conversation {
     let functionInstructionsAdded = false;
     for (const f of functions) {
       if (f.instructions) {
-        if (!f.instructions || f.instructions.length < 1) continue;
+        if (!f.instructions || f.instructions.length < 1) {
+          continue;
+        }
 
         functionInstructionsAdded = true;
         const instructionsParagraph = f.instructions.join('. ');
@@ -73,7 +82,9 @@ export class Conversation {
       }
     }
 
-    if (!functionInstructionsAdded) return;
+    if (!functionInstructionsAdded) {
+      return;
+    }
 
     this.addSystemMessagesToHistory([functionInstructions]);
   }
@@ -83,14 +94,18 @@ export class Conversation {
   }
 
   private async enforceTokenLimit(messages: string[], model?: TiktokenModel) {
-    if (this.params.limits?.enforceLimits === false) return;
+    if (this.params.limits?.enforceLimits === false) {
+      return;
+    }
 
     const resolvedModel = model ? model : DEFAULT_MODEL;
     const encoder = encoding_for_model(resolvedModel);
     const conversation = this.history.toString() + messages.join('. ');
     const encoded = encoder.encode(conversation);
     console.log(`current tokens: ${encoded.length}`);
-    if (encoded.length < this.tokenLimit) return;
+    if (encoded.length < this.tokenLimit) {
+      return;
+    }
 
     const summarizeConversationRequest = `First, call the ${summarizeConversationHistoryFunctionName} function`;
     await OpenAi.generateResponse(
@@ -143,7 +158,9 @@ export class Conversation {
     if (unshift) {
       this.history.getMessages().unshift(...chatCompletions);
       this.history.prune();
-    } else this.history.push(chatCompletions);
+    } else {
+      this.history.push(chatCompletions);
+    }
   }
 
   addUserMessagesToHistory(messages: string[], unshift = false) {
@@ -153,7 +170,9 @@ export class Conversation {
     if (unshift) {
       this.history.getMessages().unshift(...chatCompletions);
       this.history.prune();
-    } else this.history.push(chatCompletions);
+    } else {
+      this.history.push(chatCompletions);
+    }
   }
 
   async generateResponse(messages: string[], model?: TiktokenModel) {

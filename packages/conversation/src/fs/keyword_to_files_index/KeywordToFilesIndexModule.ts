@@ -65,7 +65,9 @@ export class KeywordToFilesIndexModuleFactory implements ConversationModuleFacto
     globIgnorePatterns: string[] = []
   ): Promise<{ [keyword: string]: string[] }> {
     // Ensure the base directory has a trailing slash
-    if (!baseDir.endsWith(path.sep)) baseDir += path.sep;
+    if (!baseDir.endsWith(path.sep)) {
+      baseDir += path.sep;
+    }
 
     // Get all file paths, recursively, excluding node_modules and dist directories
     const filePaths = await Fs.getFilePaths(baseDir, ['**/node_modules/**', '**/dist/**', ...globIgnorePatterns]);
@@ -76,7 +78,9 @@ export class KeywordToFilesIndexModuleFactory implements ConversationModuleFacto
     for (const filePath of filePaths) {
       const fileName = path.parse(filePath).name; // Get file name without extension
 
-      if (!keywordFilesIndex[fileName]) keywordFilesIndex[fileName] = [];
+      if (!keywordFilesIndex[fileName]) {
+        keywordFilesIndex[fileName] = [];
+      }
 
       this.logger.debug(`fileName: ${fileName}, filePath: ${filePath}`);
       keywordFilesIndex[fileName].push(filePath);

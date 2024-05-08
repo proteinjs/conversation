@@ -24,16 +24,21 @@ export class OpenAi {
     const messageParams: ChatCompletionMessageParam[] = messages.map((message) => {
       return { role: 'user', content: message };
     });
-    if (history) history.push(messageParams);
+    if (history) {
+      history.push(messageParams);
+    }
     let messageParamsWithHistory = history ? history : new MessageHistory().push(messageParams);
-    if (messageModerators)
+    if (messageModerators) {
       messageParamsWithHistory = OpenAi.moderateHistory(messageParamsWithHistory, messageModerators);
+    }
     const response = await OpenAi.executeRequest(messageParamsWithHistory, logLevel, functions, model);
     const responseMessage = response.choices[0].message;
     if (responseMessage.function_call) {
       messageParamsWithHistory.push([responseMessage]);
       const functionReturnMessage = await this.callFunction(logLevel, responseMessage.function_call, functions);
-      if (functionReturnMessage) messageParamsWithHistory.push([functionReturnMessage]);
+      if (functionReturnMessage) {
+        messageParamsWithHistory.push([functionReturnMessage]);
+      }
       return await this.generateResponse([], model, messageParamsWithHistory, functions, messageModerators, logLevel);
     }
 
@@ -48,8 +53,9 @@ export class OpenAi {
   }
 
   private static moderateHistory(history: MessageHistory, messageModerators: MessageModerator[]) {
-    for (const messageModerator of messageModerators)
+    for (const messageModerator of messageModerators) {
       history.setMessages(messageModerator.observe(history.getMessages()));
+    }
 
     return history;
   }
@@ -65,10 +71,13 @@ export class OpenAi {
     let response: ChatCompletion;
     try {
       const latestMessage = messageParamsWithHistory.getMessages()[messageParamsWithHistory.getMessages().length - 1];
-      if (latestMessage.content) logger.info(`Sending request: ${latestMessage.content}`);
-      else if (latestMessage.role == 'function')
+      if (latestMessage.content) {
+        logger.info(`Sending request: ${latestMessage.content}`);
+      } else if (latestMessage.role == 'function') {
         logger.info(`Sending request: returning output of ${latestMessage.name} function`);
-      else logger.info(`Sending request`);
+      } else {
+        logger.info(`Sending request`);
+      }
       logger.debug(`Sending messages: ${JSON.stringify(messageParamsWithHistory.getMessages(), null, 2)}`, true);
       response = await openaiApi.chat.completions.create({
         model: model ? model : DEFAULT_MODEL,
@@ -77,12 +86,18 @@ export class OpenAi {
         functions: functions?.map((f) => f.definition),
       });
       const responseMessage = response.choices[0].message;
-      if (responseMessage.content) logger.info(`Received response: ${responseMessage.content}`);
-      else if (responseMessage.function_call)
+      if (responseMessage.content) {
+        logger.info(`Received response: ${responseMessage.content}`);
+      } else if (responseMessage.function_call) {
         logger.info(`Received response: call ${responseMessage.function_call.name} function`);
-      else logger.info(`Received response`);
-      if (response.usage) logger.info(JSON.stringify(response.usage));
-      else logger.info(JSON.stringify(`Usage data missing`));
+      } else {
+        logger.info(`Received response`);
+      }
+      if (response.usage) {
+        logger.info(JSON.stringify(response.usage));
+      } else {
+        logger.info(JSON.stringify(`Usage data missing`));
+      }
     } catch (error: any) {
       logger.info(`Received error response, error type: ${error.type}`);
       if (typeof error.status !== 'undefined' && error.status == 429) {
@@ -138,7 +153,9 @@ export class OpenAi {
       logger.error(error.message);
     }
 
-    if (!returnObject) return;
+    if (!returnObject) {
+      return;
+    }
 
     return {
       role: 'function',
@@ -203,19 +220,25 @@ export class OpenAi {
   }
 
   static parseCodeFromMarkdown(code: string) {
-    if (!code.match(/```([\s\S]+?)```/g)) return code;
+    if (!code.match(/```([\s\S]+?)```/g)) {
+      return code;
+    }
 
     const filteredLines: string[] = [];
     let inCodeBlock = false;
     for (const line of code.split('\n')) {
       if (line.startsWith('```')) {
         inCodeBlock = !inCodeBlock;
-        if (!inCodeBlock) filteredLines.push('');
+        if (!inCodeBlock) {
+          filteredLines.push('');
+        }
 
         continue;
       }
 
-      if (inCodeBlock) filteredLines.push(line);
+      if (inCodeBlock) {
+        filteredLines.push(line);
+      }
     }
 
     // remove the last '' that will become a \n

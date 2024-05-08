@@ -44,7 +44,9 @@ export class ConversationTemplateModule implements ConversationModule {
     conversationTemplateName: string
   ): Promise<Omit<ConversationTemplate, 'instructions'> & { instructions: string[] }> {
     const conversationTemplate = this.params.conversationTemplates[conversationTemplateName];
-    if (!conversationTemplate) return {} as any;
+    if (!conversationTemplate) {
+      return {} as any;
+    }
 
     const instructions = await conversationTemplate.instructions();
     return Object.assign(conversationTemplate, { instructions });
@@ -77,7 +79,9 @@ export class ConversationTemplateModuleFactory implements ConversationModuleFact
     for (const conversationTemplate of conversationTemplates) {
       params.conversationTemplates[conversationTemplate.name] = conversationTemplate;
       for (const keyword of conversationTemplate.keywords) {
-        if (!params.conversationTemplateKeywordIndex[keyword]) params.conversationTemplateKeywordIndex[keyword] = [];
+        if (!params.conversationTemplateKeywordIndex[keyword]) {
+          params.conversationTemplateKeywordIndex[keyword] = [];
+        }
 
         params.conversationTemplateKeywordIndex[keyword].push(conversationTemplate.name);
       }

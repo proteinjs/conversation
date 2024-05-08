@@ -53,7 +53,9 @@ export class CodegenConversation {
       new GitModuleFactory(),
     ];
     const modules: ConversationModule[] = [];
-    for (const moduleFactory of moduleFactories) modules.push(await moduleFactory.createModule(this.repoPath));
+    for (const moduleFactory of moduleFactories) {
+      modules.push(await moduleFactory.createModule(this.repoPath));
+    }
 
     return modules;
   }

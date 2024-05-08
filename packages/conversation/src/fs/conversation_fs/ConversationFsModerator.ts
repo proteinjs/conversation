@@ -58,7 +58,9 @@ export class ConversationFsModerator implements MessageModerator {
   private logLevel: LogLevel = 'info';
 
   constructor(logLevel?: LogLevel) {
-    if (logLevel) this.logLevel = logLevel;
+    if (logLevel) {
+      this.logLevel = logLevel;
+    }
   }
 
   observe(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] {
@@ -74,7 +76,9 @@ export class ConversationFsModerator implements MessageModerator {
         try {
           parsedContent = JSON.parse(message.content);
         } catch (error) {}
-        if (!parsedContent || !parsedContent['fileSystem']) continue;
+        if (!parsedContent || !parsedContent['fileSystem']) {
+          continue;
+        }
 
         conversationFileSystem = parsedContent['fileSystem'];
         conversationFileSystemMessageIndex = i;
@@ -86,15 +90,20 @@ export class ConversationFsModerator implements MessageModerator {
         try {
           parsedContent = JSON.parse(message.content);
         } catch (error) {}
-        if (!parsedContent) continue;
+        if (!parsedContent) {
+          continue;
+        }
 
-        for (const filePath of Object.keys(parsedContent))
+        for (const filePath of Object.keys(parsedContent)) {
           readFilesConsolidatedOutput[filePath] = parsedContent[filePath];
+        }
 
         readFilesFunctionCallMessageIndexes.push(i);
       }
 
-      if (message.role == 'function' && message.name == 'writeFiles') writeFilesFunctionCallMessageIndexes.push(i);
+      if (message.role == 'function' && message.name == 'writeFiles') {
+        writeFilesFunctionCallMessageIndexes.push(i);
+      }
     }
 
     if (conversationFileSystem) {

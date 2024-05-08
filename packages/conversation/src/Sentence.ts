@@ -8,10 +8,14 @@ export class Sentence {
   }
 
   toString(): string {
-    if (this.lines.length == 0) return '';
+    if (this.lines.length == 0) {
+      return '';
+    }
 
     let sentence = this.lines.join(', ');
-    if (sentence.lastIndexOf('.') != sentence.length - 1) sentence += '.';
+    if (sentence.lastIndexOf('.') != sentence.length - 1) {
+      sentence += '.';
+    }
 
     return sentence;
   }

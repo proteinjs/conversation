@@ -85,10 +85,14 @@ export class RepoFactory {
       }
 
       for (const dirent of childrenNames) {
-        if (!dirent.isDirectory()) continue;
+        if (!dirent.isDirectory()) {
+          continue;
+        }
 
         // Exclude directories 'node_modules' and 'dist' right at the beginning
-        if (dirent.name.includes('node_modules') || dirent.name.includes('dist')) continue;
+        if (dirent.name.includes('node_modules') || dirent.name.includes('dist')) {
+          continue;
+        }
 
         // Continue with the traversal if it's a directory
         const childPath = path.join(dir, dirent.name);
@@ -121,8 +125,9 @@ export class RepoFactory {
           const tsFile = Object.assign({ declaration: typescriptDeclaration }, fileDescriptor);
           repoParams.packages[packageName].tsFiles[fileDescriptor.path] = tsFile;
           repoParams.tsFiles[fileDescriptor.path] = tsFile;
-          if (!repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension])
+          if (!repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension]) {
             repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension] = [];
+          }
 
           repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension].push(fileDescriptor.path);
         }

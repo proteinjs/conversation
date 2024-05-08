@@ -65,8 +65,9 @@ export class PackageModule implements ConversationModule {
     const packageJsonFileMap = await Fs.readFiles(packageJsonFilePaths);
     for (const packageJsonFilePath of Object.keys(packageJsonFileMap)) {
       const packageJson = JSON.parse(packageJsonFileMap[packageJsonFilePath]);
-      if (packageJson.name.toLowerCase().includes(keyword.toLocaleLowerCase()))
+      if (packageJson.name.toLowerCase().includes(keyword.toLocaleLowerCase())) {
         matchingPackageJsonPaths.push(packageJsonFilePath);
+      }
     }
 
     return matchingPackageJsonPaths;

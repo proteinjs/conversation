@@ -32,7 +32,9 @@ export abstract class CodeTemplate {
 
   private resolvePackages() {
     const packages: Package[] = this.templateArgs.replacePackages ? [] : this.dependencyPackages();
-    if (this.templateArgs.additionalPackages) packages.push(...this.templateArgs.additionalPackages);
+    if (this.templateArgs.additionalPackages) {
+      packages.push(...this.templateArgs.additionalPackages);
+    }
     return packages;
   }
 }

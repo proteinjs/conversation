@@ -27,7 +27,9 @@ export class Code {
   }
 
   async generate(): Promise<string> {
-    if (this.args.imports) this.addImports(this.args.imports, this.args.conversation);
+    if (this.args.imports) {
+      this.addImports(this.args.imports, this.args.conversation);
+    }
 
     return await this.args.conversation.generateCode(this.args.description, 'gpt-4');
   }
