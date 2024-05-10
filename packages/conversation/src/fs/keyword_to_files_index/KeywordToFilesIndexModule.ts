@@ -6,9 +6,9 @@ import path from 'path';
 import { searchFilesFunction, searchFilesFunctionName } from './KeywordToFilesIndexFunctions';
 
 export type KeywordToFilesIndexModuleParams = {
-  dir: string,
-  keywordFilesIndex: { [keyword: string]: string[] /** file paths */ },
-}
+  dir: string;
+  keywordFilesIndex: { [keyword: string]: string[] /** file paths */ };
+};
 
 export class KeywordToFilesIndexModule implements ConversationModule {
   private logger = new Logger(this.constructor.name);
@@ -35,9 +35,7 @@ export class KeywordToFilesIndexModule implements ConversationModule {
   }
 
   getFunctions(): Function[] {
-    return [
-      searchFilesFunction(this),
-    ];
+    return [searchFilesFunction(this)];
   }
 
   getMessageModerators() {
@@ -50,7 +48,7 @@ export class KeywordToFilesIndexModuleFactory implements ConversationModuleFacto
 
   async createModule(repoPath: string): Promise<KeywordToFilesIndexModule> {
     this.logger.debug(`Creating module for repo: ${repoPath}`);
-    let repoParams: KeywordToFilesIndexModuleParams = { keywordFilesIndex: {}, dir: repoPath };
+    const repoParams: KeywordToFilesIndexModuleParams = { keywordFilesIndex: {}, dir: repoPath };
     repoParams.keywordFilesIndex = await this.createKeywordFilesIndex(repoPath, ['**/node-typescript-parser/**']);
     this.logger.debug(`Created module for repo: ${repoPath}`);
     return new KeywordToFilesIndexModule(repoParams);
@@ -58,14 +56,17 @@ export class KeywordToFilesIndexModuleFactory implements ConversationModuleFacto
 
   /**
    * Create keyword-files index for the given base directory.
-   * 
+   *
    * @param baseDir - The directory to start the file search from.
    * @returns An index with keywords mapped to file paths.
    */
-  async createKeywordFilesIndex(baseDir: string, globIgnorePatterns: string[] = []): Promise<{ [keyword: string]: string[] }> {
+  async createKeywordFilesIndex(
+    baseDir: string,
+    globIgnorePatterns: string[] = []
+  ): Promise<{ [keyword: string]: string[] }> {
     // Ensure the base directory has a trailing slash
     if (!baseDir.endsWith(path.sep)) {
-        baseDir += path.sep;
+      baseDir += path.sep;
     }
 
     // Get all file paths, recursively, excluding node_modules and dist directories
@@ -75,14 +76,14 @@ export class KeywordToFilesIndexModuleFactory implements ConversationModuleFacto
 
     // Process each file path
     for (const filePath of filePaths) {
-        const fileName = path.parse(filePath).name; // Get file name without extension
+      const fileName = path.parse(filePath).name; // Get file name without extension
 
-        if (!keywordFilesIndex[fileName]) {
-            keywordFilesIndex[fileName] = [];
-        }
-        
-        this.logger.debug(`fileName: ${fileName}, filePath: ${filePath}`);
-        keywordFilesIndex[fileName].push(filePath);
+      if (!keywordFilesIndex[fileName]) {
+        keywordFilesIndex[fileName] = [];
+      }
+
+      this.logger.debug(`fileName: ${fileName}, filePath: ${filePath}`);
+      keywordFilesIndex[fileName].push(filePath);
     }
 
     return keywordFilesIndex;

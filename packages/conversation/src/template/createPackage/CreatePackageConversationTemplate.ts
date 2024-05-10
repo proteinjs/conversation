@@ -5,14 +5,7 @@ import tConfig from './tsconfig.json';
 
 export const createPackageConversationTemplate: ConversationTemplate = {
   name: 'Create Package',
-  keywords: [
-    'package',
-    'create package',
-    'create',
-    'create a package',
-    'create a new package',
-    `new package`,
-  ],
+  keywords: ['package', 'create package', 'create', 'create a package', 'create a new package', `new package`],
   description: 'Create a npm package',
   questions: [
     { text: `Which folder should the package be created in?` },
@@ -39,4 +32,4 @@ export const createPackageConversationTemplate: ConversationTemplate = {
       `If it's a typescript project, create a tsconfig.json file in the pakage directory with the following content: ${tsConfig}`,
     ];
   },
-}
+};

@@ -7,17 +7,9 @@ See [Conventional Commits](https://conventionalcommits.org) for commit guideline
 
 **Note:** Version bump only for package @proteinjs/conversation
 
-
-
-
-
 ## [1.0.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.0.1...@proteinjs/conversation@1.0.2) (2024-04-19)
 
 **Note:** Version bump only for package @proteinjs/conversation
-
-
-
-
 
 ## 1.0.1 (2024-04-19)
 

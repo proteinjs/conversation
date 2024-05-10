@@ -14,12 +14,12 @@ export const searchConversationTemplatesFunction = (repo: ConversationTemplateMo
             description: 'Search for conversation template names that match this keyword',
           },
         },
-        required: ['keyword']
+        required: ['keyword'],
       },
     },
     call: async (params: { keyword: string }) => repo.searchConversationTemplates(params.keyword),
-  }
-}
+  };
+};
 
 export const getConversationTemplateFunctionName = 'getConversationTemplate';
 export const getConversationTemplateFunction = (repo: ConversationTemplateModule) => {
@@ -35,9 +35,10 @@ export const getConversationTemplateFunction = (repo: ConversationTemplateModule
             description: 'Get the conversation template that has this name',
           },
         },
-        required: ['conversationTemplateName']
+        required: ['conversationTemplateName'],
       },
     },
-    call: async (params: { conversationTemplateName: string }) => await repo.getConversationTemplate(params.conversationTemplateName),
-  }
-}
+    call: async (params: { conversationTemplateName: string }) =>
+      await repo.getConversationTemplate(params.conversationTemplateName),
+  };
+};

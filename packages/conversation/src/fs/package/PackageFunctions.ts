@@ -39,16 +39,15 @@ export const installPackagesFunction: Function = {
         cwdPath: {
           type: 'string',
           description: 'The directory to install packages in',
-        }
+        },
       },
-      required: ['packages', 'cwdPath']
+      required: ['packages', 'cwdPath'],
     },
   },
-  call: async (params: { packages: Package[], cwdPath: string }) => await PackageUtil.installPackages(params.packages, params.cwdPath),
-  instructions: [
-    `To install a package, use the ${installPackagesFunctionName} function`,
-  ],
-}
+  call: async (params: { packages: Package[]; cwdPath: string }) =>
+    await PackageUtil.installPackages(params.packages, params.cwdPath),
+  instructions: [`To install a package, use the ${installPackagesFunctionName} function`],
+};
 
 export const runPackageScriptFunctionName = 'runPackageScript';
 const runPackageScriptFunction: Function = {
@@ -65,16 +64,17 @@ const runPackageScriptFunction: Function = {
         cwdPath: {
           type: 'string',
           description: 'If omitted, defaults to process.cwd',
-        }
+        },
       },
-      required: ['name']
+      required: ['name'],
     },
   },
-  call: async (params: { name: string, cwdPath?: string }) => await PackageUtil.runPackageScript(params.name, params.cwdPath),
+  call: async (params: { name: string; cwdPath?: string }) =>
+    await PackageUtil.runPackageScript(params.name, params.cwdPath),
   instructions: [
     `To run a npm script (such as start, test, or watch), use the ${runPackageScriptFunctionName} function`,
   ],
-}
+};
 
 export const searchPackagesFunctionName = 'searchPackages';
 export function searchPackagesFunction(packageModule: PackageModule) {
@@ -88,16 +88,14 @@ export function searchPackagesFunction(packageModule: PackageModule) {
           keyword: {
             type: 'string',
             description: 'Keyword to match package names',
-          }
+          },
         },
-        required: ['keyword']
+        required: ['keyword'],
       },
     },
     call: async (params: { keyword: string }) => await packageModule.searchPackages(params.keyword),
-    instructions: [
-      `To search for packages in the local repo, use the ${searchPackagesFunctionName} function`,
-    ],
-  }
+    instructions: [`To search for packages in the local repo, use the ${searchPackagesFunctionName} function`],
+  };
 }
 
 export const searchLibrariesFunctionName = 'searchLibraries';
@@ -112,16 +110,14 @@ export function searchLibrariesFunction(packageModule: PackageModule) {
           keyword: {
             type: 'string',
             description: 'Keyword to match file names',
-          }
+          },
         },
-        required: ['keyword']
+        required: ['keyword'],
       },
     },
     call: async (params: { keyword: string }) => await packageModule.searchLibraries(params.keyword),
-    instructions: [
-      `To search for libraries in the local repo, use the ${searchLibrariesFunctionName} function`,
-    ],
-  }
+    instructions: [`To search for libraries in the local repo, use the ${searchLibrariesFunctionName} function`],
+  };
 }
 
 export const generateTypescriptDeclarationsFunctionName = 'generateTypescriptDesclarations';
@@ -137,17 +133,17 @@ export const generateTypescriptDeclarationsFunction = {
           description: 'File paths to generate declarations for',
           items: {
             type: 'string',
-          }
-        }
+          },
+        },
       },
-      required: ['tsFilePaths']
+      required: ['tsFilePaths'],
     },
   },
   call: async (params: { tsFilePaths: string[] }) => PackageUtil.generateTypescriptDeclarations(params),
   instructions: [
     `To generate typescript declarations for a local file, use the ${generateTypescriptDeclarationsFunctionName} function`,
   ],
-}
+};
 
 export const npmInstallFunctionName = 'npmInstall';
 export const npmInstallFunction: Function = {
@@ -160,16 +156,14 @@ export const npmInstallFunction: Function = {
         cwdPath: {
           type: 'string',
           description: 'Directory to execute the command from',
-        }
+        },
       },
-      required: ['cwdPath']
+      required: ['cwdPath'],
     },
   },
   call: async (params: { cwdPath: string }) => await PackageUtil.npmInstall(params.cwdPath),
-  instructions: [
-    `To run npm install in a specific directory, use the ${npmInstallFunctionName} function`,
-  ],
-}
+  instructions: [`To run npm install in a specific directory, use the ${npmInstallFunctionName} function`],
+};
 
 export const uninstallPackagesFunctionName = 'uninstallPackages';
 export const uninstallPackagesFunction: Function = {
@@ -190,16 +184,15 @@ export const uninstallPackagesFunction: Function = {
         cwdPath: {
           type: 'string',
           description: 'The directory to uninstall packages from',
-        }
+        },
       },
-      required: ['packageNames', 'cwdPath']
+      required: ['packageNames', 'cwdPath'],
     },
   },
-  call: async (params: { packageNames: string[], cwdPath: string }) => await PackageUtil.uninstallPackages(params.packageNames, params.cwdPath),
-  instructions: [
-    `To uninstall a package, use the ${uninstallPackagesFunctionName} function`,
-  ],
-}
+  call: async (params: { packageNames: string[]; cwdPath: string }) =>
+    await PackageUtil.uninstallPackages(params.packageNames, params.cwdPath),
+  instructions: [`To uninstall a package, use the ${uninstallPackagesFunctionName} function`],
+};
 
 export const packageFunctions: Function[] = [
   installPackagesFunction,
@@ -207,4 +200,4 @@ export const packageFunctions: Function[] = [
   generateTypescriptDeclarationsFunction,
   npmInstallFunction,
   uninstallPackagesFunction,
-]
+];

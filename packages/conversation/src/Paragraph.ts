@@ -9,8 +9,9 @@ export class Paragraph {
   }
 
   toString(): string {
-    if (this.sentences.length == 0)
+    if (this.sentences.length == 0) {
       return '';
+    }
 
     return this.sentences.join(' ');
   }

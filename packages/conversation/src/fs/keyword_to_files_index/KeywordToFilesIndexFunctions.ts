@@ -1,4 +1,4 @@
-import { KeywordToFilesIndexModule } from './KeywordToFilesIndexModule'
+import { KeywordToFilesIndexModule } from './KeywordToFilesIndexModule';
 
 export const searchFilesFunctionName = 'searchFiles';
 export const searchFilesFunction = (module: KeywordToFilesIndexModule) => {
@@ -11,10 +11,10 @@ export const searchFilesFunction = (module: KeywordToFilesIndexModule) => {
         properties: {
           keyword: {
             type: 'string',
-            description: 'Search files for this keyword'
+            description: 'Search files for this keyword',
           },
         },
-        required: ['keyword']
+        required: ['keyword'],
       },
     },
     call: async (params: { keyword: string }) => module.searchFiles(params),
@@ -23,33 +23,33 @@ export const searchFilesFunction = (module: KeywordToFilesIndexModule) => {
       `Only call functions that take in filePaths with valid file paths, if you don't know the valid file path try and search for it by keyword with the ${searchFilesFunctionName} function`,
       `If the user references a file in a package without providing a path, use the ${searchFilesFunctionName} function on the keyword to find potentially relevant files, and choose the one that references the package name in its path`,
     ],
-  }
-}
+  };
+};
 
 // {
-      //   definition: {
-      //     name: 'getDeclarations',
-      //     description: 'Get the typescript declarations of files',
-      //     parameters: {
-      //       type: 'object',
-      //       properties: {
-      //         tsFilePaths: {
-      //           type: 'array',
-      //           description: 'Paths to the files',
-      //           items: {
-      //             type: 'string',
-      //           },
-      //         },
-      //         includeDependencyDeclarations: {
-      //           type: 'boolean',
-      //           description: 'if true, returns declarations for input tsFilePaths and all dependencies. defaults to false.'
-      //         },
-      //       },
-      //       required: ['tsFilePaths']
-      //     },
-      //   },
-      //   call: async (params: { tsFilePaths: string[] }) => this.repo.getDeclarations(params),
-      //   instructions: [
-      //     `Favor calling getDeclarations over readFiles if full file content is not needed`,
-      //   ],
-      // },
+//   definition: {
+//     name: 'getDeclarations',
+//     description: 'Get the typescript declarations of files',
+//     parameters: {
+//       type: 'object',
+//       properties: {
+//         tsFilePaths: {
+//           type: 'array',
+//           description: 'Paths to the files',
+//           items: {
+//             type: 'string',
+//           },
+//         },
+//         includeDependencyDeclarations: {
+//           type: 'boolean',
+//           description: 'if true, returns declarations for input tsFilePaths and all dependencies. defaults to false.'
+//         },
+//       },
+//       required: ['tsFilePaths']
+//     },
+//   },
+//   call: async (params: { tsFilePaths: string[] }) => this.repo.getDeclarations(params),
+//   instructions: [
+//     `Favor calling getDeclarations over readFiles if full file content is not needed`,
+//   ],
+// },

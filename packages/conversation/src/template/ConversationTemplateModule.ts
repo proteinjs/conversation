@@ -2,7 +2,12 @@ import { Logger } from '@proteinjs/util';
 import { ConversationTemplate } from './ConversationTemplate';
 import { createPackageConversationTemplate } from './createPackage/CreatePackageConversationTemplate';
 import { ConversationModule, ConversationModuleFactory } from '../ConversationModule';
-import { getConversationTemplateFunction, getConversationTemplateFunctionName, searchConversationTemplatesFunction, searchConversationTemplatesFunctionName } from './ConversationTemplateFunctions';
+import {
+  getConversationTemplateFunction,
+  getConversationTemplateFunctionName,
+  searchConversationTemplatesFunction,
+  searchConversationTemplatesFunctionName,
+} from './ConversationTemplateFunctions';
 import { createCodeConversationTemplate } from './createCode/CreateCodeConversationTemplate';
 import { createAppTemplate } from './createApp/CreateAppTemplate';
 
@@ -13,9 +18,9 @@ const conversationTemplates: ConversationTemplate[] = [
 ];
 
 export type ConversationTemplateModuleParams = {
-  conversationTemplates: { [conversationTemplateName: string]: ConversationTemplate},
-  conversationTemplateKeywordIndex: { [keyword: string]: string[] /** conversationTemplateNames */ }
-}
+  conversationTemplates: { [conversationTemplateName: string]: ConversationTemplate };
+  conversationTemplateKeywordIndex: { [keyword: string]: string[] /** conversationTemplateNames */ };
+};
 
 export class ConversationTemplateModule implements ConversationModule {
   private logger = new Logger(this.constructor.name);
@@ -35,10 +40,13 @@ export class ConversationTemplateModule implements ConversationModule {
     return conversationNames || [];
   }
 
-  async getConversationTemplate(conversationTemplateName: string): Promise<Omit<ConversationTemplate, 'instructions'> & { instructions: string[] }> {
+  async getConversationTemplate(
+    conversationTemplateName: string
+  ): Promise<Omit<ConversationTemplate, 'instructions'> & { instructions: string[] }> {
     const conversationTemplate = this.params.conversationTemplates[conversationTemplateName];
-    if (!conversationTemplate)
+    if (!conversationTemplate) {
       return {} as any;
+    }
 
     const instructions = await conversationTemplate.instructions();
     return Object.assign(conversationTemplate, { instructions });
@@ -54,10 +62,7 @@ export class ConversationTemplateModule implements ConversationModule {
   }
 
   getFunctions() {
-    return [
-      searchConversationTemplatesFunction(this),
-      getConversationTemplateFunction(this),
-    ];
+    return [searchConversationTemplatesFunction(this), getConversationTemplateFunction(this)];
   }
 
   getMessageModerators() {
@@ -67,12 +72,16 @@ export class ConversationTemplateModule implements ConversationModule {
 
 export class ConversationTemplateModuleFactory implements ConversationModuleFactory {
   async createModule(repoPath: string) {
-    const params: ConversationTemplateModuleParams = { conversationTemplates: {}, conversationTemplateKeywordIndex: {} };
-    for (let conversationTemplate of conversationTemplates) {
+    const params: ConversationTemplateModuleParams = {
+      conversationTemplates: {},
+      conversationTemplateKeywordIndex: {},
+    };
+    for (const conversationTemplate of conversationTemplates) {
       params.conversationTemplates[conversationTemplate.name] = conversationTemplate;
-      for (let keyword of conversationTemplate.keywords) {
-        if (!params.conversationTemplateKeywordIndex[keyword])
+      for (const keyword of conversationTemplate.keywords) {
+        if (!params.conversationTemplateKeywordIndex[keyword]) {
           params.conversationTemplateKeywordIndex[keyword] = [];
+        }
 
         params.conversationTemplateKeywordIndex[keyword].push(conversationTemplate.name);
       }

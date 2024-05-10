@@ -20,7 +20,7 @@ export class MessageHistory {
   }
 
   toString() {
-    return this.messages.map(message => message.content).join('. ');
+    return this.messages.map((message) => message.content).join('. ');
   }
 
   setMessages(messages: ChatCompletionMessageParam[]): MessageHistory {
@@ -36,19 +36,22 @@ export class MessageHistory {
   }
 
   prune() {
-    if (this.params.enforceMessageLimit === false)
+    if (this.params.enforceMessageLimit === false) {
       return;
+    }
 
     let messageCount = 0;
     const messagesToRemoveIndexes: number[] = [];
     for (let i = this.messages.length - 1; i >= 0; i--) {
       const message = this.messages[i];
-      if (message.role == 'system')
+      if (message.role == 'system') {
         continue;
+      }
 
       messageCount++;
-      if (messageCount > this.params.maxMessages)
+      if (messageCount > this.params.maxMessages) {
         messagesToRemoveIndexes.push(i);
+      }
     }
 
     this.messages = this.messages.filter((message, i) => !messagesToRemoveIndexes.includes(i));

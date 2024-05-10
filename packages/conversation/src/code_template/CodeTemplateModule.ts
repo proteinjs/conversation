@@ -8,7 +8,7 @@ export class CodeTemplateModule implements ConversationModule {
   getName(): string {
     return 'Code Template';
   }
-  
+
   getSystemMessages(): string[] {
     return [
       `If they want to create a function/class/object using an API we are familiar with, we will ask the user for the required information to fill in all mandatory parameters and ask them if they want to provide optional parameter values`,

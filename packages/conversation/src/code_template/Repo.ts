@@ -8,20 +8,20 @@ export interface TsFile extends FileDescriptor {
 }
 
 export interface PackageInfo {
-  packageJSON: any;  // The content of the package.json
+  packageJSON: any; // The content of the package.json
   dirPath: string;
   tsFiles: { [tsFilePath: string]: TsFile };
   fileDescriptors: FileDescriptor[];
 }
 
-export type SlimPackageInfo = Omit<PackageInfo, 'packageJSON'|'tsFiles'>;
+export type SlimPackageInfo = Omit<PackageInfo, 'packageJSON' | 'tsFiles'>;
 
 export type RepoParams = {
-  packages: Record<string, PackageInfo>,
-  slimPackages: Record<string, SlimPackageInfo>,
-  tsFiles: { [tsFilePath: string]: TsFile },
-  keywordFilesIndex: { [keyword: string]: string[] /** file paths */ },
-}
+  packages: Record<string, PackageInfo>;
+  slimPackages: Record<string, SlimPackageInfo>;
+  tsFiles: { [tsFilePath: string]: TsFile };
+  keywordFilesIndex: { [keyword: string]: string[] /** file paths */ };
+};
 
 export class Repo {
   private logger = new Logger(this.constructor.name);
@@ -55,7 +55,7 @@ export class Repo {
 
   getDeclarations(params: { tsFilePaths: string[] }) {
     const queriedDeclarations: { [tsFilePath: string]: string } = {};
-    for (let tsFilePath of params.tsFilePaths) {
+    for (const tsFilePath of params.tsFilePaths) {
       queriedDeclarations[tsFilePath] = this.params.tsFiles[tsFilePath].declaration;
       this.logger.info(`Accessed declaration: ${tsFilePath}`);
     }
@@ -68,25 +68,26 @@ export class RepoFactory {
 
   public static async createRepo(dir: string): Promise<Repo> {
     this.LOGGER.info(`Creating repo for dir: ${dir}`);
-    let repoParams: RepoParams = { packages: {}, slimPackages: {}, tsFiles: {}, keywordFilesIndex: {} };
+    const repoParams: RepoParams = { packages: {}, slimPackages: {}, tsFiles: {}, keywordFilesIndex: {} };
 
     async function traverse(dir: string) {
       const childrenNames = await fs.readdir(dir, { withFileTypes: true });
-      let hasPackageJson = childrenNames.some(dirent => dirent.name === 'package.json');
+      const hasPackageJson = childrenNames.some((dirent) => dirent.name === 'package.json');
       if (hasPackageJson) {
         const packageContent = await fs.readFile(path.join(dir, 'package.json'), 'utf-8');
         const packageJSON = JSON.parse(packageContent);
-        repoParams.packages[packageJSON.name] = { 
+        repoParams.packages[packageJSON.name] = {
           packageJSON: packageJSON,
           dirPath: dir,
           fileDescriptors: [],
           tsFiles: {},
         };
       }
-      
+
       for (const dirent of childrenNames) {
-        if (!dirent.isDirectory())
+        if (!dirent.isDirectory()) {
           continue;
+        }
 
         // Exclude directories 'node_modules' and 'dist' right at the beginning
         if (dirent.name.includes('node_modules') || dirent.name.includes('dist')) {
@@ -101,7 +102,7 @@ export class RepoFactory {
 
     await traverse(dir);
     await RepoFactory.loadFiles(repoParams);
-    Object.keys(repoParams.packages).forEach(packageName => {
+    Object.keys(repoParams.packages).forEach((packageName) => {
       const { packageJSON, tsFiles, ...slimPackage } = repoParams.packages[packageName];
       repoParams.slimPackages[packageName] = slimPackage;
     });
@@ -110,18 +111,23 @@ export class RepoFactory {
   }
 
   private static async loadFiles(repoParams: RepoParams) {
-    for (let packageName of Object.keys(repoParams.packages)) {
+    for (const packageName of Object.keys(repoParams.packages)) {
       this.LOGGER.info(`Loading files for package: ${packageName}`);
       const dirPath = repoParams.packages[packageName].dirPath;
       if (dirPath) {
-        repoParams.packages[packageName].fileDescriptors.push(...await Fs.getFilesInDirectory(dirPath, ['node_modules', 'dist']));
-        for (let fileDescriptor of repoParams.packages[packageName].fileDescriptors) {
-          const typescriptDeclaration = PackageUtil.generateTypescriptDeclarations({ tsFilePaths: [fileDescriptor.path] })[fileDescriptor.path];
+        repoParams.packages[packageName].fileDescriptors.push(
+          ...(await Fs.getFilesInDirectory(dirPath, ['node_modules', 'dist']))
+        );
+        for (const fileDescriptor of repoParams.packages[packageName].fileDescriptors) {
+          const typescriptDeclaration = PackageUtil.generateTypescriptDeclarations({
+            tsFilePaths: [fileDescriptor.path],
+          })[fileDescriptor.path];
           const tsFile = Object.assign({ declaration: typescriptDeclaration }, fileDescriptor);
           repoParams.packages[packageName].tsFiles[fileDescriptor.path] = tsFile;
           repoParams.tsFiles[fileDescriptor.path] = tsFile;
-          if (!repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension])
+          if (!repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension]) {
             repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension] = [];
+          }
 
           repoParams.keywordFilesIndex[fileDescriptor.nameWithoutExtension].push(fileDescriptor.path);
         }

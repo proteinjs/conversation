@@ -27,6 +27,7 @@ export class CodegenConversation {
     conversation.addAssistantMessagesToHistory([CodegenConversation.INITIAL_QUESTION]);
     const initialUserInput = this.respondToUser(CodegenConversation.INITIAL_QUESTION);
     let response = await conversation.generateResponse([initialUserInput], CodegenConversation.MODEL);
+    // eslint-disable-next-line no-constant-condition
     while (true) {
       const userInput = this.respondToUser(response);
       response = await conversation.generateResponse([userInput], CodegenConversation.MODEL);
@@ -52,8 +53,9 @@ export class CodegenConversation {
       new GitModuleFactory(),
     ];
     const modules: ConversationModule[] = [];
-    for (let moduleFactory of moduleFactories)
+    for (const moduleFactory of moduleFactories) {
       modules.push(await moduleFactory.createModule(this.repoPath));
+    }
 
     return modules;
   }
@@ -73,12 +75,12 @@ export class CodegenConversation {
       // `Use the ${searchFilesFunctionName} function to find the file if needed; read the file if needed`,
       // `If the user is referring to a function, object, class, or type and you don't have the relevant file content, first inspect the conversation summary in the chat history (if it exists) to find a file name, and call the ${searchFilesFunctionName} function and read the file before responding to the user`,
       // `Before calling ${searchFilesFunctionName}, ${searchLibrariesFunctionName} or ${searchPackagesFunctionName}, use the conversation summary in the chat history to identify a file or keyword to search for instead; after reading that file, respond to the user's request`,
-      // 
+      //
       // `Use the ${getRecentlyAccessedFilePathsFunctionName} function find a file that might pertain to the user's request before searching files, libraries or packages; read that file then respond to the user`,
       // `When trying to locate code, use the ${getRecentlyAccessedFilePathsFunctionName} function to search recently accessed files first, then proceed to calling other functions: ${searchLibrariesFunctionName}, ${searchPackagesFunctionName}, ${searchFilesFunctionName}`,
       // `The conversation summary indicates files recently worked in as well`,
       // `If that doesn't yield results, proceed to calling the ${searchLibrariesFunctionName} function, then fall back to functions: ${searchPackagesFunctionName}, ${searchFilesFunctionName}`,
-      // 
+      //
       // `To find code, a file, or a library, call ${getRecentlyAccessedFilePathsFunctionName} and read the most recent file, after trying that call ${searchLibrariesFunctionName} then ${searchFilesFunctionName} to find a relevant file`,
       // `The file mentioned in the conversation summary should be read if we're not already working in a file`,
       // `If there is a conversation summary assistant message, use that to pick a file to read before responding to the user if not already working with a specific file`,

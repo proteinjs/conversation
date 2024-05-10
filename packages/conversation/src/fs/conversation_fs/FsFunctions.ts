@@ -19,17 +19,15 @@ export function readFilesFunction(fsModule: ConversationFsModule) {
             },
           },
         },
-        required: ['filePaths']
+        required: ['filePaths'],
       },
     },
     call: async (params: { filePaths: string[] }) => {
       fsModule.pushRecentlyAccessedFilePath(params.filePaths);
       return await Fs.readFiles(params.filePaths);
     },
-    instructions: [
-      `To read files from the local file system, use the ${readFilesFunctionName} function`,
-    ],
-  }
+    instructions: [`To read files from the local file system, use the ${readFilesFunctionName} function`],
+  };
 }
 
 export const writeFilesFunctionName = 'writeFiles';
@@ -59,17 +57,15 @@ export function writeFilesFunction(fsModule: ConversationFsModule) {
             },
           },
         },
-        required: ['files']
+        required: ['files'],
       },
     },
     call: async (params: { files: File[] }) => {
-      fsModule.pushRecentlyAccessedFilePath(params.files.map(file => file.path));
+      fsModule.pushRecentlyAccessedFilePath(params.files.map((file) => file.path));
       return await Fs.writeFiles(params.files);
     },
-    instructions: [
-      `To write files to the local file system, use the ${writeFilesFunctionName} function`,
-    ],
-  }
+    instructions: [`To write files to the local file system, use the ${writeFilesFunctionName} function`],
+  };
 }
 
 export const getRecentlyAccessedFilePathsFunctionName = 'getRecentlyAccessedFilePaths';
@@ -85,7 +81,7 @@ export function getRecentlyAccessedFilePathsFunction(fsModule: ConversationFsMod
       },
     },
     call: async () => fsModule.getRecentlyAccessedFilePaths(),
-  }
+  };
 }
 
 const createFolderFunctionName = 'createFolder';
@@ -101,14 +97,12 @@ const createFolderFunction: Function = {
           description: 'Path of the new directory',
         },
       },
-      required: ['path']
+      required: ['path'],
     },
   },
   call: async (params: { path: string }) => await Fs.createFolder(params.path),
-  instructions: [
-    `To create a folder on the local file system, use the ${createFolderFunctionName} function`,
-  ],
-}
+  instructions: [`To create a folder on the local file system, use the ${createFolderFunctionName} function`],
+};
 
 export const fileOrDirectoryExistsFunctionName = 'fileOrDirectoryExists';
 export const fileOrDirectoryExistsFunction: Function = {
@@ -123,14 +117,14 @@ export const fileOrDirectoryExistsFunction: Function = {
           description: 'Path of the file or directory',
         },
       },
-      required: ['path']
+      required: ['path'],
     },
   },
   call: async (params: { path: string }) => await Fs.exists(params.path),
   instructions: [
     `To check if a file or folder exists on the local file system, use the ${fileOrDirectoryExistsFunctionName} function`,
   ],
-}
+};
 
 export const getFilePathsMatchingGlobFunctionName = 'getFilePathsMatchingGlob';
 const getFilePathsMatchingGlobFunction: Function = {
@@ -156,14 +150,13 @@ const getFilePathsMatchingGlobFunction: Function = {
           },
         },
       },
-      required: ['dirPrefix', 'glob']
+      required: ['dirPrefix', 'glob'],
     },
   },
-  call: async (params: { dirPrefix: string, glob: string, globIgnorePatterns?: string[] }) => await Fs.getFilePathsMatchingGlob(params.dirPrefix, params.glob, params.globIgnorePatterns),
-  instructions: [
-    `To get file paths matching a glob, use the ${getFilePathsMatchingGlobFunctionName} function`,
-  ],
-}
+  call: async (params: { dirPrefix: string; glob: string; globIgnorePatterns?: string[] }) =>
+    await Fs.getFilePathsMatchingGlob(params.dirPrefix, params.glob, params.globIgnorePatterns),
+  instructions: [`To get file paths matching a glob, use the ${getFilePathsMatchingGlobFunctionName} function`],
+};
 
 export const renameFunctionName = 'renameFileOrDirectory';
 const renameFunction: Function = {
@@ -182,14 +175,12 @@ const renameFunction: Function = {
           description: 'New name for the file or directory',
         },
       },
-      required: ['oldPath', 'newName']
+      required: ['oldPath', 'newName'],
     },
   },
-  call: async (params: { oldPath: string, newName: string }) => await Fs.rename(params.oldPath, params.newName),
-  instructions: [
-    `To rename a file or directory, use the ${renameFunctionName} function`,
-  ],
-}
+  call: async (params: { oldPath: string; newName: string }) => await Fs.rename(params.oldPath, params.newName),
+  instructions: [`To rename a file or directory, use the ${renameFunctionName} function`],
+};
 
 export const copyFunctionName = 'copyFileOrDirectory';
 const copyFunction: Function = {
@@ -208,14 +199,13 @@ const copyFunction: Function = {
           description: 'Destination path for the copied file or directory',
         },
       },
-      required: ['sourcePath', 'destinationPath']
+      required: ['sourcePath', 'destinationPath'],
     },
   },
-  call: async (params: { sourcePath: string, destinationPath: string }) => await Fs.copy(params.sourcePath, params.destinationPath),
-  instructions: [
-    `To copy a file or directory, use the ${copyFunctionName} function`,
-  ],
-}
+  call: async (params: { sourcePath: string; destinationPath: string }) =>
+    await Fs.copy(params.sourcePath, params.destinationPath),
+  instructions: [`To copy a file or directory, use the ${copyFunctionName} function`],
+};
 
 export const moveFunctionName = 'moveFileOrDirectory';
 const moveFunction: Function = {
@@ -234,14 +224,13 @@ const moveFunction: Function = {
           description: 'Destination path for the moved file or directory',
         },
       },
-      required: ['sourcePath', 'destinationPath']
+      required: ['sourcePath', 'destinationPath'],
     },
   },
-  call: async (params: { sourcePath: string, destinationPath: string }) => await Fs.move(params.sourcePath, params.destinationPath),
-  instructions: [
-    `To move a file or directory, use the ${moveFunctionName} function`,
-  ],
-}
+  call: async (params: { sourcePath: string; destinationPath: string }) =>
+    await Fs.move(params.sourcePath, params.destinationPath),
+  instructions: [`To move a file or directory, use the ${moveFunctionName} function`],
+};
 
 export const fsFunctions: Function[] = [
   createFolderFunction,
@@ -250,4 +239,4 @@ export const fsFunctions: Function[] = [
   renameFunction,
   copyFunction,
   moveFunction,
-]
+];

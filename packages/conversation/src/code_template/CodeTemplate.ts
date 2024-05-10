@@ -3,10 +3,10 @@ import { Fs, PackageUtil, Package } from '@proteinjs/util-node';
 import { SourceFile } from './Code';
 
 export type TemplateArgs = {
-  srcPath: string,
-  additionalPackages?: Package[],
-  replacePackages?: boolean,
-}
+  srcPath: string;
+  additionalPackages?: Package[];
+  replacePackages?: boolean;
+};
 
 export abstract class CodeTemplate {
   protected logger = new Logger(this.constructor.name);
@@ -21,7 +21,7 @@ export abstract class CodeTemplate {
 
   async generate() {
     await PackageUtil.installPackages(this.resolvePackages());
-    for (let sourceFile of this.sourceFiles()) {
+    for (const sourceFile of this.sourceFiles()) {
       const filePath = Fs.baseContainedJoin(this.templateArgs.srcPath, sourceFile.relativePath);
       this.logger.info(`Generating source file: ${filePath}`);
       const code = await sourceFile.code.generate();
@@ -32,8 +32,9 @@ export abstract class CodeTemplate {
 
   private resolvePackages() {
     const packages: Package[] = this.templateArgs.replacePackages ? [] : this.dependencyPackages();
-    if (this.templateArgs.additionalPackages)
+    if (this.templateArgs.additionalPackages) {
       packages.push(...this.templateArgs.additionalPackages);
+    }
     return packages;
   }
 }
