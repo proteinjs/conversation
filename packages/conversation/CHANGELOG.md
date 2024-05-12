@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.0.10](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.0.9...@proteinjs/conversation@1.0.10) (2024-05-12)
+
+
+### Bug Fixes
+
+* update tiktoken version ([5bb285c](https://github.com/proteinjs/conversation/commit/5bb285ca4eafa499d844b25504fbc744bc2a181f))
+* updating lerna config ([d1aa89f](https://github.com/proteinjs/conversation/commit/d1aa89f89dbe155a9a3b4f7d74cc860a08e720d9))
+
+
+
+
+
 ## [1.0.8](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.0.7...@proteinjs/conversation@1.0.8) (2024-05-10)
 
 
