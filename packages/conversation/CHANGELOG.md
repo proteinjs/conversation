@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.0.11...@proteinjs/conversation@1.1.0) (2024-05-20)
+
+
+### Features
+
+* updating tiktoken version ([a09e604](https://github.com/proteinjs/conversation/commit/a09e604c6174788b4a7c4cf757db6157acc8095f))
+
+
+
+
+
 ## [1.0.11](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.0.10...@proteinjs/conversation@1.0.11) (2024-05-12)
 
 
