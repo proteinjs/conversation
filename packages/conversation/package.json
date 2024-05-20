@@ -33,7 +33,7 @@
     "fs-extra": "11.1.1",
     "openai": "4.4.0",
     "readline-sync": "1.4.10",
-    "tiktoken": "1.0.14",
+    "tiktoken": "1.0.15",
     "typescript": "5.2.2"
   }
 }
