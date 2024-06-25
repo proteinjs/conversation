@@ -93,14 +93,36 @@ export class Conversation {
     this.messageModerators.push(...messageModerators);
   }
 
-  private async enforceTokenLimit(messages: string[], model?: TiktokenModel) {
+  private async enforceTokenLimit(messages: (string | ChatCompletionMessageParam)[], model?: TiktokenModel) {
     if (this.params.limits?.enforceLimits === false) {
       return;
     }
 
     const resolvedModel = model ? model : DEFAULT_MODEL;
     const encoder = encoding_for_model(resolvedModel);
-    const conversation = this.history.toString() + messages.join('. ');
+    const conversation =
+      this.history.toString() +
+      messages
+        .map((message) => {
+          if (typeof message === 'string') {
+            return message;
+          } else {
+            // Extract content from ChatCompletionMessageParam
+            const contentParts = Array.isArray(message.content) ? message.content : [message.content];
+            return contentParts
+              .map((part) => {
+                if (typeof part === 'string') {
+                  return part;
+                } else if (part?.type === 'text') {
+                  return part.text;
+                } else {
+                  return ''; // Handle non-text content types as empty string
+                }
+              })
+              .join(' ');
+          }
+        })
+        .join('. ');
     const encoded = encoder.encode(conversation);
     console.log(`current tokens: ${encoded.length}`);
     if (encoded.length < this.tokenLimit) {
@@ -175,7 +197,7 @@ export class Conversation {
     }
   }
 
-  async generateResponse(messages: string[], model?: TiktokenModel) {
+  async generateResponse(messages: (string | ChatCompletionMessageParam)[], model?: TiktokenModel) {
     await this.enforceTokenLimit(messages, model);
     return await OpenAi.generateResponse(
       messages,

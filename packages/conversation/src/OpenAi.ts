@@ -13,16 +13,20 @@ function delay(ms: number) {
 export const DEFAULT_MODEL: TiktokenModel = 'gpt-3.5-turbo';
 export class OpenAi {
   static async generateResponse(
-    messages: string[],
+    messages: (string | ChatCompletionMessageParam)[],
     model?: string,
     history?: MessageHistory,
-    functions?: Function[],
+    functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
     logLevel: LogLevel = 'info'
   ): Promise<string> {
     const logger = new Logger('OpenAi.generateResponse', logLevel);
     const messageParams: ChatCompletionMessageParam[] = messages.map((message) => {
-      return { role: 'user', content: message };
+      if (typeof message === 'string') {
+        return { role: 'user', content: message };
+      }
+
+      return message;
     });
     if (history) {
       history.push(messageParams);
@@ -63,7 +67,7 @@ export class OpenAi {
   private static async executeRequest(
     messageParamsWithHistory: MessageHistory,
     logLevel: LogLevel,
-    functions?: Function[],
+    functions?: Omit<Function, 'instructions'>[],
     model?: string
   ): Promise<ChatCompletion> {
     const logger = new Logger('OpenAi.executeRequest', logLevel);
@@ -122,7 +126,7 @@ export class OpenAi {
   private static async callFunction(
     logLevel: LogLevel,
     functionCall: ChatCompletionMessage.FunctionCall,
-    functions?: Function[]
+    functions?: Omit<Function, 'instructions'>[]
   ): Promise<ChatCompletionMessageParam | undefined> {
     const logger = new Logger('OpenAi.callFunction', logLevel);
     if (!functions) {
@@ -165,10 +169,10 @@ export class OpenAi {
   }
 
   static async generateCode(
-    messages: string[],
+    messages: (string | ChatCompletionMessageParam)[],
     model?: string,
     history?: MessageHistory,
-    functions?: Function[],
+    functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
     includeSystemMessages: boolean = true,
     logLevel: LogLevel = 'info'
@@ -199,7 +203,7 @@ export class OpenAi {
     description: string,
     model?: string,
     history?: MessageHistory,
-    functions?: Function[],
+    functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
     includeSystemMessages: boolean = true,
     logLevel: LogLevel = 'info'
@@ -249,10 +253,10 @@ export class OpenAi {
   }
 
   static async generateList(
-    messages: string[],
+    messages: (string | ChatCompletionMessageParam)[],
     model?: string,
     history?: MessageHistory,
-    functions?: Function[],
+    functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
     includeSystemMessages: boolean = true,
     logLevel: LogLevel = 'info'
