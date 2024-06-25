@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.1.0...@proteinjs/conversation@1.2.0) (2024-06-25)
+
+
+### Features
+
+* `Conversation` and `OpenAi` now accept `ChatCompletionMessageParam`s as well as string messages. This enables the caller to send files and other data in with a message. ([63e9536](https://github.com/proteinjs/conversation/commit/63e9536fa39de09e85848b9658a30d1d4eb2face))
+
+
+
+
+
 # [1.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.0.11...@proteinjs/conversation@1.1.0) (2024-05-20)
 
 
