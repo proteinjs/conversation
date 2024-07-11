@@ -12,13 +12,16 @@ function delay(ms: number) {
 
 export const DEFAULT_MODEL: TiktokenModel = 'gpt-3.5-turbo';
 export class OpenAi {
+  private static functionCallCount = 0;
+
   static async generateResponse(
     messages: (string | ChatCompletionMessageParam)[],
     model?: string,
     history?: MessageHistory,
     functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
-    logLevel: LogLevel = 'info'
+    logLevel: LogLevel = 'info',
+    maxFunctionCalls: number = 50
   ): Promise<string> {
     const logger = new Logger('OpenAi.generateResponse', logLevel);
     const messageParams: ChatCompletionMessageParam[] = messages.map((message) => {
@@ -38,13 +41,25 @@ export class OpenAi {
     const response = await OpenAi.executeRequest(messageParamsWithHistory, logLevel, functions, model);
     const responseMessage = response.choices[0].message;
     if (responseMessage.function_call) {
+      if (this.functionCallCount >= maxFunctionCalls) {
+        logger.warn(`Max function calls (${maxFunctionCalls}) reached. Stopping execution.`);
+        return `Max function calls (${maxFunctionCalls}) reached.`;
+      }
+
+      this.functionCallCount++;
+      logger.info(`Function call count increased to: ${this.functionCallCount}`);
       messageParamsWithHistory.push([responseMessage]);
       const functionReturnMessage = await this.callFunction(logLevel, responseMessage.function_call, functions);
+
       if (functionReturnMessage) {
         messageParamsWithHistory.push([functionReturnMessage]);
       }
+
       return await this.generateResponse([], model, messageParamsWithHistory, functions, messageModerators, logLevel);
     }
+
+    // Reset function call count when we get a non-function response
+    this.functionCallCount = 0;
 
     const responseText = responseMessage.content;
     if (!responseText) {
@@ -154,11 +169,21 @@ export class OpenAi {
         1000
       );
     } catch (error: any) {
-      logger.error(error.message);
+      const errorMessage = `Error occurred while executing function ${f.definition.name}: ${error.message}`;
+      logger.error(errorMessage);
+      return {
+        role: 'function',
+        name: f.definition.name,
+        content: JSON.stringify({ error: errorMessage }),
+      };
     }
 
     if (!returnObject) {
-      return;
+      return {
+        role: 'function',
+        name: f.definition.name,
+        content: JSON.stringify({ result: 'Function with no return value executed successfully' }),
+      };
     }
 
     return {
