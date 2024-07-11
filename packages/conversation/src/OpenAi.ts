@@ -18,7 +18,30 @@ export class OpenAi {
     history?: MessageHistory,
     functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
-    logLevel: LogLevel = 'info'
+    logLevel: LogLevel = 'info',
+    maxFunctionCalls: number = 50
+  ): Promise<string> {
+    return await this.generateResponseHelper(
+      messages,
+      0,
+      model,
+      history,
+      functions,
+      messageModerators,
+      logLevel,
+      maxFunctionCalls
+    );
+  }
+
+  static async generateResponseHelper(
+    messages: (string | ChatCompletionMessageParam)[],
+    currentFunctionCalls: number,
+    model?: string,
+    history?: MessageHistory,
+    functions?: Omit<Function, 'instructions'>[],
+    messageModerators?: MessageModerator[],
+    logLevel: LogLevel = 'info',
+    maxFunctionCalls: number = 50
   ): Promise<string> {
     const logger = new Logger('OpenAi.generateResponse', logLevel);
     const messageParams: ChatCompletionMessageParam[] = messages.map((message) => {
@@ -38,17 +61,28 @@ export class OpenAi {
     const response = await OpenAi.executeRequest(messageParamsWithHistory, logLevel, functions, model);
     const responseMessage = response.choices[0].message;
     if (responseMessage.function_call) {
+      if (currentFunctionCalls >= maxFunctionCalls) {
+        throw new Error(`Max function calls (${maxFunctionCalls}) reached. Stopping execution.`);
+      }
+
       messageParamsWithHistory.push([responseMessage]);
       const functionReturnMessage = await this.callFunction(logLevel, responseMessage.function_call, functions);
-      if (functionReturnMessage) {
-        messageParamsWithHistory.push([functionReturnMessage]);
-      }
-      return await this.generateResponse([], model, messageParamsWithHistory, functions, messageModerators, logLevel);
+      messageParamsWithHistory.push([functionReturnMessage]);
+
+      return await this.generateResponseHelper(
+        [],
+        currentFunctionCalls + 1,
+        model,
+        messageParamsWithHistory,
+        functions,
+        messageModerators,
+        logLevel,
+        maxFunctionCalls
+      );
     }
 
     const responseText = responseMessage.content;
     if (!responseText) {
-      logger.error(`Received response: ${JSON.stringify(response)}`);
       throw new Error(`Response was empty for messages: ${messages.join('\n')}`);
     }
 
@@ -127,7 +161,7 @@ export class OpenAi {
     logLevel: LogLevel,
     functionCall: ChatCompletionMessage.FunctionCall,
     functions?: Omit<Function, 'instructions'>[]
-  ): Promise<ChatCompletionMessageParam | undefined> {
+  ): Promise<ChatCompletionMessageParam> {
     const logger = new Logger('OpenAi.callFunction', logLevel);
     if (!functions) {
       const warning = `Assistant attempted to call a function when no functions were provided`;
@@ -154,11 +188,21 @@ export class OpenAi {
         1000
       );
     } catch (error: any) {
-      logger.error(error.message);
+      const errorMessage = `Error occurred while executing function ${f.definition.name}: ${error.message}`;
+      logger.error(errorMessage);
+      return {
+        role: 'function',
+        name: f.definition.name,
+        content: JSON.stringify({ error: errorMessage }),
+      };
     }
 
     if (!returnObject) {
-      return;
+      return {
+        role: 'function',
+        name: f.definition.name,
+        content: JSON.stringify({ result: 'Function with no return value executed successfully' }),
+      };
     }
 
     return {
