@@ -67,7 +67,6 @@ export class OpenAi {
         throw new Error(maxFunctionCallsError);
       }
 
-      this.functionCallCount++;
       messageParamsWithHistory.push([responseMessage]);
       const functionReturnMessage = await this.callFunction(logLevel, responseMessage.function_call, functions);
       messageParamsWithHistory.push([functionReturnMessage]);
