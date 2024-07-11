@@ -12,8 +12,6 @@ function delay(ms: number) {
 
 export const DEFAULT_MODEL: TiktokenModel = 'gpt-3.5-turbo';
 export class OpenAi {
-  private static functionCallCount = 0;
-
   static async generateResponse(
     messages: (string | ChatCompletionMessageParam)[],
     model?: string,
