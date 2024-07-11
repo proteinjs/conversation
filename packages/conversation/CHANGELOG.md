@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.2.2...@proteinjs/conversation@1.3.0) (2024-07-11)
+
+
+### Features
+
+* implement max function calls, handle functions with void return type ([#2](https://github.com/proteinjs/conversation/issues/2)) ([36b26cf](https://github.com/proteinjs/conversation/commit/36b26cf31782c68ae230d7ae75c678d633340f44))
+
+
+
+
+
 # [1.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.1.0...@proteinjs/conversation@1.2.0) (2024-06-25)
 
 
