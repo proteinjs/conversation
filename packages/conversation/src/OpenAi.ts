@@ -47,7 +47,6 @@ export class OpenAi {
       }
 
       this.functionCallCount++;
-      logger.info(`Function call count increased to: ${this.functionCallCount}`);
       messageParamsWithHistory.push([responseMessage]);
       const functionReturnMessage = await this.callFunction(logLevel, responseMessage.function_call, functions);
       if (functionReturnMessage) {
