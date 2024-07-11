@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.4.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.3.0...@proteinjs/conversation@1.4.0) (2024-07-11)
+
+
+### Features
+
+* updated `Function` and `OpenAi` to adopt the new `tools` api (replacing legacy function api) ([e77013f](https://github.com/proteinjs/conversation/commit/e77013f20af9e857fadbf9cb3709eb7325b601d3))
+
+
+
+
+
 # [1.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.2.2...@proteinjs/conversation@1.3.0) (2024-07-11)
 
 
