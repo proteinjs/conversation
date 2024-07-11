@@ -23,6 +23,28 @@ export class OpenAi {
     logLevel: LogLevel = 'info',
     maxFunctionCalls: number = 50
   ): Promise<string> {
+    return this.generateResponseHelper(
+      messages,
+      0,
+      model,
+      history,
+      functions,
+      messageModerators,
+      logLevel,
+      maxFunctionCalls
+    );
+  }
+
+  static async generateResponseHelper(
+    messages: (string | ChatCompletionMessageParam)[],
+    currentFunctionCalls: number,
+    model?: string,
+    history?: MessageHistory,
+    functions?: Omit<Function, 'instructions'>[],
+    messageModerators?: MessageModerator[],
+    logLevel: LogLevel = 'info',
+    maxFunctionCalls: number = 50
+  ): Promise<string> {
     const logger = new Logger('OpenAi.generateResponse', logLevel);
     const messageParams: ChatCompletionMessageParam[] = messages.map((message) => {
       if (typeof message === 'string') {
@@ -41,22 +63,28 @@ export class OpenAi {
     const response = await OpenAi.executeRequest(messageParamsWithHistory, logLevel, functions, model);
     const responseMessage = response.choices[0].message;
     if (responseMessage.function_call) {
-      if (this.functionCallCount >= maxFunctionCalls) {
-        logger.error(`Max function calls (${maxFunctionCalls}) reached. Stopping execution.`);
-        return `Max function calls (${maxFunctionCalls}) reached.`;
+      if (currentFunctionCalls >= maxFunctionCalls) {
+        const maxFunctionCallsError = `Max function calls (${maxFunctionCalls}) reached. Stopping execution.`;
+        logger.error(maxFunctionCallsError);
+        throw new Error(maxFunctionCallsError);
       }
 
       this.functionCallCount++;
       messageParamsWithHistory.push([responseMessage]);
       const functionReturnMessage = await this.callFunction(logLevel, responseMessage.function_call, functions);
-      if (functionReturnMessage) {
-        messageParamsWithHistory.push([functionReturnMessage]);
-      }
-      return await this.generateResponse([], model, messageParamsWithHistory, functions, messageModerators, logLevel);
-    }
+      messageParamsWithHistory.push([functionReturnMessage]);
 
-    // Reset function call count when we get a non-function response
-    this.functionCallCount = 0;
+      return await this.generateResponseHelper(
+        [],
+        currentFunctionCalls + 1,
+        model,
+        messageParamsWithHistory,
+        functions,
+        messageModerators,
+        logLevel,
+        maxFunctionCalls
+      );
+    }
 
     const responseText = responseMessage.content;
     if (!responseText) {
@@ -139,7 +167,7 @@ export class OpenAi {
     logLevel: LogLevel,
     functionCall: ChatCompletionMessage.FunctionCall,
     functions?: Omit<Function, 'instructions'>[]
-  ): Promise<ChatCompletionMessageParam | undefined> {
+  ): Promise<ChatCompletionMessageParam> {
     const logger = new Logger('OpenAi.callFunction', logLevel);
     if (!functions) {
       const warning = `Assistant attempted to call a function when no functions were provided`;
