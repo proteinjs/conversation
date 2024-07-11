@@ -1,5 +1,10 @@
 import { OpenAI as OpenAIApi } from 'openai';
-import { ChatCompletionMessage, ChatCompletionMessageParam, ChatCompletion } from 'openai/resources/chat';
+import {
+  ChatCompletionMessageParam,
+  ChatCompletion,
+  ChatCompletionMessageToolCall,
+  ChatCompletionToolMessageParam,
+} from 'openai/resources/chat';
 import { LogLevel, Logger } from '@proteinjs/util';
 import { MessageModerator } from './history/MessageModerator';
 import { Function } from './Function';
@@ -60,18 +65,18 @@ export class OpenAi {
     }
     const response = await OpenAi.executeRequest(messageParamsWithHistory, logLevel, functions, model);
     const responseMessage = response.choices[0].message;
-    if (responseMessage.function_call) {
+    if (responseMessage.tool_calls) {
       if (currentFunctionCalls >= maxFunctionCalls) {
         throw new Error(`Max function calls (${maxFunctionCalls}) reached. Stopping execution.`);
       }
 
       messageParamsWithHistory.push([responseMessage]);
-      const functionReturnMessage = await this.callFunction(logLevel, responseMessage.function_call, functions);
-      messageParamsWithHistory.push([functionReturnMessage]);
+      const toolMessageParams = await this.callTools(logLevel, responseMessage.tool_calls, functions);
+      messageParamsWithHistory.push([...toolMessageParams]);
 
       return await this.generateResponseHelper(
         [],
-        currentFunctionCalls + 1,
+        currentFunctionCalls + responseMessage.tool_calls.length,
         model,
         messageParamsWithHistory,
         functions,
@@ -121,13 +126,18 @@ export class OpenAi {
         model: model ? model : DEFAULT_MODEL,
         temperature: 0,
         messages: messageParamsWithHistory.getMessages(),
-        functions: functions?.map((f) => f.definition),
+        tools: functions?.map((f) => ({
+          type: 'function',
+          function: f.definition,
+        })),
       });
       const responseMessage = response.choices[0].message;
       if (responseMessage.content) {
         logger.info(`Received response: ${responseMessage.content}`);
-      } else if (responseMessage.function_call) {
-        logger.info(`Received response: call ${responseMessage.function_call.name} function`);
+      } else if (responseMessage.tool_calls) {
+        logger.info(
+          `Received response: call functions: ${JSON.stringify(responseMessage.tool_calls.map((toolCall) => toolCall.function.name))}`
+        );
       } else {
         logger.info(`Received response`);
       }
@@ -157,59 +167,61 @@ export class OpenAi {
     return response;
   }
 
+  private static async callTools(
+    logLevel: LogLevel,
+    toolCalls: ChatCompletionMessageToolCall[],
+    functions?: Omit<Function, 'instructions'>[]
+  ): Promise<ChatCompletionToolMessageParam[]> {
+    const toolMessageParams: ChatCompletionToolMessageParam[] = await Promise.all(
+      toolCalls.map(async (toolCall) => {
+        const serializedReturnObject = await OpenAi.callFunction(logLevel, toolCall.function, toolCall.id, functions);
+        return { role: 'tool', tool_call_id: toolCall.id, content: serializedReturnObject };
+      })
+    );
+
+    return toolMessageParams;
+  }
+
   private static async callFunction(
     logLevel: LogLevel,
-    functionCall: ChatCompletionMessage.FunctionCall,
+    functionCall: ChatCompletionMessageToolCall.Function,
+    functionCallId: string,
     functions?: Omit<Function, 'instructions'>[]
-  ): Promise<ChatCompletionMessageParam> {
+  ): Promise<string> {
     const logger = new Logger('OpenAi.callFunction', logLevel);
     if (!functions) {
-      const warning = `Assistant attempted to call a function when no functions were provided`;
-      logger.warn(warning);
-      const message: ChatCompletionMessageParam = { role: 'user', content: warning };
-      return message;
+      const error = `Assistant attempted to call a function when no functions were provided`;
+      logger.error(error);
+      return JSON.stringify({ error });
     }
 
     functionCall.name = functionCall.name.split('.').pop() as string;
     const f = functions.find((f) => f.definition.name === functionCall.name);
     if (!f) {
-      const warning = `Assistant attempted to call nonexistent function: ${functionCall.name}`;
-      logger.warn(warning);
-      const message: ChatCompletionMessageParam = { role: 'user', content: warning };
-      return message;
+      const error = `Assistant attempted to call nonexistent function: ${functionCall.name}`;
+      logger.error(error);
+      return JSON.stringify({ error });
     }
 
     let returnObject = null;
     try {
-      logger.info(`Assistant calling function: ${f.definition.name}(${functionCall.arguments})`);
-      returnObject = JSON.stringify(await f.call(JSON.parse(functionCall.arguments)));
       logger.info(
-        `Assistant called function: ${f.definition.name}(${functionCall.arguments}) => ${returnObject}`,
+        `Assistant calling function: (${functionCallId}) ${f.definition.name}(${functionCall.arguments})`,
         1000
       );
+      returnObject = JSON.stringify(await f.call(JSON.parse(functionCall.arguments)));
+      logger.info(`Assistant called function: (${functionCallId}) ${f.definition.name} => ${returnObject}`, 1000);
     } catch (error: any) {
       const errorMessage = `Error occurred while executing function ${f.definition.name}: ${error.message}`;
       logger.error(errorMessage);
-      return {
-        role: 'function',
-        name: f.definition.name,
-        content: JSON.stringify({ error: errorMessage }),
-      };
+      return JSON.stringify({ error: errorMessage });
     }
 
     if (!returnObject) {
-      return {
-        role: 'function',
-        name: f.definition.name,
-        content: JSON.stringify({ result: 'Function with no return value executed successfully' }),
-      };
+      return JSON.stringify({ result: 'Function with no return value executed successfully' });
     }
 
-    return {
-      role: 'function',
-      name: f.definition.name,
-      content: returnObject,
-    };
+    return returnObject;
   }
 
   static async generateCode(
