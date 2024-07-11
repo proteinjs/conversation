@@ -42,7 +42,7 @@ export class OpenAi {
     const responseMessage = response.choices[0].message;
     if (responseMessage.function_call) {
       if (this.functionCallCount >= maxFunctionCalls) {
-        logger.warn(`Max function calls (${maxFunctionCalls}) reached. Stopping execution.`);
+        logger.error(`Max function calls (${maxFunctionCalls}) reached. Stopping execution.`);
         return `Max function calls (${maxFunctionCalls}) reached.`;
       }
 
@@ -50,11 +50,9 @@ export class OpenAi {
       logger.info(`Function call count increased to: ${this.functionCallCount}`);
       messageParamsWithHistory.push([responseMessage]);
       const functionReturnMessage = await this.callFunction(logLevel, responseMessage.function_call, functions);
-
       if (functionReturnMessage) {
         messageParamsWithHistory.push([functionReturnMessage]);
       }
-
       return await this.generateResponse([], model, messageParamsWithHistory, functions, messageModerators, logLevel);
     }
 
