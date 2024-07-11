@@ -21,7 +21,7 @@ export class OpenAi {
     logLevel: LogLevel = 'info',
     maxFunctionCalls: number = 50
   ): Promise<string> {
-    return this.generateResponseHelper(
+    return await this.generateResponseHelper(
       messages,
       0,
       model,
@@ -62,9 +62,7 @@ export class OpenAi {
     const responseMessage = response.choices[0].message;
     if (responseMessage.function_call) {
       if (currentFunctionCalls >= maxFunctionCalls) {
-        const maxFunctionCallsError = `Max function calls (${maxFunctionCalls}) reached. Stopping execution.`;
-        logger.error(maxFunctionCallsError);
-        throw new Error(maxFunctionCallsError);
+        throw new Error(`Max function calls (${maxFunctionCalls}) reached. Stopping execution.`);
       }
 
       messageParamsWithHistory.push([responseMessage]);
@@ -85,7 +83,6 @@ export class OpenAi {
 
     const responseText = responseMessage.content;
     if (!responseText) {
-      logger.error(`Received response: ${JSON.stringify(response)}`);
       throw new Error(`Response was empty for messages: ${messages.join('\n')}`);
     }
 
