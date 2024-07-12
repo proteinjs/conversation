@@ -1,15 +1,11 @@
 import { OpenAI as OpenAIApi } from 'openai';
-import {
-  ChatCompletionMessageParam,
-  ChatCompletion,
-  ChatCompletionMessageToolCall,
-  ChatCompletionToolMessageParam,
-} from 'openai/resources/chat';
-import { LogLevel, Logger } from '@proteinjs/util';
+import { ChatCompletionMessageParam, ChatCompletion, ChatCompletionMessageToolCall } from 'openai/resources/chat';
+import { LogLevel, Logger, isInstanceOf } from '@proteinjs/util';
 import { MessageModerator } from './history/MessageModerator';
 import { Function } from './Function';
 import { MessageHistory } from './history/MessageHistory';
 import { TiktokenModel } from 'tiktoken';
+import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -171,13 +167,14 @@ export class OpenAi {
     logLevel: LogLevel,
     toolCalls: ChatCompletionMessageToolCall[],
     functions?: Omit<Function, 'instructions'>[]
-  ): Promise<ChatCompletionToolMessageParam[]> {
-    const toolMessageParams: ChatCompletionToolMessageParam[] = await Promise.all(
-      toolCalls.map(async (toolCall) => {
-        const serializedReturnObject = await OpenAi.callFunction(logLevel, toolCall.function, toolCall.id, functions);
-        return { role: 'tool', tool_call_id: toolCall.id, content: serializedReturnObject };
-      })
-    );
+  ): Promise<ChatCompletionMessageParam[]> {
+    const toolMessageParams: ChatCompletionMessageParam[] = (
+      await Promise.all(
+        toolCalls.map(
+          async (toolCall) => await OpenAi.callFunction(logLevel, toolCall.function, toolCall.id, functions)
+        )
+      )
+    ).reduce((acc, val) => acc.concat(val), []);
 
     return toolMessageParams;
   }
@@ -185,14 +182,14 @@ export class OpenAi {
   private static async callFunction(
     logLevel: LogLevel,
     functionCall: ChatCompletionMessageToolCall.Function,
-    functionCallId: string,
+    toolCallId: string,
     functions?: Omit<Function, 'instructions'>[]
-  ): Promise<string> {
+  ): Promise<ChatCompletionMessageParam[]> {
     const logger = new Logger('OpenAi.callFunction', logLevel);
     if (!functions) {
       const error = `Assistant attempted to call a function when no functions were provided`;
       logger.error(error);
-      return JSON.stringify({ error });
+      return [{ role: 'tool', tool_call_id: toolCallId, content: JSON.stringify({ error }) }];
     }
 
     functionCall.name = functionCall.name.split('.').pop() as string;
@@ -200,28 +197,58 @@ export class OpenAi {
     if (!f) {
       const error = `Assistant attempted to call nonexistent function: ${functionCall.name}`;
       logger.error(error);
-      return JSON.stringify({ error });
+      return [{ role: 'tool', tool_call_id: toolCallId, content: JSON.stringify({ error }) }];
     }
 
-    let returnObject = null;
     try {
-      logger.info(
-        `Assistant calling function: (${functionCallId}) ${f.definition.name}(${functionCall.arguments})`,
-        1000
-      );
-      returnObject = JSON.stringify(await f.call(JSON.parse(functionCall.arguments)));
-      logger.info(`Assistant called function: (${functionCallId}) ${f.definition.name} => ${returnObject}`, 1000);
+      logger.info(`Assistant calling function: (${toolCallId}) ${f.definition.name}(${functionCall.arguments})`, 1000);
+      const returnObject = await f.call(JSON.parse(functionCall.arguments));
+
+      const returnObjectCompletionParams: ChatCompletionMessageParam[] = [];
+      if (isInstanceOf(returnObject, ChatCompletionMessageParamFactory)) {
+        // handle functions that return a ChatCompletionMessageParamFactory
+        const chatCompletionMessageParamFactory = returnObject as ChatCompletionMessageParamFactory;
+        const messageParams = await chatCompletionMessageParamFactory.create();
+        const instructionMessageParam: ChatCompletionMessageParam = {
+          role: 'tool',
+          tool_call_id: toolCallId,
+          content: `The the return data from this function is provided in the following messages`,
+        };
+        returnObjectCompletionParams.push(instructionMessageParam, ...messageParams);
+        logger.info(
+          `Assistant called function: (${toolCallId}) ${f.definition.name} => ${JSON.stringify(messageParams)}`,
+          500
+        );
+      } else {
+        // handle all other functions
+        const serializedReturnObject = JSON.stringify(returnObject);
+        returnObjectCompletionParams.push({
+          role: 'tool',
+          tool_call_id: toolCallId,
+          content: serializedReturnObject,
+        });
+        logger.info(
+          `Assistant called function: (${toolCallId}) ${f.definition.name} => ${serializedReturnObject}`,
+          1000
+        );
+      }
+
+      if (typeof returnObject === 'undefined') {
+        return [
+          {
+            role: 'tool',
+            tool_call_id: toolCallId,
+            content: JSON.stringify({ result: 'Function with no return value executed successfully' }),
+          },
+        ];
+      }
+
+      return returnObjectCompletionParams;
     } catch (error: any) {
       const errorMessage = `Error occurred while executing function ${f.definition.name}: ${error.message}`;
       logger.error(errorMessage);
-      return JSON.stringify({ error: errorMessage });
+      return [{ role: 'tool', tool_call_id: toolCallId, content: JSON.stringify({ error: errorMessage }) }];
     }
-
-    if (!returnObject) {
-      return JSON.stringify({ result: 'Function with no return value executed successfully' });
-    }
-
-    return returnObject;
   }
 
   static async generateCode(
