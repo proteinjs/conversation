@@ -163,37 +163,32 @@ export class Conversation {
     const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
       return { role: 'system', content: message };
     });
-    if (unshift) {
-      this.history.getMessages().unshift(...chatCompletions);
-      this.history.prune();
-      this.systemMessages.unshift(...chatCompletions);
-    } else {
-      this.history.push(chatCompletions);
-      this.systemMessages.push(...chatCompletions);
-    }
+    this.addMessagesToHistory(chatCompletions, unshift);
   }
 
   addAssistantMessagesToHistory(messages: string[], unshift = false) {
     const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
       return { role: 'assistant', content: message };
     });
-    if (unshift) {
-      this.history.getMessages().unshift(...chatCompletions);
-      this.history.prune();
-    } else {
-      this.history.push(chatCompletions);
-    }
+    this.addMessagesToHistory(chatCompletions, unshift);
   }
 
   addUserMessagesToHistory(messages: string[], unshift = false) {
     const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
       return { role: 'user', content: message };
     });
+    this.addMessagesToHistory(chatCompletions, unshift);
+  }
+
+  addMessagesToHistory(messages: ChatCompletionMessageParam[], unshift = false) {
+    const systemMessages = messages.filter((message) => message.role === 'system');
     if (unshift) {
-      this.history.getMessages().unshift(...chatCompletions);
+      this.history.getMessages().unshift(...messages);
       this.history.prune();
+      this.systemMessages.unshift(...systemMessages);
     } else {
-      this.history.push(chatCompletions);
+      this.history.push(messages);
+      this.systemMessages.push(...systemMessages);
     }
   }
 
