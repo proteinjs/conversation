@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.5.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.4.0...@proteinjs/conversation@1.5.0) (2024-07-12)
+
+
+### Features
+
+* added `ChatCompletionMessageParamFactory` as a way to return files (like images) in response to function calls ([703ccbf](https://github.com/proteinjs/conversation/commit/703ccbfca2d644cd59d457bba57016e75cfc36a2))
+* added `Conversation.addMessagesToHistory` to be able to add `ChatCompletionMessageParam`s to history ([7c1a98e](https://github.com/proteinjs/conversation/commit/7c1a98eb9acc57813aa7dd7ebd62893a6452dbca))
+
+
+
+
+
 # [1.4.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.3.0...@proteinjs/conversation@1.4.0) (2024-07-11)
 
 
