@@ -63,8 +63,6 @@ export class Conversation {
         ? moduleSystemMessages.join('. ')
         : moduleSystemMessages;
 
-      this.logger.info(`${formattedSystemMessages}`, 100000);
-
       this.addSystemMessagesToHistory([
         `The following are instructions from the ${module.getName()} module: ${formattedSystemMessages}`,
       ]);
