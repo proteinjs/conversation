@@ -58,8 +58,15 @@ export class Conversation {
         continue;
       }
 
+      const moduleSystemMessages = module.getSystemMessages();
+      const formattedSystemMessages = Array.isArray(moduleSystemMessages)
+        ? moduleSystemMessages.join('. ')
+        : moduleSystemMessages;
+
+      this.logger.info(`${formattedSystemMessages}`, 100000);
+
       this.addSystemMessagesToHistory([
-        `The following are instructions from the ${module.getName()} module: ${module.getSystemMessages().join('. ')}`,
+        `The following are instructions from the ${module.getName()} module: ${formattedSystemMessages}`,
       ]);
       this.addFunctions(module.getName(), module.getFunctions());
       this.addMessageModerators(module.getMessageModerators());
