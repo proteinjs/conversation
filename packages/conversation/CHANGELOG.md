@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.6.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.6.0...@proteinjs/conversation@1.6.1) (2024-07-28)
+
+
+### Bug Fixes
+
+* `OpenAiStreamProcessor.createControlStream` now ignores chunks with null content (scenarios we don't need to fail on) ([2e1ab6e](https://github.com/proteinjs/conversation/commit/2e1ab6ea1e2c38552ddd2035225bd0ba80a77fef))
+
+
+
+
+
 # [1.6.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.5.2...@proteinjs/conversation@1.6.0) (2024-07-28)
 
 
