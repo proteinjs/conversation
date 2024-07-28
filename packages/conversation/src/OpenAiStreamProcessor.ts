@@ -56,7 +56,7 @@ export class OpenAiStreamProcessor {
 
           if (!chunk || !chunk.choices) {
             throw new Error(`Received invalid chunk:\n${JSON.stringify(chunk, null, 2)}`);
-          } else if (typeof chunk.choices[0]?.delta?.content === 'string') {
+          } else if (chunk.choices[0]?.delta?.content) {
             this.outputStream.push(chunk.choices[0].delta.content);
           } else if (chunk.choices[0]?.delta?.tool_calls) {
             this.handleToolCallDelta(chunk.choices[0].delta.tool_calls);
@@ -70,8 +70,6 @@ export class OpenAiStreamProcessor {
           } else if (chunk.choices[0]?.finish_reason === 'content_filter') {
             this.logger.error(`Content was omitted due to a flag from OpenAI's content filters`);
             this.outputStream.push(null);
-          } else {
-            throw new Error(`Received invalid finish reason or delta:\n${JSON.stringify(chunk, null, 2)}`);
           }
           callback();
         } catch (error: any) {
