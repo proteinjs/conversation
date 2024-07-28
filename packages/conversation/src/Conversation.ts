@@ -209,6 +209,18 @@ export class Conversation {
     );
   }
 
+  async generateStreamingResponse(messages: (string | ChatCompletionMessageParam)[], model?: TiktokenModel) {
+    await this.enforceTokenLimit(messages, model);
+    return await OpenAi.generateStreamingResponse(
+      messages,
+      model,
+      this.history,
+      this.functions,
+      this.messageModerators,
+      this.params.logLevel
+    );
+  }
+
   async generateCode(description: string[], model?: TiktokenModel) {
     this.logger.info(`Generating code for description:\n${description.join('\n')}`);
     const code = await OpenAi.generateCode(
