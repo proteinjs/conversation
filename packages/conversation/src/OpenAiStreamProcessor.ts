@@ -23,7 +23,8 @@ export class OpenAiStreamProcessor {
       toolCalls: ChatCompletionMessageToolCall[],
       currentFunctionCalls: number
     ) => Promise<Readable>,
-    logLevel: LogLevel
+    logLevel: LogLevel,
+    private abortSignal?: AbortSignal
   ) {
     this.logger = new Logger(this.constructor.name, logLevel);
     this.inputStream = Readable.from(inputStream);
@@ -83,7 +84,7 @@ export class OpenAiStreamProcessor {
   /**
    * Destroy all streams used by `OpenAiStreamProcessor`
    */
-  private destroyStreams(error?: Error) {
+  private destroyStreams(error: Error) {
     this.inputStream.destroy();
     this.controlStream.destroy();
     this.outputStream.emit('error', error);
@@ -148,7 +149,9 @@ export class OpenAiStreamProcessor {
       this.inputStream.pipe(this.controlStream);
       this.toolCallsExecuted += completedToolCalls.length;
     } catch (error: any) {
-      this.logger.error('Error processing tool calls:', error);
+      if (!this.abortSignal?.aborted) {
+        this.logger.error('Error processing tool calls:', error);
+      }
       this.destroyStreams(error);
     }
   }

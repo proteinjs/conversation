@@ -38,6 +38,7 @@ export class OpenAi {
       history,
       functions,
       messageModerators,
+      undefined,
       logLevel,
       maxFunctionCalls
     )) as string;
@@ -49,6 +50,7 @@ export class OpenAi {
     history?: MessageHistory,
     functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
+    abortSignal?: AbortSignal,
     logLevel: LogLevel = 'info',
     maxFunctionCalls: number = 50
   ): Promise<Readable> {
@@ -60,6 +62,7 @@ export class OpenAi {
       history,
       functions,
       messageModerators,
+      abortSignal,
       logLevel,
       maxFunctionCalls
     )) as Readable;
@@ -73,12 +76,13 @@ export class OpenAi {
     history?: MessageHistory,
     functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
+    abortSignal?: AbortSignal,
     logLevel: LogLevel = 'info',
     maxFunctionCalls: number = 50
   ): Promise<string | Readable> {
     const logger = new Logger('OpenAi.generateResponseHelper', logLevel);
     const updatedHistory = OpenAi.getUpdatedMessageHistory(messages, history, messageModerators);
-    const response = await OpenAi.executeRequest(updatedHistory, stream, logLevel, functions, model);
+    const response = await OpenAi.executeRequest(updatedHistory, stream, logLevel, functions, model, abortSignal);
     if (stream) {
       logger.info(`Processing response stream`);
       const inputStream = response as Stream<ChatCompletionChunk>;
@@ -98,10 +102,11 @@ export class OpenAi {
           model,
           functions,
           messageModerators,
+          abortSignal,
           logLevel,
           maxFunctionCalls
         )) as (toolCalls: ChatCompletionMessageToolCall[], currentFunctionCalls: number) => Promise<Readable>;
-      const streamProcessor = new OpenAiStreamProcessor(inputStream, onToolCalls, logLevel);
+      const streamProcessor = new OpenAiStreamProcessor(inputStream, onToolCalls, logLevel, abortSignal);
       return streamProcessor.getOutputStream();
     }
 
@@ -115,6 +120,7 @@ export class OpenAi {
         model,
         functions,
         messageModerators,
+        abortSignal,
         logLevel,
         maxFunctionCalls
       );
@@ -165,7 +171,8 @@ export class OpenAi {
     stream: boolean,
     logLevel: LogLevel,
     functions?: Omit<Function, 'instructions'>[],
-    model?: string
+    model?: string,
+    abortSignal?: AbortSignal
   ): Promise<ChatCompletion | Stream<ChatCompletionChunk>> {
     const logger = new Logger('OpenAi.executeRequest', logLevel);
     const openaiApi = new OpenAIApi();
@@ -173,16 +180,19 @@ export class OpenAi {
       const latestMessage = messageParamsWithHistory.getMessages()[messageParamsWithHistory.getMessages().length - 1];
       this.logRequestDetails(logger, logLevel, latestMessage, messageParamsWithHistory);
 
-      const response = await openaiApi.chat.completions.create({
-        model: model ? model : DEFAULT_MODEL,
-        temperature: 0,
-        messages: messageParamsWithHistory.getMessages(),
-        tools: functions?.map((f) => ({
-          type: 'function',
-          function: f.definition,
-        })),
-        stream: stream,
-      });
+      const response = await openaiApi.chat.completions.create(
+        {
+          model: model ? model : DEFAULT_MODEL,
+          temperature: 0,
+          messages: messageParamsWithHistory.getMessages(),
+          tools: functions?.map((f) => ({
+            type: 'function',
+            function: f.definition,
+          })),
+          stream: stream,
+        },
+        { signal: abortSignal }
+      );
 
       if (!stream) {
         this.logResponseDetails(logger, response as ChatCompletion);
@@ -246,7 +256,9 @@ export class OpenAi {
     functions?: Omit<Function, 'instructions'>[],
     model?: string
   ): Promise<ChatCompletion | Stream<ChatCompletionChunk>> {
-    logger.info(`Received error response, error type: ${error.type}`);
+    if (error.type) {
+      logger.info(`Received error response, error type: ${error.type}`);
+    }
     if (typeof error.status !== 'undefined' && error.status == 429) {
       if (error.type == 'tokens' && typeof error.headers['x-ratelimit-reset-tokens'] === 'string') {
         const waitTime = parseInt(error.headers['x-ratelimit-reset-tokens']);
@@ -270,6 +282,7 @@ export class OpenAi {
     model?: string,
     functions?: Omit<Function, 'instructions'>[],
     messageModerators?: MessageModerator[],
+    abortSignal?: AbortSignal,
     logLevel: LogLevel = 'info',
     maxFunctionCalls: number = 50
   ): Promise<string | Readable> {
@@ -302,6 +315,7 @@ export class OpenAi {
       history,
       functions,
       messageModerators,
+      abortSignal,
       logLevel,
       maxFunctionCalls
     );

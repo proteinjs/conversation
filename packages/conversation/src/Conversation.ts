@@ -209,7 +209,11 @@ export class Conversation {
     );
   }
 
-  async generateStreamingResponse(messages: (string | ChatCompletionMessageParam)[], model?: TiktokenModel) {
+  async generateStreamingResponse(
+    messages: (string | ChatCompletionMessageParam)[],
+    model?: TiktokenModel,
+    abortSignal?: AbortSignal
+  ) {
     await this.enforceTokenLimit(messages, model);
     return await OpenAi.generateStreamingResponse(
       messages,
@@ -217,6 +221,7 @@ export class Conversation {
       this.history,
       this.functions,
       this.messageModerators,
+      abortSignal,
       this.params.logLevel
     );
   }
