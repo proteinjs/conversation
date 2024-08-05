@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [1.7.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.6.1...@proteinjs/conversation@1.7.0) (2024-08-05)
+
+
+### Features
+
+* added optional `AbortSignal` to `generateStreamingResponse` ([a02eb64](https://github.com/proteinjs/conversation/commit/a02eb64444629bc4ec97f7336322fdfcec97d41b))
+
+
+
+
+
 ## [1.6.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.6.0...@proteinjs/conversation@1.6.1) (2024-07-28)
 
 
