@@ -65,12 +65,15 @@ export class OpenAiStreamProcessor {
             this.handleToolCalls();
           } else if (chunk.choices[0]?.finish_reason === 'stop') {
             this.outputStream.push(null);
+            this.destroyStreams();
           } else if (chunk.choices[0]?.finish_reason === 'length') {
             this.logger.warn(`The maximum number of tokens specified in the request was reached`);
             this.outputStream.push(null);
+            this.destroyStreams();
           } else if (chunk.choices[0]?.finish_reason === 'content_filter') {
             this.logger.error(`Content was omitted due to a flag from OpenAI's content filters`);
             this.outputStream.push(null);
+            this.destroyStreams();
           }
           callback();
         } catch (error: any) {
@@ -84,10 +87,12 @@ export class OpenAiStreamProcessor {
   /**
    * Destroy all streams used by `OpenAiStreamProcessor`
    */
-  private destroyStreams(error: Error) {
+  private destroyStreams(error?: Error) {
     this.inputStream.destroy();
     this.controlStream.destroy();
-    this.outputStream.emit('error', error);
+    if (error) {
+      this.outputStream.emit('error', error);
+    }
     this.outputStream.destroy();
   }
 
