@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.7.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.7.1...@proteinjs/conversation@1.7.2) (2024-08-06)
+
+
+### Bug Fixes
+
+* making sure all streams get destroyed in all input stream end scenarios ([ab2da7d](https://github.com/proteinjs/conversation/commit/ab2da7dfbc42a0bccae73db9ab49da8c1a01b61b))
+
+
+
+
+
 # [1.7.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.6.1...@proteinjs/conversation@1.7.0) (2024-08-05)
 
 
