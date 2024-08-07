@@ -3,6 +3,11 @@ import { LogLevel, Logger } from '@proteinjs/util';
 import { Stream } from 'openai/streaming';
 import { Readable, Transform, TransformCallback, PassThrough } from 'stream';
 
+export interface AssistantResponseStreamChunk {
+  content?: string;
+  finishReason?: string;
+}
+
 /**
  * Processes streaming responses from OpenAI's `ChatCompletions` api.
  *   - When a tool call is received, it delegates processing to `onToolCalls`; this can happen recursively
@@ -29,12 +34,13 @@ export class OpenAiStreamProcessor {
     this.logger = new Logger(this.constructor.name, logLevel);
     this.inputStream = Readable.from(inputStream);
     this.controlStream = this.createControlStream();
-    this.outputStream = new PassThrough();
+    this.outputStream = new PassThrough({ objectMode: true });
     this.inputStream.pipe(this.controlStream);
   }
 
   /**
-   * @returns a `Readable` stream that will receive the assistant's text response to the user
+   * @returns a `Readable` stream, in object mode, that will receive the assistant's text response to the user.
+   *          The object chunks written to the stream will be of type `AssistantResponseStreamChunk`.
    */
   getOutputStream(): Readable {
     return this.outputStream;
@@ -58,20 +64,23 @@ export class OpenAiStreamProcessor {
           if (!chunk || !chunk.choices) {
             throw new Error(`Received invalid chunk:\n${JSON.stringify(chunk, null, 2)}`);
           } else if (chunk.choices[0]?.delta?.content) {
-            this.outputStream.push(chunk.choices[0].delta.content);
+            this.outputStream.push({ content: chunk.choices[0].delta.content } as AssistantResponseStreamChunk);
           } else if (chunk.choices[0]?.delta?.tool_calls) {
             this.handleToolCallDelta(chunk.choices[0].delta.tool_calls);
           } else if (chunk.choices[0]?.finish_reason === 'tool_calls') {
             this.handleToolCalls();
           } else if (chunk.choices[0]?.finish_reason === 'stop') {
+            this.outputStream.push({ finishReason: 'stop' } as AssistantResponseStreamChunk);
             this.outputStream.push(null);
             this.destroyStreams();
           } else if (chunk.choices[0]?.finish_reason === 'length') {
-            this.logger.warn(`The maximum number of tokens specified in the request was reached`);
+            this.logger.info(`The maximum number of output tokens was reached`);
+            this.outputStream.push({ finishReason: 'length' } as AssistantResponseStreamChunk);
             this.outputStream.push(null);
             this.destroyStreams();
           } else if (chunk.choices[0]?.finish_reason === 'content_filter') {
-            this.logger.error(`Content was omitted due to a flag from OpenAI's content filters`);
+            this.logger.warn(`Content was omitted due to a flag from OpenAI's content filters`);
+            this.outputStream.push({ finishReason: 'content_filter' } as AssistantResponseStreamChunk);
             this.outputStream.push(null);
             this.destroyStreams();
           }

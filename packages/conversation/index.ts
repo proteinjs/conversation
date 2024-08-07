@@ -10,3 +10,4 @@ export * from './src/Function';
 export * from './src/history/MessageModerator';
 export * from './src/history/MessageHistory';
 export * from './src/ChatCompletionMessageParamFactory';
+export { AssistantResponseStreamChunk } from './src/OpenAiStreamProcessor';
