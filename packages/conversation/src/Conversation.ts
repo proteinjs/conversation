@@ -2,7 +2,7 @@ import { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { DEFAULT_MODEL, OpenAi } from './OpenAi';
 import { MessageHistory } from './history/MessageHistory';
 import { Function } from './Function';
-import { Logger, LogLevel } from '@proteinjs/util';
+import { Logger, LogLevel } from '@proteinjs/logger';
 import { Fs } from '@proteinjs/util-node';
 import { MessageModerator } from './history/MessageModerator';
 import { ConversationModule } from './ConversationModule';
@@ -37,7 +37,7 @@ export class Conversation {
       maxMessages: params.limits?.maxMessagesInHistory,
       enforceMessageLimit: params.limits?.enforceLimits,
     });
-    this.logger = new Logger(params.name, params.logLevel);
+    this.logger = new Logger({ name: params.name, logLevel: params.logLevel });
 
     if (params.modules) {
       this.addModules(params.modules);
@@ -227,7 +227,7 @@ export class Conversation {
   }
 
   async generateCode(description: string[], model?: TiktokenModel) {
-    this.logger.info(`Generating code for description:\n${description.join('\n')}`);
+    this.logger.info({ message: `Generating code for description:\n${description.join('\n')}` });
     const code = await OpenAi.generateCode(
       description,
       model,
@@ -237,7 +237,7 @@ export class Conversation {
       !this.generatedCode,
       this.params.logLevel
     );
-    this.logger.info(`Generated code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}`);
+    this.logger.info({ message: `Generated code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}` });
     this.generatedCode = true;
     return code;
   }
@@ -255,14 +255,14 @@ export class Conversation {
       dependencyDescription += dependencCode + '\n\n';
     }
 
-    this.logger.info(`Updating code from file: ${codeToUpdateFilePath}`);
+    this.logger.info({ message: `Updating code from file: ${codeToUpdateFilePath}` });
     return await this.updateCode(codeToUpdate, dependencyDescription + description, model);
   }
 
   async updateCode(code: string, description: string, model?: TiktokenModel) {
-    this.logger.info(
-      `Updating code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}\nFrom description: ${description}`
-    );
+    this.logger.info({
+      message: `Updating code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}\nFrom description: ${description}`,
+    });
     const updatedCode = await OpenAi.updateCode(
       code,
       description,
@@ -273,7 +273,9 @@ export class Conversation {
       !this.generatedCode,
       this.params.logLevel
     );
-    this.logger.info(`Updated code:\n${updatedCode.slice(0, 150)}${updatedCode.length > 150 ? '...' : ''}`);
+    this.logger.info({
+      message: `Updated code:\n${updatedCode.slice(0, 150)}${updatedCode.length > 150 ? '...' : ''}`,
+    });
     this.generatedCode = true;
     return updatedCode;
   }

@@ -1,5 +1,5 @@
 import { ChatCompletionMessageToolCall, ChatCompletionChunk } from 'openai/resources/chat';
-import { LogLevel, Logger } from '@proteinjs/util';
+import { LogLevel, Logger } from '@proteinjs/logger';
 import { Stream } from 'openai/streaming';
 import { Readable, Transform, TransformCallback, PassThrough } from 'stream';
 
@@ -31,7 +31,7 @@ export class OpenAiStreamProcessor {
     logLevel: LogLevel,
     private abortSignal?: AbortSignal
   ) {
-    this.logger = new Logger(this.constructor.name, logLevel);
+    this.logger = new Logger({ name: this.constructor.name, logLevel });
     this.inputStream = Readable.from(inputStream);
     this.controlStream = this.createControlStream();
     this.outputStream = new PassThrough({ objectMode: true });
@@ -55,7 +55,7 @@ export class OpenAiStreamProcessor {
       transform: (chunk: ChatCompletionChunk, encoding: string, callback: TransformCallback) => {
         try {
           if (this.outputStream.destroyed) {
-            this.logger.warn(`Destroying input and control streams since output stream is destroyed`);
+            this.logger.warn({ message: `Destroying input and control streams since output stream is destroyed` });
             this.inputStream.destroy();
             this.controlStream.destroy();
             return;
@@ -74,19 +74,19 @@ export class OpenAiStreamProcessor {
             this.outputStream.push(null);
             this.destroyStreams();
           } else if (chunk.choices[0]?.finish_reason === 'length') {
-            this.logger.info(`The maximum number of output tokens was reached`);
+            this.logger.info({ message: `The maximum number of output tokens was reached` });
             this.outputStream.push({ finishReason: 'length' } as AssistantResponseStreamChunk);
             this.outputStream.push(null);
             this.destroyStreams();
           } else if (chunk.choices[0]?.finish_reason === 'content_filter') {
-            this.logger.warn(`Content was omitted due to a flag from OpenAI's content filters`);
+            this.logger.warn({ message: `Content was omitted due to a flag from OpenAI's content filters` });
             this.outputStream.push({ finishReason: 'content_filter' } as AssistantResponseStreamChunk);
             this.outputStream.push(null);
             this.destroyStreams();
           }
           callback();
         } catch (error: any) {
-          this.logger.error('Error tranforming chunk', error);
+          this.logger.error({ message: 'Error tranforming chunk', error });
           this.destroyStreams(error);
         }
       },
@@ -164,7 +164,7 @@ export class OpenAiStreamProcessor {
       this.toolCallsExecuted += completedToolCalls.length;
     } catch (error: any) {
       if (!this.abortSignal?.aborted) {
-        this.logger.error('Error processing tool calls:', error);
+        this.logger.error({ message: 'Error processing tool calls', error });
       }
       this.destroyStreams(error);
     }

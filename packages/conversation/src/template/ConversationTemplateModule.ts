@@ -1,4 +1,4 @@
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { ConversationTemplate } from './ConversationTemplate';
 import { createPackageConversationTemplate } from './createPackage/CreatePackageConversationTemplate';
 import { ConversationModule, ConversationModuleFactory } from '../ConversationModule';
@@ -23,10 +23,11 @@ export type ConversationTemplateModuleParams = {
 };
 
 export class ConversationTemplateModule implements ConversationModule {
-  private logger = new Logger(this.constructor.name);
+  private logger: Logger;
   params: ConversationTemplateModuleParams;
 
   constructor(params: ConversationTemplateModuleParams) {
+    this.logger = new Logger({ name: this.constructor.name });
     this.params = params;
   }
 
@@ -35,7 +36,7 @@ export class ConversationTemplateModule implements ConversationModule {
   }
 
   searchConversationTemplates(keyword: string) {
-    this.logger.info(`Searching for conversation template, keyword: ${keyword}`);
+    this.logger.info({ message: `Searching for conversation template, keyword: ${keyword}` });
     const conversationNames = this.params.conversationTemplateKeywordIndex[keyword];
     return conversationNames || [];
   }

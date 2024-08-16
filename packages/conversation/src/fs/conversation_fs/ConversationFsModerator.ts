@@ -1,5 +1,5 @@
 /* eslint-disable no-empty */
-import { LogLevel, Logger } from '@proteinjs/util';
+import { LogLevel, Logger } from '@proteinjs/logger';
 import { FileContentMap } from '@proteinjs/util-node';
 import { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { MessageModerator } from '../../history/MessageModerator';
@@ -20,14 +20,14 @@ export class ConversationFsFactory {
 
   constructor(params?: Partial<ConversationFsFactoryParams>) {
     this.params = Object.assign({ maxFiles: 3, logLevel: 'info' }, params);
-    this.logger = new Logger(this.constructor.name, this.params.logLevel);
+    this.logger = new Logger({ name: this.constructor.name, logLevel: this.params.logLevel });
   }
 
   merge(existingFs: ConversationFs, updates: FileContentMap): ConversationFs {
     for (const filePath of Object.keys(updates)) {
       // if the file already exists in the fs
       if (existingFs.fileContentMap[filePath]) {
-        this.logger.debug(`Updating existing file: ${filePath}`);
+        this.logger.debug({ message: `Updating existing file: ${filePath}` });
         existingFs.fileContentMap[filePath] = updates[filePath];
         const oldIndex = existingFs.order.findIndex((item) => item == filePath);
         existingFs.order.splice(oldIndex, 1);
@@ -37,12 +37,12 @@ export class ConversationFsFactory {
 
       // if we have less than the max number of files in the fs
       if (Object.keys(existingFs.fileContentMap).length < this.params.maxFiles) {
-        this.logger.debug(`Adding new file (under limit): ${filePath}`);
+        this.logger.debug({ message: `Adding new file (under limit): ${filePath}` });
         existingFs.fileContentMap[filePath] = updates[filePath];
         existingFs.order.push(filePath);
         continue;
       } else {
-        this.logger.debug(`Adding new file (over limit): ${filePath}`);
+        this.logger.debug({ message: `Adding new file (over limit): ${filePath}` });
         const removedFilePath = existingFs.order.splice(0, 1)[0];
         delete existingFs.fileContentMap[removedFilePath];
         existingFs.fileContentMap[filePath] = updates[filePath];
@@ -56,11 +56,13 @@ export class ConversationFsFactory {
 
 export class ConversationFsModerator implements MessageModerator {
   private logLevel: LogLevel = 'info';
+  private logger: Logger;
 
   constructor(logLevel?: LogLevel) {
     if (logLevel) {
       this.logLevel = logLevel;
     }
+    this.logger = new Logger({ name: this.constructor.name, logLevel: this.logLevel });
   }
 
   observe(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] {

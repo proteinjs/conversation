@@ -1,4 +1,4 @@
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { Fs } from '@proteinjs/util-node';
 import { ConversationModule, ConversationModuleFactory } from '../../ConversationModule';
 import { Function } from '../../Function';
@@ -11,7 +11,7 @@ export type KeywordToFilesIndexModuleParams = {
 };
 
 export class KeywordToFilesIndexModule implements ConversationModule {
-  private logger = new Logger(this.constructor.name);
+  private logger = new Logger({ name: this.constructor.name });
   params: KeywordToFilesIndexModuleParams;
 
   constructor(params: KeywordToFilesIndexModuleParams) {
@@ -23,7 +23,7 @@ export class KeywordToFilesIndexModule implements ConversationModule {
   }
 
   searchFiles(params: { keyword: string }) {
-    this.logger.info(`Searching for file, keyword: ${params.keyword}`);
+    this.logger.info({ message: `Searching for file, keyword: ${params.keyword}` });
     const filePaths = this.params.keywordFilesIndex[params.keyword];
     return filePaths || [];
   }
@@ -44,13 +44,13 @@ export class KeywordToFilesIndexModule implements ConversationModule {
 }
 
 export class KeywordToFilesIndexModuleFactory implements ConversationModuleFactory {
-  private logger = new Logger(this.constructor.name);
+  private logger = new Logger({ name: this.constructor.name });
 
   async createModule(repoPath: string): Promise<KeywordToFilesIndexModule> {
-    this.logger.debug(`Creating module for repo: ${repoPath}`);
+    this.logger.debug({ message: `Creating module for repo: ${repoPath}` });
     const repoParams: KeywordToFilesIndexModuleParams = { keywordFilesIndex: {}, dir: repoPath };
     repoParams.keywordFilesIndex = await this.createKeywordFilesIndex(repoPath, ['**/node-typescript-parser/**']);
-    this.logger.debug(`Created module for repo: ${repoPath}`);
+    this.logger.debug({ message: `Created module for repo: ${repoPath}` });
     return new KeywordToFilesIndexModule(repoParams);
   }
 
@@ -82,7 +82,7 @@ export class KeywordToFilesIndexModuleFactory implements ConversationModuleFacto
         keywordFilesIndex[fileName] = [];
       }
 
-      this.logger.debug(`fileName: ${fileName}, filePath: ${filePath}`);
+      this.logger.debug({ message: `fileName: ${fileName}, filePath: ${filePath}` });
       keywordFilesIndex[fileName].push(filePath);
     }
 

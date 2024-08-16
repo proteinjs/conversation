@@ -1,5 +1,5 @@
 import { ChatCompletionMessageParam } from 'openai/resources/chat';
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 
 export interface MessageHistoryParams {
   enforceMessageLimit?: boolean;
@@ -7,7 +7,7 @@ export interface MessageHistoryParams {
 }
 
 export class MessageHistory {
-  private logger = new Logger(this.constructor.name);
+  private logger = new Logger({ name: this.constructor.name });
   private messages: ChatCompletionMessageParam[] = [];
   private params: MessageHistoryParams;
 
@@ -55,6 +55,6 @@ export class MessageHistory {
     }
 
     this.messages = this.messages.filter((message, i) => !messagesToRemoveIndexes.includes(i));
-    this.logger.debug(`Pruned ${messagesToRemoveIndexes.length} messages`);
+    this.logger.debug({ message: `Pruned ${messagesToRemoveIndexes.length} messages` });
   }
 }

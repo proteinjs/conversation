@@ -5,7 +5,8 @@ import {
   ChatCompletionMessageToolCall,
   ChatCompletionChunk,
 } from 'openai/resources/chat';
-import { LogLevel, Logger, isInstanceOf } from '@proteinjs/util';
+import { isInstanceOf } from '@proteinjs/util';
+import { LogLevel, Logger } from '@proteinjs/logger';
 import { MessageModerator } from './history/MessageModerator';
 import { Function } from './Function';
 import { MessageHistory } from './history/MessageHistory';
@@ -80,11 +81,11 @@ export class OpenAi {
     logLevel: LogLevel = 'info',
     maxFunctionCalls: number = 50
   ): Promise<string | Readable> {
-    const logger = new Logger('OpenAi.generateResponseHelper', logLevel);
+    const logger = new Logger({ name: 'OpenAi.generateResponseHelper', logLevel });
     const updatedHistory = OpenAi.getUpdatedMessageHistory(messages, history, messageModerators);
     const response = await OpenAi.executeRequest(updatedHistory, stream, logLevel, functions, model, abortSignal);
     if (stream) {
-      logger.info(`Processing response stream`);
+      logger.info({ message: `Processing response stream` });
       const inputStream = response as Stream<ChatCompletionChunk>;
 
       // For subsequent tool calls, return the raw OpenAI stream to `OpenAiStreamProcessor`
@@ -174,7 +175,7 @@ export class OpenAi {
     model?: string,
     abortSignal?: AbortSignal
   ): Promise<ChatCompletion | Stream<ChatCompletionChunk>> {
-    const logger = new Logger('OpenAi.executeRequest', logLevel);
+    const logger = new Logger({ name: 'OpenAi.executeRequest', logLevel });
     const openaiApi = new OpenAIApi();
     try {
       const latestMessage = messageParamsWithHistory.getMessages()[messageParamsWithHistory.getMessages().length - 1];
@@ -211,7 +212,7 @@ export class OpenAi {
     messageParamsWithHistory: MessageHistory
   ) {
     if (latestMessage.role == 'tool') {
-      logger.info(`Sending request: returning output of tool call (${latestMessage.tool_call_id})`);
+      logger.info({ message: `Sending request: returning output of tool call (${latestMessage.tool_call_id})` });
     } else if (latestMessage.content) {
       const requestContent =
         typeof latestMessage.content === 'string'
@@ -219,31 +220,32 @@ export class OpenAi {
           : latestMessage.content[0].type === 'text'
             ? latestMessage.content[0].text
             : 'image';
-      logger.info(`Sending request: ${requestContent}`);
+      logger.info({ message: `Sending request`, obj: { requestContent } });
     } else {
-      logger.info(`Sending request`);
+      logger.info({ message: `Sending request` });
     }
 
     if (logLevel === 'debug') {
-      logger.debug(`Sending messages: ${JSON.stringify(messageParamsWithHistory.getMessages(), null, 2)}`, true);
+      logger.debug({ message: `Sending messages:`, obj: { messages: messageParamsWithHistory.getMessages() } });
     }
   }
 
   private static logResponseDetails(logger: Logger, response: ChatCompletion) {
     const responseMessage = response.choices[0].message;
     if (responseMessage.content) {
-      logger.info(`Received response: ${responseMessage.content}`);
+      logger.info({ message: `Received response`, obj: { response: responseMessage.content } });
     } else if (responseMessage.tool_calls) {
-      logger.info(
-        `Received response: call functions: ${JSON.stringify(responseMessage.tool_calls.map((toolCall) => toolCall.function.name))}`
-      );
+      logger.info({
+        message: `Received response: call functions`,
+        obj: { functions: responseMessage.tool_calls.map((toolCall) => toolCall.function.name) },
+      });
     } else {
-      logger.info(`Received response`);
+      logger.info({ message: `Received response` });
     }
     if (response.usage) {
-      logger.info(JSON.stringify(response.usage));
+      logger.info({ message: `Usage data`, obj: { usageData: response.usage } });
     } else {
-      logger.info(JSON.stringify(`Usage data missing`));
+      logger.info({ message: `Usage data missing` });
     }
   }
 
@@ -257,16 +259,16 @@ export class OpenAi {
     model?: string
   ): Promise<ChatCompletion | Stream<ChatCompletionChunk>> {
     if (error.type) {
-      logger.info(`Received error response, error type: ${error.type}`);
+      logger.info({ message: `Received error response, error type: ${error.type}` });
     }
     if (typeof error.status !== 'undefined' && error.status == 429) {
       if (error.type == 'tokens' && typeof error.headers['x-ratelimit-reset-tokens'] === 'string') {
         const waitTime = parseInt(error.headers['x-ratelimit-reset-tokens']);
         const remainingTokens = error.headers['x-ratelimit-remaining-tokens'];
         const delayMs = 15000;
-        logger.warn(
-          `Waiting to retry in ${delayMs / 1000}s, token reset in: ${waitTime}s, remaining tokens: ${remainingTokens}`
-        );
+        logger.warn({
+          message: `Waiting to retry in ${delayMs / 1000}s, token reset in: ${waitTime}s, remaining tokens: ${remainingTokens}`,
+        });
         await delay(delayMs);
         return await OpenAi.executeRequest(messageParamsWithHistory, stream, logLevel, functions, model);
       }
@@ -343,27 +345,33 @@ export class OpenAi {
     toolCallId: string,
     functions?: Omit<Function, 'instructions'>[]
   ): Promise<ChatCompletionMessageParam[]> {
-    const logger = new Logger('OpenAi.callFunction', logLevel);
+    const logger = new Logger({ name: 'OpenAi.callFunction', logLevel });
     if (!functions) {
-      const error = `Assistant attempted to call a function when no functions were provided`;
-      logger.error(error);
-      return [{ role: 'tool', tool_call_id: toolCallId, content: JSON.stringify({ error }) }];
+      const errorMessage = `Assistant attempted to call a function when no functions were provided`;
+      logger.error({ message: errorMessage });
+      return [{ role: 'tool', tool_call_id: toolCallId, content: JSON.stringify({ error: errorMessage }) }];
     }
 
     functionCall.name = functionCall.name.split('.').pop() as string;
     const f = functions.find((f) => f.definition.name === functionCall.name);
     if (!f) {
-      const error = `Assistant attempted to call nonexistent function: ${functionCall.name}`;
-      logger.error(error);
-      return [{ role: 'tool', tool_call_id: toolCallId, content: JSON.stringify({ error }) }];
+      const errorMessage = `Assistant attempted to call nonexistent function`;
+      logger.error({ message: errorMessage, obj: { functionName: functionCall.name } });
+      return [
+        {
+          role: 'tool',
+          tool_call_id: toolCallId,
+          content: JSON.stringify({ error: errorMessage, functionName: functionCall.name }),
+        },
+      ];
     }
 
     try {
       const parsedArguments = JSON.parse(functionCall.arguments);
-      logger.info(
-        `Assistant calling function: (${toolCallId}) ${f.definition.name}(${JSON.stringify(parsedArguments, null, 2)})`,
-        1000
-      );
+      logger.info({
+        message: `Assistant calling function: (${toolCallId}) ${f.definition.name}`,
+        obj: { toolCallId, functionName: f.definition.name, args: parsedArguments },
+      });
       const returnObject = await f.call(parsedArguments);
 
       const returnObjectCompletionParams: ChatCompletionMessageParam[] = [];
@@ -377,10 +385,10 @@ export class OpenAi {
           content: `The the return data from this function is provided in the following messages`,
         };
         returnObjectCompletionParams.push(instructionMessageParam, ...messageParams);
-        logger.info(
-          `Assistant called function: (${toolCallId}) ${f.definition.name} => ${JSON.stringify(messageParams, null, 2)}`,
-          500
-        );
+        logger.info({
+          message: `Assistant called function: (${toolCallId}) ${f.definition.name}`,
+          obj: { toolCallId, functionName: f.definition.name, return: messageParams },
+        });
       } else {
         // handle all other functions
         const serializedReturnObject = JSON.stringify(returnObject);
@@ -389,10 +397,10 @@ export class OpenAi {
           tool_call_id: toolCallId,
           content: serializedReturnObject,
         });
-        logger.info(
-          `Assistant called function: (${toolCallId}) ${f.definition.name} => ${JSON.stringify(returnObject, null, 2)}`,
-          1000
-        );
+        logger.info({
+          message: `Assistant called function: (${toolCallId}) ${f.definition.name}`,
+          obj: { toolCallId, functionName: f.definition.name, return: returnObject },
+        });
       }
 
       if (typeof returnObject === 'undefined') {
@@ -407,8 +415,11 @@ export class OpenAi {
 
       return returnObjectCompletionParams;
     } catch (error: any) {
-      const errorMessage = `Error occurred while executing function ${f.definition.name}: (${toolCallId}) ${error.message}`;
-      logger.error(errorMessage);
+      logger.error({
+        message: `An error occurred while executing function`,
+        error,
+        obj: { toolCallId, functionName: f.definition.name },
+      });
       throw error;
     }
   }

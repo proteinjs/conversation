@@ -1,4 +1,4 @@
-import { Logger } from '@proteinjs/util';
+import { Logger } from '@proteinjs/logger';
 import { FileDescriptor, Fs, PackageUtil } from '@proteinjs/util-node';
 import fs from 'fs/promises';
 import path from 'path';
@@ -24,7 +24,7 @@ export type RepoParams = {
 };
 
 export class Repo {
-  private logger = new Logger(this.constructor.name);
+  private logger = new Logger({ name: this.constructor.name });
   params: RepoParams;
 
   constructor(params: RepoParams) {
@@ -48,7 +48,7 @@ export class Repo {
   }
 
   searchFiles(params: { keyword: string }) {
-    this.logger.info(`Searching for file, keyword: ${params.keyword}`);
+    this.logger.info({ message: `Searching for file, keyword: ${params.keyword}` });
     const filePaths = this.keywordFilesIndex()[params.keyword];
     return filePaths || [];
   }
@@ -57,17 +57,17 @@ export class Repo {
     const queriedDeclarations: { [tsFilePath: string]: string } = {};
     for (const tsFilePath of params.tsFilePaths) {
       queriedDeclarations[tsFilePath] = this.params.tsFiles[tsFilePath].declaration;
-      this.logger.info(`Accessed declaration: ${tsFilePath}`);
+      this.logger.info({ message: `Accessed declaration: ${tsFilePath}` });
     }
     return queriedDeclarations;
   }
 }
 
 export class RepoFactory {
-  private static LOGGER = new Logger('RepoFactory');
+  private static LOGGER = new Logger({ name: 'RepoFactory' });
 
   public static async createRepo(dir: string): Promise<Repo> {
-    this.LOGGER.info(`Creating repo for dir: ${dir}`);
+    this.LOGGER.info({ message: `Creating repo for dir: ${dir}` });
     const repoParams: RepoParams = { packages: {}, slimPackages: {}, tsFiles: {}, keywordFilesIndex: {} };
 
     async function traverse(dir: string) {
@@ -106,13 +106,13 @@ export class RepoFactory {
       const { packageJSON, tsFiles, ...slimPackage } = repoParams.packages[packageName];
       repoParams.slimPackages[packageName] = slimPackage;
     });
-    this.LOGGER.info(`Created repo for dir: ${dir}`);
+    this.LOGGER.info({ message: `Created repo for dir: ${dir}` });
     return new Repo(repoParams);
   }
 
   private static async loadFiles(repoParams: RepoParams) {
     for (const packageName of Object.keys(repoParams.packages)) {
-      this.LOGGER.info(`Loading files for package: ${packageName}`);
+      this.LOGGER.info({ message: `Loading files for package: ${packageName}` });
       const dirPath = repoParams.packages[packageName].dirPath;
       if (dirPath) {
         repoParams.packages[packageName].fileDescriptors.push(
