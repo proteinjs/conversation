@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [1.7.4](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.7.3...@proteinjs/conversation@1.7.4) (2024-08-16)
+
+
+### Bug Fixes
+
+* refactored to implement new @proteinjs/logger/Logger api ([75f5744](https://github.com/proteinjs/conversation/commit/75f5744129c0798ef7a792b6bbe5463c4684e416))
+
+
+
+
+
 ## [1.7.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.7.2...@proteinjs/conversation@1.7.3) (2024-08-07)
 
 **Note:** Version bump only for package @proteinjs/conversation
