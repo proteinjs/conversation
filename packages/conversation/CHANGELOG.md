@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.0.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.7.5...@proteinjs/conversation@2.0.0) (2024-08-18)
+
+
+### Features
+
+* `OpenAi` now returns `UsageData` for `generateResponse` and `generateStreamingResponse` methods. ([c4f5488](https://github.com/proteinjs/conversation/commit/c4f54888949a3c64beda24a1735f6af2dbf7329d))
+
+
+### BREAKING CHANGES
+
+* converted `OpenAi` static methods to be instance methods. Also updated params to be a single object for most methods in `OpenAi` and `Conversation`.
+
+Made these changes to simplify the maintenance of `OpenAi` and also to simplify the code calling the api to not need order args (and pass in undefined often) with such a large number of optional parameters.
+
+
+
+
+
 ## [1.7.4](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.7.3...@proteinjs/conversation@1.7.4) (2024-08-16)
 
 
