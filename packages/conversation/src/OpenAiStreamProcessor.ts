@@ -2,6 +2,7 @@ import { ChatCompletionMessageToolCall, ChatCompletionChunk } from 'openai/resou
 import { LogLevel, Logger } from '@proteinjs/logger';
 import { Stream } from 'openai/streaming';
 import { Readable, Transform, TransformCallback, PassThrough } from 'stream';
+import { UsageData, UsageDataAccumulator } from './UsageData';
 
 export interface AssistantResponseStreamChunk {
   content?: string;
@@ -21,6 +22,7 @@ export class OpenAiStreamProcessor {
   private inputStream: Readable;
   private controlStream: Transform;
   private outputStream: Readable;
+  private outputStreamTerminated = false;
 
   constructor(
     inputStream: Stream<ChatCompletionChunk>,
@@ -28,8 +30,10 @@ export class OpenAiStreamProcessor {
       toolCalls: ChatCompletionMessageToolCall[],
       currentFunctionCalls: number
     ) => Promise<Readable>,
-    logLevel: LogLevel,
-    private abortSignal?: AbortSignal
+    private usageDataAccumulator: UsageDataAccumulator,
+    logLevel?: LogLevel,
+    private abortSignal?: AbortSignal,
+    private onUsageData?: (usageData: UsageData) => Promise<void>
   ) {
     this.logger = new Logger({ name: this.constructor.name, logLevel });
     this.inputStream = Readable.from(inputStream);
@@ -50,6 +54,7 @@ export class OpenAiStreamProcessor {
    * @returns a `Transform` that parses the input stream and delegates to tool calls or writes a text response to the user
    */
   private createControlStream(): Transform {
+    let finishedProcessingToolCallStream = false;
     return new Transform({
       objectMode: true,
       transform: (chunk: ChatCompletionChunk, encoding: string, callback: TransformCallback) => {
@@ -68,21 +73,35 @@ export class OpenAiStreamProcessor {
           } else if (chunk.choices[0]?.delta?.tool_calls) {
             this.handleToolCallDelta(chunk.choices[0].delta.tool_calls);
           } else if (chunk.choices[0]?.finish_reason === 'tool_calls') {
-            this.handleToolCalls();
+            finishedProcessingToolCallStream = true;
           } else if (chunk.choices[0]?.finish_reason === 'stop') {
             this.outputStream.push({ finishReason: 'stop' } as AssistantResponseStreamChunk);
             this.outputStream.push(null);
-            this.destroyStreams();
+            this.outputStreamTerminated = true;
           } else if (chunk.choices[0]?.finish_reason === 'length') {
             this.logger.info({ message: `The maximum number of output tokens was reached` });
             this.outputStream.push({ finishReason: 'length' } as AssistantResponseStreamChunk);
             this.outputStream.push(null);
-            this.destroyStreams();
+            this.outputStreamTerminated = true;
           } else if (chunk.choices[0]?.finish_reason === 'content_filter') {
             this.logger.warn({ message: `Content was omitted due to a flag from OpenAI's content filters` });
             this.outputStream.push({ finishReason: 'content_filter' } as AssistantResponseStreamChunk);
             this.outputStream.push(null);
-            this.destroyStreams();
+            this.outputStreamTerminated = true;
+          } else if (chunk.usage) {
+            this.usageDataAccumulator.addTokenUsage({
+              promptTokens: chunk.usage.prompt_tokens,
+              completionTokens: chunk.usage.completion_tokens,
+              totalTokens: chunk.usage.total_tokens,
+            });
+            if (finishedProcessingToolCallStream) {
+              this.handleToolCalls();
+            } else if (this.outputStreamTerminated) {
+              if (this.onUsageData) {
+                this.onUsageData(this.usageDataAccumulator.usageData);
+              }
+              this.destroyStreams();
+            }
           }
           callback();
         } catch (error: any) {

@@ -26,11 +26,14 @@ export class CodegenConversation {
     const conversation = await this.createConversation();
     conversation.addAssistantMessagesToHistory([CodegenConversation.INITIAL_QUESTION]);
     const initialUserInput = this.respondToUser(CodegenConversation.INITIAL_QUESTION);
-    let response = await conversation.generateResponse([initialUserInput], CodegenConversation.MODEL);
+    let responseObject = await conversation.generateResponse({
+      messages: [initialUserInput],
+      model: CodegenConversation.MODEL,
+    });
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const userInput = this.respondToUser(response);
-      response = await conversation.generateResponse([userInput], CodegenConversation.MODEL);
+      const userInput = this.respondToUser(responseObject.message);
+      responseObject = await conversation.generateResponse({ messages: [userInput], model: CodegenConversation.MODEL });
     }
   }
 

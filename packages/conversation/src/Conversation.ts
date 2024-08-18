@@ -8,6 +8,7 @@ import { MessageModerator } from './history/MessageModerator';
 import { ConversationModule } from './ConversationModule';
 import { TiktokenModel, encoding_for_model } from 'tiktoken';
 import { searchLibrariesFunctionName } from './fs/package/PackageFunctions';
+import { UsageData } from './UsageData';
 
 export type ConversationParams = {
   name: string;
@@ -135,23 +136,19 @@ export class Conversation {
     }
 
     const summarizeConversationRequest = `First, call the ${summarizeConversationHistoryFunctionName} function`;
-    await OpenAi.generateResponse(
-      [summarizeConversationRequest],
-      model,
-      this.history,
-      this.functions,
-      this.messageModerators,
-      this.params.logLevel
-    );
+    await new OpenAi({
+      history: this.history,
+      functions: this.functions,
+      messageModerators: this.messageModerators,
+      logLevel: this.params.logLevel,
+    }).generateResponse({ messages: [summarizeConversationRequest], model });
     const referenceSummaryRequest = `If there's a file mentioned in the conversation summary, find and read the file to better respond to my next request. If that doesn't find anything, call the ${searchLibrariesFunctionName} function on other keywords in the conversation summary to find a file to read`;
-    await OpenAi.generateResponse(
-      [referenceSummaryRequest],
-      model,
-      this.history,
-      this.functions,
-      this.messageModerators,
-      this.params.logLevel
-    );
+    await new OpenAi({
+      history: this.history,
+      functions: this.functions,
+      messageModerators: this.messageModerators,
+      logLevel: this.params.logLevel,
+    }).generateResponse({ messages: [referenceSummaryRequest], model });
   }
 
   summarizeConversationHistory(summary: string) {
@@ -197,57 +194,69 @@ export class Conversation {
     }
   }
 
-  async generateResponse(messages: (string | ChatCompletionMessageParam)[], model?: TiktokenModel) {
+  async generateResponse({
+    messages,
+    model,
+  }: {
+    messages: (string | ChatCompletionMessageParam)[];
+    model?: TiktokenModel;
+  }) {
     await this.enforceTokenLimit(messages, model);
-    return await OpenAi.generateResponse(
-      messages,
-      model,
-      this.history,
-      this.functions,
-      this.messageModerators,
-      this.params.logLevel
-    );
+    return await new OpenAi({
+      history: this.history,
+      functions: this.functions,
+      messageModerators: this.messageModerators,
+      logLevel: this.params.logLevel,
+    }).generateResponse({ messages, model });
   }
 
-  async generateStreamingResponse(
-    messages: (string | ChatCompletionMessageParam)[],
-    model?: TiktokenModel,
-    abortSignal?: AbortSignal
-  ) {
+  async generateStreamingResponse({
+    messages,
+    model,
+    ...rest
+  }: {
+    messages: (string | ChatCompletionMessageParam)[];
+    model?: TiktokenModel;
+    abortSignal?: AbortSignal;
+    onUsageData?: (usageData: UsageData) => Promise<void>;
+  }) {
     await this.enforceTokenLimit(messages, model);
-    return await OpenAi.generateStreamingResponse(
-      messages,
-      model,
-      this.history,
-      this.functions,
-      this.messageModerators,
-      abortSignal,
-      this.params.logLevel
-    );
+    return await new OpenAi({
+      history: this.history,
+      functions: this.functions,
+      messageModerators: this.messageModerators,
+      logLevel: this.params.logLevel,
+    }).generateStreamingResponse({ messages, model, ...rest });
   }
 
-  async generateCode(description: string[], model?: TiktokenModel) {
-    this.logger.info({ message: `Generating code for description:\n${description.join('\n')}` });
-    const code = await OpenAi.generateCode(
-      description,
+  async generateCode({ description, model }: { description: string[]; model?: TiktokenModel }) {
+    this.logger.debug({ message: `Generating code`, obj: { description } });
+    const code = await new OpenAi({
+      history: this.history,
+      functions: this.functions,
+      messageModerators: this.messageModerators,
+      logLevel: this.params.logLevel,
+    }).generateCode({
+      messages: description,
       model,
-      this.history,
-      this.functions,
-      this.messageModerators,
-      !this.generatedCode,
-      this.params.logLevel
-    );
-    this.logger.info({ message: `Generated code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}` });
+      includeSystemMessages: !this.generatedCode,
+    });
+    this.logger.debug({ message: `Generated code`, obj: { code } });
     this.generatedCode = true;
     return code;
   }
 
-  async updateCodeFromFile(
-    codeToUpdateFilePath: string,
-    dependencyCodeFilePaths: string[],
-    description: string,
-    model?: TiktokenModel
-  ) {
+  async updateCodeFromFile({
+    codeToUpdateFilePath,
+    dependencyCodeFilePaths,
+    description,
+    model,
+  }: {
+    codeToUpdateFilePath: string;
+    dependencyCodeFilePaths: string[];
+    description: string;
+    model?: TiktokenModel;
+  }) {
     const codeToUpdate = await Fs.readFile(codeToUpdateFilePath);
     let dependencyDescription = `Assume the following exists:\n`;
     for (const dependencyCodeFilePath of dependencyCodeFilePaths) {
@@ -255,41 +264,39 @@ export class Conversation {
       dependencyDescription += dependencCode + '\n\n';
     }
 
-    this.logger.info({ message: `Updating code from file: ${codeToUpdateFilePath}` });
-    return await this.updateCode(codeToUpdate, dependencyDescription + description, model);
+    this.logger.debug({ message: `Updating code from file`, obj: { codeToUpdateFilePath } });
+    return await this.updateCode({ code: codeToUpdate, description: dependencyDescription + description, model });
   }
 
-  async updateCode(code: string, description: string, model?: TiktokenModel) {
-    this.logger.info({
-      message: `Updating code:\n${code.slice(0, 150)}${code.length > 150 ? '...' : ''}\nFrom description: ${description}`,
-    });
-    const updatedCode = await OpenAi.updateCode(
+  async updateCode({ code, description, model }: { code: string; description: string; model?: TiktokenModel }) {
+    this.logger.debug({ message: `Updating code`, obj: { description, code } });
+    const updatedCode = await new OpenAi({
+      history: this.history,
+      functions: this.functions,
+      messageModerators: this.messageModerators,
+      logLevel: this.params.logLevel,
+    }).updateCode({
       code,
       description,
       model,
-      this.history,
-      this.functions,
-      this.messageModerators,
-      !this.generatedCode,
-      this.params.logLevel
-    );
-    this.logger.info({
-      message: `Updated code:\n${updatedCode.slice(0, 150)}${updatedCode.length > 150 ? '...' : ''}`,
+      includeSystemMessages: !this.generatedCode,
     });
+    this.logger.debug({ message: `Updated code`, obj: { updatedCode } });
     this.generatedCode = true;
     return updatedCode;
   }
 
-  async generateList(description: string[], model?: TiktokenModel) {
-    const list = await OpenAi.generateList(
-      description,
+  async generateList({ description, model }: { description: string[]; model?: TiktokenModel }) {
+    const list = await new OpenAi({
+      history: this.history,
+      functions: this.functions,
+      messageModerators: this.messageModerators,
+      logLevel: this.params.logLevel,
+    }).generateList({
+      messages: description,
       model,
-      this.history,
-      this.functions,
-      this.messageModerators,
-      !this.generatedList,
-      this.params.logLevel
-    );
+      includeSystemMessages: !this.generatedList,
+    });
     this.generatedList = true;
     return list;
   }

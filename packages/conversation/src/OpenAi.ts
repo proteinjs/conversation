@@ -15,75 +15,95 @@ import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamF
 import { Stream } from 'openai/streaming';
 import { Readable } from 'stream';
 import { OpenAiStreamProcessor } from './OpenAiStreamProcessor';
+import { UsageData, UsageDataAccumulator } from './UsageData';
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export type GenerateResponseParams = {
+  messages: (string | ChatCompletionMessageParam)[];
+  model?: TiktokenModel;
+};
+
+export type GenerateResponseReturn = {
+  message: string;
+  usagedata: UsageData;
+};
+
+export type GenerateStreamingResponseParams = GenerateResponseParams & {
+  abortSignal?: AbortSignal;
+  onUsageData?: (usageData: UsageData) => Promise<void>;
+};
+
+type GenerateResponseHelperParams = GenerateStreamingResponseParams & {
+  model: TiktokenModel;
+  stream: boolean;
+  currentFunctionCalls?: number;
+  usageDataAccumulator?: UsageDataAccumulator;
+};
+
+export type OpenAiParams = {
+  model?: TiktokenModel;
+  history?: MessageHistory;
+  functions?: Omit<Function, 'instructions'>[];
+  messageModerators?: MessageModerator[];
+  maxFunctionCalls?: number;
+  logLevel?: LogLevel;
+};
+
 export const DEFAULT_MODEL: TiktokenModel = 'gpt-3.5-turbo';
+export const DEFAULT_MAX_FUNCTION_CALLS = 50;
+
 export class OpenAi {
-  static async generateResponse(
-    messages: (string | ChatCompletionMessageParam)[],
-    model?: string,
-    history?: MessageHistory,
-    functions?: Omit<Function, 'instructions'>[],
-    messageModerators?: MessageModerator[],
-    logLevel: LogLevel = 'info',
-    maxFunctionCalls: number = 50
-  ): Promise<string> {
-    return (await this.generateResponseHelper(
-      messages,
-      false,
-      0,
-      model,
-      history,
-      functions,
-      messageModerators,
-      undefined,
-      logLevel,
-      maxFunctionCalls
-    )) as string;
+  private model: TiktokenModel;
+  private history: MessageHistory;
+  private functions?: Omit<Function, 'instructions'>[];
+  private messageModerators?: MessageModerator[];
+  private maxFunctionCalls: number;
+  private logLevel?: LogLevel;
+
+  constructor({
+    model = DEFAULT_MODEL,
+    history = new MessageHistory(),
+    functions,
+    messageModerators,
+    maxFunctionCalls = DEFAULT_MAX_FUNCTION_CALLS,
+    logLevel,
+  }: OpenAiParams = {}) {
+    this.model = model;
+    this.history = history;
+    this.functions = functions;
+    this.messageModerators = messageModerators;
+    this.maxFunctionCalls = maxFunctionCalls;
+    this.logLevel = logLevel;
   }
 
-  static async generateStreamingResponse(
-    messages: (string | ChatCompletionMessageParam)[],
-    model?: string,
-    history?: MessageHistory,
-    functions?: Omit<Function, 'instructions'>[],
-    messageModerators?: MessageModerator[],
-    abortSignal?: AbortSignal,
-    logLevel: LogLevel = 'info',
-    maxFunctionCalls: number = 50
-  ): Promise<Readable> {
-    return (await this.generateResponseHelper(
-      messages,
-      true,
-      0,
-      model,
-      history,
-      functions,
-      messageModerators,
-      abortSignal,
-      logLevel,
-      maxFunctionCalls
-    )) as Readable;
+  async generateResponse({ model, ...rest }: GenerateResponseParams): Promise<GenerateResponseReturn> {
+    return (await this.generateResponseHelper({
+      model: model ?? this.model,
+      stream: false,
+      ...rest,
+    })) as GenerateResponseReturn;
   }
 
-  static async generateResponseHelper(
-    messages: (string | ChatCompletionMessageParam)[],
-    stream: boolean,
-    currentFunctionCalls: number,
-    model?: string,
-    history?: MessageHistory,
-    functions?: Omit<Function, 'instructions'>[],
-    messageModerators?: MessageModerator[],
-    abortSignal?: AbortSignal,
-    logLevel: LogLevel = 'info',
-    maxFunctionCalls: number = 50
-  ): Promise<string | Readable> {
-    const logger = new Logger({ name: 'OpenAi.generateResponseHelper', logLevel });
-    const updatedHistory = OpenAi.getUpdatedMessageHistory(messages, history, messageModerators);
-    const response = await OpenAi.executeRequest(updatedHistory, stream, logLevel, functions, model, abortSignal);
+  async generateStreamingResponse({ model, ...rest }: GenerateStreamingResponseParams): Promise<Readable> {
+    return (await this.generateResponseHelper({ model: model ?? this.model, stream: true, ...rest })) as Readable;
+  }
+
+  private async generateResponseHelper({
+    messages,
+    model,
+    stream,
+    abortSignal,
+    onUsageData,
+    usageDataAccumulator,
+    currentFunctionCalls = 0,
+  }: GenerateResponseHelperParams): Promise<GenerateResponseReturn | Readable> {
+    const logger = new Logger({ name: 'OpenAi.generateResponseHelper', logLevel: this.logLevel });
+    this.updateMessageHistory(messages);
+    const resolvedUsageDataAccumulator = usageDataAccumulator ?? new UsageDataAccumulator({ model });
+    const response = await this.executeRequest(model, stream, resolvedUsageDataAccumulator, abortSignal);
     if (stream) {
       logger.info({ message: `Processing response stream` });
       const inputStream = response as Stream<ChatCompletionChunk>;
@@ -95,35 +115,36 @@ export class OpenAi {
 
       // For the initial call to `generateResponseHelper`, return the `OpenAiStreamProcessor` output stream
       const onToolCalls = ((toolCalls, currentFunctionCalls) =>
-        OpenAi.handleToolCalls(
+        this.handleToolCalls(
           toolCalls,
-          true,
-          currentFunctionCalls,
-          updatedHistory,
           model,
-          functions,
-          messageModerators,
+          stream,
+          currentFunctionCalls,
+          resolvedUsageDataAccumulator,
           abortSignal,
-          logLevel,
-          maxFunctionCalls
+          onUsageData
         )) as (toolCalls: ChatCompletionMessageToolCall[], currentFunctionCalls: number) => Promise<Readable>;
-      const streamProcessor = new OpenAiStreamProcessor(inputStream, onToolCalls, logLevel, abortSignal);
+      const streamProcessor = new OpenAiStreamProcessor(
+        inputStream,
+        onToolCalls,
+        resolvedUsageDataAccumulator,
+        this.logLevel,
+        abortSignal,
+        onUsageData
+      );
       return streamProcessor.getOutputStream();
     }
 
     const responseMessage = (response as ChatCompletion).choices[0].message;
     if (responseMessage.tool_calls) {
-      return await OpenAi.handleToolCalls(
+      return await this.handleToolCalls(
         responseMessage.tool_calls,
+        model,
         stream,
         currentFunctionCalls,
-        updatedHistory,
-        model,
-        functions,
-        messageModerators,
+        resolvedUsageDataAccumulator,
         abortSignal,
-        logLevel,
-        maxFunctionCalls
+        onUsageData
       );
     }
 
@@ -132,15 +153,11 @@ export class OpenAi {
       throw new Error(`Response was empty for messages: ${messages.join('\n')}`);
     }
 
-    updatedHistory.push([responseMessage]);
-    return responseText;
+    this.history.push([responseMessage]);
+    return { message: responseText, usagedata: resolvedUsageDataAccumulator.usageData };
   }
 
-  private static getUpdatedMessageHistory(
-    messages: (string | ChatCompletionMessageParam)[],
-    history?: MessageHistory,
-    messageModerators?: MessageModerator[]
-  ) {
+  private updateMessageHistory(messages: (string | ChatCompletionMessageParam)[]) {
     const messageParams: ChatCompletionMessageParam[] = messages.map((message) => {
       if (typeof message === 'string') {
         return { role: 'user', content: message };
@@ -148,69 +165,56 @@ export class OpenAi {
 
       return message;
     });
-    if (history) {
-      history.push(messageParams);
+    this.history.push(messageParams);
+    if (this.messageModerators) {
+      this.moderateHistory(this.history, this.messageModerators);
     }
-    let messageParamsWithHistory = history ? history : new MessageHistory().push(messageParams);
-    if (messageModerators) {
-      messageParamsWithHistory = OpenAi.moderateHistory(messageParamsWithHistory, messageModerators);
-    }
-
-    return messageParamsWithHistory;
   }
 
-  private static moderateHistory(history: MessageHistory, messageModerators: MessageModerator[]) {
+  private moderateHistory(history: MessageHistory, messageModerators: MessageModerator[]) {
     for (const messageModerator of messageModerators) {
       history.setMessages(messageModerator.observe(history.getMessages()));
     }
-
-    return history;
   }
 
-  private static async executeRequest(
-    messageParamsWithHistory: MessageHistory,
+  private async executeRequest(
+    model: TiktokenModel,
     stream: boolean,
-    logLevel: LogLevel,
-    functions?: Omit<Function, 'instructions'>[],
-    model?: string,
+    usageDataAccumulator: UsageDataAccumulator,
     abortSignal?: AbortSignal
   ): Promise<ChatCompletion | Stream<ChatCompletionChunk>> {
-    const logger = new Logger({ name: 'OpenAi.executeRequest', logLevel });
+    const logger = new Logger({ name: 'OpenAi.executeRequest', logLevel: this.logLevel });
     const openaiApi = new OpenAIApi();
     try {
-      const latestMessage = messageParamsWithHistory.getMessages()[messageParamsWithHistory.getMessages().length - 1];
-      this.logRequestDetails(logger, logLevel, latestMessage, messageParamsWithHistory);
+      const latestMessage = this.history.getMessages()[this.history.getMessages().length - 1];
+      this.logRequestDetails(logger, latestMessage);
 
       const response = await openaiApi.chat.completions.create(
         {
-          model: model ? model : DEFAULT_MODEL,
+          model,
           temperature: 0,
-          messages: messageParamsWithHistory.getMessages(),
-          tools: functions?.map((f) => ({
+          messages: this.history.getMessages(),
+          tools: this.functions?.map((f) => ({
             type: 'function',
             function: f.definition,
           })),
           stream: stream,
+          ...(stream && { stream_options: { include_usage: true } }),
         },
         { signal: abortSignal }
       );
 
       if (!stream) {
-        this.logResponseDetails(logger, response as ChatCompletion);
+        this.logResponseDetails(logger, response as ChatCompletion, usageDataAccumulator);
       }
 
       return response;
     } catch (error: any) {
-      return this.handleRequestError(logger, error, messageParamsWithHistory, stream, logLevel, functions, model);
+      return this.handleRequestError(model, logger, error, stream, usageDataAccumulator, abortSignal);
     }
   }
 
-  private static logRequestDetails(
-    logger: Logger,
-    logLevel: LogLevel,
-    latestMessage: ChatCompletionMessageParam,
-    messageParamsWithHistory: MessageHistory
-  ) {
+  private logRequestDetails(logger: Logger, latestMessage: ChatCompletionMessageParam) {
     if (latestMessage.role == 'tool') {
       logger.info({ message: `Sending request: returning output of tool call (${latestMessage.tool_call_id})` });
     } else if (latestMessage.content) {
@@ -225,12 +229,10 @@ export class OpenAi {
       logger.info({ message: `Sending request` });
     }
 
-    if (logLevel === 'debug') {
-      logger.debug({ message: `Sending messages:`, obj: { messages: messageParamsWithHistory.getMessages() } });
-    }
+    logger.debug({ message: `Sending messages:`, obj: { messages: this.history.getMessages() } });
   }
 
-  private static logResponseDetails(logger: Logger, response: ChatCompletion) {
+  private logResponseDetails(logger: Logger, response: ChatCompletion, usageDataAccumulator: UsageDataAccumulator) {
     const responseMessage = response.choices[0].message;
     if (responseMessage.content) {
       logger.info({ message: `Received response`, obj: { response: responseMessage.content } });
@@ -244,19 +246,23 @@ export class OpenAi {
     }
     if (response.usage) {
       logger.info({ message: `Usage data`, obj: { usageData: response.usage } });
+      usageDataAccumulator.addTokenUsage({
+        promptTokens: response.usage.prompt_tokens,
+        completionTokens: response.usage.completion_tokens,
+        totalTokens: response.usage.total_tokens,
+      });
     } else {
       logger.info({ message: `Usage data missing` });
     }
   }
 
-  private static async handleRequestError(
+  private async handleRequestError(
+    model: TiktokenModel,
     logger: Logger,
     error: any,
-    messageParamsWithHistory: MessageHistory,
     stream: boolean,
-    logLevel: LogLevel,
-    functions?: Omit<Function, 'instructions'>[],
-    model?: string
+    usageDataAccumulator: UsageDataAccumulator,
+    abortSignal?: AbortSignal
   ): Promise<ChatCompletion | Stream<ChatCompletionChunk>> {
     if (error.type) {
       logger.info({ message: `Received error response, error type: ${error.type}` });
@@ -267,29 +273,27 @@ export class OpenAi {
         const remainingTokens = error.headers['x-ratelimit-remaining-tokens'];
         const delayMs = 15000;
         logger.warn({
-          message: `Waiting to retry in ${delayMs / 1000}s, token reset in: ${waitTime}s, remaining tokens: ${remainingTokens}`,
+          message: `Waiting to retry due to throttling`,
+          obj: { retryDelay: `${delayMs / 1000}s`, tokenResetWaitTime: `${waitTime}s`, remainingTokens },
         });
         await delay(delayMs);
-        return await OpenAi.executeRequest(messageParamsWithHistory, stream, logLevel, functions, model);
+        return await this.executeRequest(model, stream, usageDataAccumulator, abortSignal);
       }
     }
     throw error;
   }
 
-  private static async handleToolCalls(
+  private async handleToolCalls(
     toolCalls: ChatCompletionMessageToolCall[],
+    model: TiktokenModel,
     stream: boolean,
     currentFunctionCalls: number,
-    history: MessageHistory,
-    model?: string,
-    functions?: Omit<Function, 'instructions'>[],
-    messageModerators?: MessageModerator[],
+    usageDataAccumulator: UsageDataAccumulator,
     abortSignal?: AbortSignal,
-    logLevel: LogLevel = 'info',
-    maxFunctionCalls: number = 50
-  ): Promise<string | Readable> {
-    if (currentFunctionCalls >= maxFunctionCalls) {
-      throw new Error(`Max function calls (${maxFunctionCalls}) reached. Stopping execution.`);
+    onUsageData?: (usageData: UsageData) => Promise<void>
+  ): Promise<GenerateResponseReturn | Readable> {
+    if (currentFunctionCalls >= this.maxFunctionCalls) {
+      throw new Error(`Max function calls (${this.maxFunctionCalls}) reached. Stopping execution.`);
     }
 
     // Create a message for the tool calls
@@ -300,60 +304,53 @@ export class OpenAi {
     };
 
     // Add the tool call message to the history
-    history.push([toolCallMessage]);
+    this.history.push([toolCallMessage]);
 
     // Call the tools and get the responses
-    const toolMessageParams = await this.callTools(logLevel, toolCalls, functions);
+    const toolMessageParams = await this.callTools(toolCalls, usageDataAccumulator);
 
     // Add the tool responses to the history
-    history.push(toolMessageParams);
+    this.history.push(toolMessageParams);
 
     // Generate the next response
-    return this.generateResponseHelper(
-      [],
-      stream,
-      currentFunctionCalls + toolCalls.length,
+    return this.generateResponseHelper({
+      messages: [],
       model,
-      history,
-      functions,
-      messageModerators,
+      stream,
       abortSignal,
-      logLevel,
-      maxFunctionCalls
-    );
+      onUsageData,
+      usageDataAccumulator,
+      currentFunctionCalls: currentFunctionCalls + toolCalls.length,
+    });
   }
 
-  private static async callTools(
-    logLevel: LogLevel,
+  private async callTools(
     toolCalls: ChatCompletionMessageToolCall[],
-    functions?: Omit<Function, 'instructions'>[]
+    usageDataAccumulator: UsageDataAccumulator
   ): Promise<ChatCompletionMessageParam[]> {
     const toolMessageParams: ChatCompletionMessageParam[] = (
       await Promise.all(
-        toolCalls.map(
-          async (toolCall) => await OpenAi.callFunction(logLevel, toolCall.function, toolCall.id, functions)
-        )
+        toolCalls.map(async (toolCall) => await this.callFunction(toolCall.function, toolCall.id, usageDataAccumulator))
       )
     ).reduce((acc, val) => acc.concat(val), []);
 
     return toolMessageParams;
   }
 
-  private static async callFunction(
-    logLevel: LogLevel,
+  private async callFunction(
     functionCall: ChatCompletionMessageToolCall.Function,
     toolCallId: string,
-    functions?: Omit<Function, 'instructions'>[]
+    usageDataAccumulator: UsageDataAccumulator
   ): Promise<ChatCompletionMessageParam[]> {
-    const logger = new Logger({ name: 'OpenAi.callFunction', logLevel });
-    if (!functions) {
+    const logger = new Logger({ name: 'OpenAi.callFunction', logLevel: this.logLevel });
+    if (!this.functions) {
       const errorMessage = `Assistant attempted to call a function when no functions were provided`;
       logger.error({ message: errorMessage });
       return [{ role: 'tool', tool_call_id: toolCallId, content: JSON.stringify({ error: errorMessage }) }];
     }
 
     functionCall.name = functionCall.name.split('.').pop() as string;
-    const f = functions.find((f) => f.definition.name === functionCall.name);
+    const f = this.functions.find((f) => f.definition.name === functionCall.name);
     if (!f) {
       const errorMessage = `Assistant attempted to call nonexistent function`;
       logger.error({ message: errorMessage, obj: { functionName: functionCall.name } });
@@ -372,6 +369,7 @@ export class OpenAi {
         message: `Assistant calling function: (${toolCallId}) ${f.definition.name}`,
         obj: { toolCallId, functionName: f.definition.name, args: parsedArguments },
       });
+      usageDataAccumulator.recordToolCall(f.definition.name);
       const returnObject = await f.call(parsedArguments);
 
       const returnObjectCompletionParams: ChatCompletionMessageParam[] = [];
@@ -424,15 +422,15 @@ export class OpenAi {
     }
   }
 
-  static async generateCode(
-    messages: (string | ChatCompletionMessageParam)[],
-    model?: string,
-    history?: MessageHistory,
-    functions?: Omit<Function, 'instructions'>[],
-    messageModerators?: MessageModerator[],
-    includeSystemMessages: boolean = true,
-    logLevel: LogLevel = 'info'
-  ) {
+  async generateCode({
+    messages,
+    model,
+    includeSystemMessages = true,
+  }: {
+    messages: (string | ChatCompletionMessageParam)[];
+    model?: TiktokenModel;
+    includeSystemMessages?: boolean;
+  }) {
     const systemMessages: ChatCompletionMessageParam[] = [
       {
         role: 'system',
@@ -443,36 +441,29 @@ export class OpenAi {
       { role: 'system', content: 'Export all functions and objects generated.' },
       { role: 'system', content: 'Do not omit function implementations.' },
     ];
-    const resolvedHistory = history
-      ? includeSystemMessages
-        ? history.push(systemMessages)
-        : history
-      : includeSystemMessages
-        ? new MessageHistory().push(systemMessages)
-        : undefined;
-    const code = await this.generateResponse(messages, model, resolvedHistory, functions, messageModerators, logLevel);
-    return this.parseCodeFromMarkdown(code);
+    if (includeSystemMessages) {
+      this.history.push(systemMessages);
+    }
+    const { message } = await this.generateResponse({ messages, model });
+    return OpenAi.parseCodeFromMarkdown(message);
   }
 
-  static async updateCode(
-    code: string,
-    description: string,
-    model?: string,
-    history?: MessageHistory,
-    functions?: Omit<Function, 'instructions'>[],
-    messageModerators?: MessageModerator[],
-    includeSystemMessages: boolean = true,
-    logLevel: LogLevel = 'info'
-  ) {
-    return await this.generateCode(
-      [this.updateCodeDescription(code, description)],
+  async updateCode({
+    code,
+    description,
+    model,
+    includeSystemMessages = true,
+  }: {
+    code: string;
+    description: string;
+    model?: TiktokenModel;
+    includeSystemMessages?: boolean;
+  }) {
+    return await this.generateCode({
+      messages: [OpenAi.updateCodeDescription(code, description)],
       model,
-      history,
-      functions,
-      messageModerators,
       includeSystemMessages,
-      logLevel
-    );
+    });
   }
 
   static updateCodeDescription(code: string, description: string) {
@@ -508,15 +499,15 @@ export class OpenAi {
     return filteredLines.join('\n');
   }
 
-  static async generateList(
-    messages: (string | ChatCompletionMessageParam)[],
-    model?: string,
-    history?: MessageHistory,
-    functions?: Omit<Function, 'instructions'>[],
-    messageModerators?: MessageModerator[],
-    includeSystemMessages: boolean = true,
-    logLevel: LogLevel = 'info'
-  ): Promise<string[]> {
+  async generateList({
+    messages,
+    model,
+    includeSystemMessages = true,
+  }: {
+    messages: (string | ChatCompletionMessageParam)[];
+    model?: TiktokenModel;
+    includeSystemMessages?: boolean;
+  }): Promise<string[]> {
     const systemMessages: ChatCompletionMessageParam[] = [
       {
         role: 'system',
@@ -524,14 +515,10 @@ export class OpenAi {
       },
       { role: 'system', content: 'Separate each item in the list by a ;' },
     ];
-    const resolvedHistory = history
-      ? includeSystemMessages
-        ? history.push(systemMessages)
-        : history
-      : includeSystemMessages
-        ? new MessageHistory().push(systemMessages)
-        : undefined;
-    const list = await this.generateResponse(messages, model, resolvedHistory, functions, messageModerators, logLevel);
-    return list.split(';').map((item) => item.trim());
+    if (includeSystemMessages) {
+      this.history.push(systemMessages);
+    }
+    const { message } = await this.generateResponse({ messages, model });
+    return message.split(';').map((item) => item.trim());
   }
 }
