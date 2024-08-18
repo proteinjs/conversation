@@ -4,7 +4,7 @@ export type TokenUsage = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-}
+};
 
 /**
  * Usage data accumulated throughout the lifecycle of a single call to
