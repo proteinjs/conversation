@@ -194,10 +194,13 @@ export class OpenAi {
           model,
           temperature: 0,
           messages: this.history.getMessages(),
-          tools: this.functions?.map((f) => ({
-            type: 'function',
-            function: f.definition,
-          })),
+          ...(this.functions &&
+            this.functions.length > 0 && {
+              tools: this.functions.map((f) => ({
+                type: 'function',
+                function: f.definition,
+              })),
+            }),
           stream: stream,
           ...(stream && { stream_options: { include_usage: true } }),
         },
@@ -520,5 +523,41 @@ export class OpenAi {
     }
     const { message } = await this.generateResponse({ messages, model });
     return message.split(';').map((item) => item.trim());
+  }
+
+  /**
+   * Generates a concise response based on the given context and request.
+   * This method is designed to produce brief, focused answers without any
+   * conversational elements or additional explanations.
+   *
+   * @param context - The background information or context for the request.
+   * @param request - The specific question or task to be addressed.
+   * @param model - Optional. The specific model to use for generating the response. If not provided, the default model set for the class instance will be used.
+   *
+   */
+  async generateConciseAnswer({
+    context,
+    request,
+    model,
+  }: {
+    context: string;
+    request: string;
+    model?: TiktokenModel;
+  }): Promise<string> {
+    const systemMessages: ChatCompletionMessageParam[] = [
+      { role: 'system', content: `Context: ${context}\n\nRequest: ${request}` },
+      {
+        role: 'system',
+        content:
+          'Provide only the requested information without any additional explanation or conversational elements.',
+      },
+    ];
+
+    const { message } = await this.generateResponse({
+      messages: systemMessages,
+      model: model || this.model,
+    });
+
+    return message.trim();
   }
 }
