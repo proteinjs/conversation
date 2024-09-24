@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.0.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.0.1...@proteinjs/conversation@2.0.2) (2024-09-24)
+
+
+### Bug Fixes
+
+* omit tools param in executeRequest if functions array doesn't exist or is empty ([9c0f15c](https://github.com/proteinjs/conversation/commit/9c0f15c3450edfeb62db3f7285f1469bcacd00aa))
+
+
+
+
+
 # [2.0.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@1.7.5...@proteinjs/conversation@2.0.0) (2024-08-18)
 
 
