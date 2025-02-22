@@ -91,6 +91,7 @@ export class OpenAiStreamProcessor {
           } else if (chunk.usage) {
             this.usageDataAccumulator.addTokenUsage({
               promptTokens: chunk.usage.prompt_tokens,
+              cachedPromptTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
               completionTokens: chunk.usage.completion_tokens,
               totalTokens: chunk.usage.total_tokens,
             });

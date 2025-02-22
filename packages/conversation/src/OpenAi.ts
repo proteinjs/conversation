@@ -16,6 +16,7 @@ import { Stream } from 'openai/streaming';
 import { Readable } from 'stream';
 import { OpenAiStreamProcessor } from './OpenAiStreamProcessor';
 import { UsageData, UsageDataAccumulator } from './UsageData';
+import { UsageDataAccumulatorContext } from './UsageDataContext';
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -102,59 +103,74 @@ export class OpenAi {
   }: GenerateResponseHelperParams): Promise<GenerateResponseReturn | Readable> {
     const logger = new Logger({ name: 'OpenAi.generateResponseHelper', logLevel: this.logLevel });
     this.updateMessageHistory(messages);
-    const resolvedUsageDataAccumulator = usageDataAccumulator ?? new UsageDataAccumulator({ model });
-    const response = await this.executeRequest(model, stream, resolvedUsageDataAccumulator, abortSignal);
-    if (stream) {
-      logger.info({ message: `Processing response stream` });
-      const inputStream = response as Stream<ChatCompletionChunk>;
 
-      // For subsequent tool calls, return the raw OpenAI stream to `OpenAiStreamProcessor`
-      if (currentFunctionCalls > 0) {
-        return Readable.from(inputStream);
+    const context = new UsageDataAccumulatorContext();
+    const contextDataUsageAccumulator = context.getUsageDataAccumulator(model);
+    const resolvedUsageDataAccumulator =
+      usageDataAccumulator ?? contextDataUsageAccumulator ?? new UsageDataAccumulator({ model });
+    const executeInContext = !contextDataUsageAccumulator;
+
+    const execute = async () => {
+      const response = await this.executeRequest(model, stream, resolvedUsageDataAccumulator, abortSignal);
+      if (stream) {
+        logger.info({ message: `Processing response stream` });
+        const inputStream = response as Stream<ChatCompletionChunk>;
+
+        // For subsequent tool calls, return the raw OpenAI stream to `OpenAiStreamProcessor`
+        if (currentFunctionCalls > 0) {
+          return Readable.from(inputStream);
+        }
+
+        // For the initial call to `generateResponseHelper`, return the `OpenAiStreamProcessor` output stream
+        const onToolCalls = ((toolCalls, currentFunctionCalls) =>
+          this.handleToolCalls(
+            toolCalls,
+            model,
+            stream,
+            currentFunctionCalls,
+            resolvedUsageDataAccumulator,
+            abortSignal,
+            onUsageData
+          )) as (toolCalls: ChatCompletionMessageToolCall[], currentFunctionCalls: number) => Promise<Readable>;
+        const streamProcessor = new OpenAiStreamProcessor(
+          inputStream,
+          onToolCalls,
+          resolvedUsageDataAccumulator,
+          this.logLevel,
+          abortSignal,
+          onUsageData
+        );
+        return streamProcessor.getOutputStream();
       }
 
-      // For the initial call to `generateResponseHelper`, return the `OpenAiStreamProcessor` output stream
-      const onToolCalls = ((toolCalls, currentFunctionCalls) =>
-        this.handleToolCalls(
-          toolCalls,
+      const responseMessage = (response as ChatCompletion).choices[0].message;
+      if (responseMessage.tool_calls) {
+        return await this.handleToolCalls(
+          responseMessage.tool_calls,
           model,
           stream,
           currentFunctionCalls,
           resolvedUsageDataAccumulator,
           abortSignal,
           onUsageData
-        )) as (toolCalls: ChatCompletionMessageToolCall[], currentFunctionCalls: number) => Promise<Readable>;
-      const streamProcessor = new OpenAiStreamProcessor(
-        inputStream,
-        onToolCalls,
-        resolvedUsageDataAccumulator,
-        this.logLevel,
-        abortSignal,
-        onUsageData
-      );
-      return streamProcessor.getOutputStream();
+        );
+      }
+
+      const responseText = responseMessage.content;
+      if (!responseText) {
+        throw new Error(`Response was empty for messages: ${messages.join('\n')}`);
+      }
+
+      this.history.push([responseMessage]);
+      return { message: responseText, usagedata: resolvedUsageDataAccumulator.usageData };
+    };
+
+    // Only wrap in context if this is the first call
+    if (executeInContext) {
+      return context.runInContext(resolvedUsageDataAccumulator, execute);
     }
 
-    const responseMessage = (response as ChatCompletion).choices[0].message;
-    if (responseMessage.tool_calls) {
-      return await this.handleToolCalls(
-        responseMessage.tool_calls,
-        model,
-        stream,
-        currentFunctionCalls,
-        resolvedUsageDataAccumulator,
-        abortSignal,
-        onUsageData
-      );
-    }
-
-    const responseText = responseMessage.content;
-    if (!responseText) {
-      throw new Error(`Response was empty for messages: ${messages.join('\n')}`);
-    }
-
-    this.history.push([responseMessage]);
-    return { message: responseText, usagedata: resolvedUsageDataAccumulator.usageData };
+    return execute();
   }
 
   private updateMessageHistory(messages: (string | ChatCompletionMessageParam)[]) {
@@ -251,6 +267,7 @@ export class OpenAi {
       logger.info({ message: `Usage data`, obj: { usageData: response.usage } });
       usageDataAccumulator.addTokenUsage({
         promptTokens: response.usage.prompt_tokens,
+        cachedPromptTokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0,
         completionTokens: response.usage.completion_tokens,
         totalTokens: response.usage.total_tokens,
       });
