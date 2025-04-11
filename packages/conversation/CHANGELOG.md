@@ -3,6 +3,14 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.0.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.0.2...@proteinjs/conversation@2.0.3) (2025-04-11)
+
+**Note:** Version bump only for package @proteinjs/conversation
+
+
+
+
+
 ## [2.0.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.0.1...@proteinjs/conversation@2.0.2) (2024-09-24)
 
 
