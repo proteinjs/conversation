@@ -65,6 +65,7 @@ export class ConversationFsModerator implements MessageModerator {
     this.logger = new Logger({ name: this.constructor.name, logLevel: this.logLevel });
   }
 
+  /** Only compatible with message content of type string. */
   observe(messages: ChatCompletionMessageParam[]): ChatCompletionMessageParam[] {
     let conversationFileSystemMessageIndex: number = -1;
     let conversationFileSystem: ConversationFs | undefined;
@@ -76,7 +77,9 @@ export class ConversationFsModerator implements MessageModerator {
       if (message.role == 'system' && message.content) {
         let parsedContent: any;
         try {
-          parsedContent = JSON.parse(message.content);
+          if (typeof message.content === 'string') {
+            parsedContent = JSON.parse(message.content);
+          }
         } catch (error) {}
         if (!parsedContent || !parsedContent['fileSystem']) {
           continue;
