@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.0.4...@proteinjs/conversation@2.1.0) (2025-04-21)
+
+
+### Features
+
+* `ConversationModule.getSystemMessages` may now optionally return a promise ([fa676b4](https://github.com/proteinjs/conversation/commit/fa676b4a09536552378c8282178f00a3b1a8d6f8))
+
+
+
+
+
 ## [2.0.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.0.2...@proteinjs/conversation@2.0.3) (2025-04-11)
 
 **Note:** Version bump only for package @proteinjs/conversation
