@@ -31,6 +31,8 @@ export class Conversation {
   private generatedList = false;
   private logger: Logger;
   private params: ConversationParams;
+  private modulesProcessed = false;
+  private processingModulesPromise: Promise<void> | null = null;
 
   constructor(params: ConversationParams) {
     this.params = params;
@@ -39,10 +41,6 @@ export class Conversation {
       enforceMessageLimit: params.limits?.enforceLimits,
     });
     this.logger = new Logger({ name: params.name, logLevel: params.logLevel });
-
-    if (params.modules) {
-      this.addModules(params.modules);
-    }
 
     if (typeof params.limits?.enforceLimits === 'undefined' || params.limits.enforceLimits) {
       this.addFunctions('Conversation', [summarizeConversationHistoryFunction(this)]);
@@ -53,19 +51,58 @@ export class Conversation {
     }
   }
 
-  private addModules(modules: ConversationModule[]) {
-    for (const module of modules) {
-      if (module.getSystemMessages().length < 1) {
+  private async ensureModulesProcessed(): Promise<void> {
+    // If modules are already processed, return immediately
+    if (this.modulesProcessed) {
+      return;
+    }
+
+    // If modules are currently being processed, wait for that to complete
+    if (this.processingModulesPromise) {
+      return this.processingModulesPromise;
+    }
+
+    // Start processing modules and keep a reference to the promise
+    this.processingModulesPromise = this.processModules();
+
+    try {
+      await this.processingModulesPromise;
+      this.modulesProcessed = true;
+    } catch (error) {
+      this.logger.error({ message: 'Error processing modules', obj: { error } });
+      // Reset the promise so we can try again
+      this.processingModulesPromise = null;
+      throw error;
+    }
+  }
+
+  private async processModules(): Promise<void> {
+    if (!this.params.modules || this.params.modules.length === 0) {
+      return;
+    }
+
+    for (const module of this.params.modules) {
+      // Get system messages and handle potential Promise
+      const moduleSystemMessagesResult = module.getSystemMessages();
+      let moduleSystemMessages: string[] | string;
+
+      // Check if the result is a Promise and await it if needed
+      if (moduleSystemMessagesResult instanceof Promise) {
+        moduleSystemMessages = await moduleSystemMessagesResult;
+      } else {
+        moduleSystemMessages = moduleSystemMessagesResult;
+      }
+
+      if (!moduleSystemMessages || (Array.isArray(moduleSystemMessages) && moduleSystemMessages.length < 1)) {
         continue;
       }
 
-      const moduleSystemMessages = module.getSystemMessages();
       const formattedSystemMessages = Array.isArray(moduleSystemMessages)
         ? moduleSystemMessages.join('. ')
         : moduleSystemMessages;
 
       this.addSystemMessagesToHistory([
-        `The following are instructions from the ${module.getName()} module: ${formattedSystemMessages}`,
+        `The following are instructions from the ${module.getName()} module:\n${formattedSystemMessages}`,
       ]);
       this.addFunctions(module.getName(), module.getFunctions());
       this.addMessageModerators(module.getMessageModerators());
@@ -201,6 +238,7 @@ export class Conversation {
     messages: (string | ChatCompletionMessageParam)[];
     model?: TiktokenModel;
   }) {
+    await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
     return await new OpenAi({
       history: this.history,
@@ -220,6 +258,7 @@ export class Conversation {
     abortSignal?: AbortSignal;
     onUsageData?: (usageData: UsageData) => Promise<void>;
   }) {
+    await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
     return await new OpenAi({
       history: this.history,
@@ -231,6 +270,7 @@ export class Conversation {
 
   async generateCode({ description, model }: { description: string[]; model?: TiktokenModel }) {
     this.logger.debug({ message: `Generating code`, obj: { description } });
+    await this.ensureModulesProcessed();
     const code = await new OpenAi({
       history: this.history,
       functions: this.functions,
@@ -257,6 +297,7 @@ export class Conversation {
     description: string;
     model?: TiktokenModel;
   }) {
+    await this.ensureModulesProcessed();
     const codeToUpdate = await Fs.readFile(codeToUpdateFilePath);
     let dependencyDescription = `Assume the following exists:\n`;
     for (const dependencyCodeFilePath of dependencyCodeFilePaths) {
@@ -270,6 +311,7 @@ export class Conversation {
 
   async updateCode({ code, description, model }: { code: string; description: string; model?: TiktokenModel }) {
     this.logger.debug({ message: `Updating code`, obj: { description, code } });
+    await this.ensureModulesProcessed();
     const updatedCode = await new OpenAi({
       history: this.history,
       functions: this.functions,
@@ -287,6 +329,7 @@ export class Conversation {
   }
 
   async generateList({ description, model }: { description: string[]; model?: TiktokenModel }) {
+    await this.ensureModulesProcessed();
     const list = await new OpenAi({
       history: this.history,
       functions: this.functions,
