@@ -1,6 +1,6 @@
 {
   "name": "@proteinjs/conversation",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {
@@ -28,7 +28,7 @@
     "ts-jest": "^29.1.1"
   },
   "dependencies": {
-    "@proteinjs/logger": "1.0.8",
+    "@proteinjs/logger": "1.0.9",
     "@proteinjs/util": "1.5.0",
     "@proteinjs/util-node": "1.4.2",
     "fs-extra": "11.1.1",
