@@ -22,14 +22,44 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Structured capture of each tool call during a single generateResponse loop. */
+export type ToolInvocationResult = {
+  id: string; // tool_call_id from the model
+  name: string; // function name invoked
+  startedAt: Date;
+  finishedAt: Date;
+  input: unknown; // parsed JSON args (or raw string if parse failed)
+  ok: boolean;
+  data?: unknown; // tool return value (JSON-serializable)
+  error?: { message: string; stack?: string };
+};
+
+/** Realtime progress hook for tool calls. */
+export type ToolInvocationProgressEvent =
+  | {
+      type: 'started';
+      id: string;
+      name: string;
+      startedAt: Date;
+      input: unknown;
+    }
+  | {
+      type: 'finished';
+      result: ToolInvocationResult;
+    };
+
 export type GenerateResponseParams = {
   messages: (string | ChatCompletionMessageParam)[];
   model?: TiktokenModel;
+  /** Optional realtime hook for tool-call lifecycle (started/finished). */
+  onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
 };
 
 export type GenerateResponseReturn = {
   message: string;
   usagedata: UsageData;
+  /** Structured ledger of tool calls executed while producing this message. */
+  toolInvocations: ToolInvocationResult[];
 };
 
 export type GenerateStreamingResponseParams = GenerateResponseParams & {
@@ -42,6 +72,8 @@ type GenerateResponseHelperParams = GenerateStreamingResponseParams & {
   stream: boolean;
   currentFunctionCalls?: number;
   usageDataAccumulator?: UsageDataAccumulator;
+  /** Accumulated across recursive tool loops. */
+  toolInvocations?: ToolInvocationResult[];
 };
 
 export type OpenAiParams = {
@@ -53,7 +85,7 @@ export type OpenAiParams = {
   logLevel?: LogLevel;
 };
 
-export const DEFAULT_MODEL: TiktokenModel = 'gpt-3.5-turbo';
+export const DEFAULT_MODEL: TiktokenModel = 'gpt-4o';
 export const DEFAULT_MAX_FUNCTION_CALLS = 50;
 
 export class OpenAi {
@@ -77,7 +109,7 @@ export class OpenAi {
     this.functions = functions;
     this.messageModerators = messageModerators;
     this.maxFunctionCalls = maxFunctionCalls;
-    this.logLevel = logLevel;
+    this.logLevel = (process.env.PROTEINJS_CONVERSATION_OPENAI_LOG_LEVEL as LogLevel | undefined) ?? logLevel;
   }
 
   async generateResponse({ model, ...rest }: GenerateResponseParams): Promise<GenerateResponseReturn> {
@@ -85,11 +117,17 @@ export class OpenAi {
       model: model ?? this.model,
       stream: false,
       ...rest,
+      toolInvocations: [],
     })) as GenerateResponseReturn;
   }
 
   async generateStreamingResponse({ model, ...rest }: GenerateStreamingResponseParams): Promise<Readable> {
-    return (await this.generateResponseHelper({ model: model ?? this.model, stream: true, ...rest })) as Readable;
+    return (await this.generateResponseHelper({
+      model: model ?? this.model,
+      stream: true,
+      ...rest,
+      toolInvocations: [],
+    })) as Readable;
   }
 
   private async generateResponseHelper({
@@ -98,8 +136,10 @@ export class OpenAi {
     stream,
     abortSignal,
     onUsageData,
+    onToolInvocation,
     usageDataAccumulator,
     currentFunctionCalls = 0,
+    toolInvocations = [],
   }: GenerateResponseHelperParams): Promise<GenerateResponseReturn | Readable> {
     const logger = new Logger({ name: 'OpenAi.generateResponseHelper', logLevel: this.logLevel });
     this.updateMessageHistory(messages);
@@ -130,7 +170,9 @@ export class OpenAi {
             currentFunctionCalls,
             resolvedUsageDataAccumulator,
             abortSignal,
-            onUsageData
+            onUsageData,
+            toolInvocations,
+            onToolInvocation
           )) as (toolCalls: ChatCompletionMessageToolCall[], currentFunctionCalls: number) => Promise<Readable>;
         const streamProcessor = new OpenAiStreamProcessor(
           inputStream,
@@ -152,7 +194,9 @@ export class OpenAi {
           currentFunctionCalls,
           resolvedUsageDataAccumulator,
           abortSignal,
-          onUsageData
+          onUsageData,
+          toolInvocations,
+          onToolInvocation
         );
       }
 
@@ -162,7 +206,7 @@ export class OpenAi {
       }
 
       this.history.push([responseMessage]);
-      return { message: responseText, usagedata: resolvedUsageDataAccumulator.usageData };
+      return { message: responseText, usagedata: resolvedUsageDataAccumulator.usageData, toolInvocations };
     };
 
     // Only wrap in context if this is the first call
@@ -208,7 +252,6 @@ export class OpenAi {
       const response = await openaiApi.chat.completions.create(
         {
           model,
-          temperature: 0,
           messages: this.history.getMessages(),
           ...(this.functions &&
             this.functions.length > 0 && {
@@ -310,7 +353,9 @@ export class OpenAi {
     currentFunctionCalls: number,
     usageDataAccumulator: UsageDataAccumulator,
     abortSignal?: AbortSignal,
-    onUsageData?: (usageData: UsageData) => Promise<void>
+    onUsageData?: (usageData: UsageData) => Promise<void>,
+    toolInvocations: ToolInvocationResult[] = [],
+    onToolInvocation?: (evt: ToolInvocationProgressEvent) => void
   ): Promise<GenerateResponseReturn | Readable> {
     if (currentFunctionCalls >= this.maxFunctionCalls) {
       throw new Error(`Max function calls (${this.maxFunctionCalls}) reached. Stopping execution.`);
@@ -327,7 +372,7 @@ export class OpenAi {
     this.history.push([toolCallMessage]);
 
     // Call the tools and get the responses
-    const toolMessageParams = await this.callTools(toolCalls, usageDataAccumulator);
+    const toolMessageParams = await this.callTools(toolCalls, usageDataAccumulator, toolInvocations, onToolInvocation);
 
     // Add the tool responses to the history
     this.history.push(toolMessageParams);
@@ -339,18 +384,31 @@ export class OpenAi {
       stream,
       abortSignal,
       onUsageData,
+      onToolInvocation,
       usageDataAccumulator,
       currentFunctionCalls: currentFunctionCalls + toolCalls.length,
+      toolInvocations,
     });
   }
 
   private async callTools(
     toolCalls: ChatCompletionMessageToolCall[],
-    usageDataAccumulator: UsageDataAccumulator
+    usageDataAccumulator: UsageDataAccumulator,
+    toolInvocations: ToolInvocationResult[],
+    onToolInvocation?: (evt: ToolInvocationProgressEvent) => void
   ): Promise<ChatCompletionMessageParam[]> {
     const toolMessageParams: ChatCompletionMessageParam[] = (
       await Promise.all(
-        toolCalls.map(async (toolCall) => await this.callFunction(toolCall.function, toolCall.id, usageDataAccumulator))
+        toolCalls.map(
+          async (toolCall) =>
+            await this.callFunction(
+              toolCall.function,
+              toolCall.id,
+              usageDataAccumulator,
+              toolInvocations,
+              onToolInvocation
+            )
+        )
       )
     ).reduce((acc, val) => acc.concat(val), []);
 
@@ -360,7 +418,9 @@ export class OpenAi {
   private async callFunction(
     functionCall: ChatCompletionMessageToolCall.Function,
     toolCallId: string,
-    usageDataAccumulator: UsageDataAccumulator
+    usageDataAccumulator: UsageDataAccumulator,
+    toolInvocations: ToolInvocationResult[],
+    onToolInvocation?: (evt: ToolInvocationProgressEvent) => void
   ): Promise<ChatCompletionMessageParam[]> {
     const logger = new Logger({ name: 'OpenAi.callFunction', logLevel: this.logLevel });
     if (!this.functions) {
@@ -370,7 +430,7 @@ export class OpenAi {
     }
 
     functionCall.name = functionCall.name.split('.').pop() as string;
-    const f = this.functions.find((f) => f.definition.name === functionCall.name);
+    const f = this.functions.find((fx) => fx.definition.name === functionCall.name);
     if (!f) {
       const errorMessage = `Assistant attempted to call nonexistent function`;
       logger.error({ message: errorMessage, obj: { functionName: functionCall.name } });
@@ -390,7 +450,33 @@ export class OpenAi {
         obj: { toolCallId, functionName: f.definition.name, args: parsedArguments },
       });
       usageDataAccumulator.recordToolCall(f.definition.name);
+
+      const startedAt = new Date();
+
+      onToolInvocation?.({
+        type: 'started',
+        id: toolCallId,
+        name: f.definition.name,
+        startedAt,
+        input: parsedArguments,
+      });
+
       const returnObject = await f.call(parsedArguments);
+      const finishedAt = new Date();
+
+      // Record success
+      const rec: ToolInvocationResult = {
+        id: toolCallId,
+        name: f.definition.name,
+        startedAt,
+        finishedAt,
+        input: parsedArguments,
+        ok: true,
+        data: returnObject,
+      };
+      toolInvocations.push(rec);
+
+      onToolInvocation?.({ type: 'finished', result: rec });
 
       const returnObjectCompletionParams: ChatCompletionMessageParam[] = [];
       if (isInstanceOf(returnObject, ChatCompletionMessageParamFactory)) {
@@ -433,11 +519,35 @@ export class OpenAi {
 
       return returnObjectCompletionParams;
     } catch (error: any) {
+      const now = new Date();
+      const attemptedArgs = (() => {
+        try {
+          return JSON.parse(functionCall.arguments);
+        } catch {
+          return functionCall.arguments;
+        }
+      })();
+
+      // Record failure
+      const rec: ToolInvocationResult = {
+        id: toolCallId,
+        name: functionCall.name,
+        startedAt: now,
+        finishedAt: now,
+        input: attemptedArgs,
+        ok: false,
+        error: { message: String(error?.message ?? error), stack: (error as any)?.stack },
+      };
+      toolInvocations.push(rec);
+
+      onToolInvocation?.({ type: 'finished', result: rec });
+
       logger.error({
         message: `An error occurred while executing function`,
         error,
         obj: { toolCallId, functionName: f.definition.name },
       });
+
       throw error;
     }
   }
