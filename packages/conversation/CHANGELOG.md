@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.1.5](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.1.4...@proteinjs/conversation@2.1.5) (2025-10-14)
+
+
+### Bug Fixes
+
+* `Conversation.generateObject` Better ensure oai models return objects by using strict mode. ([5177efc](https://github.com/proteinjs/conversation/commit/5177efc512f771105f86eb45348c1ae4c06d3053))
+
+
+
+
+
 # [2.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.0.4...@proteinjs/conversation@2.1.0) (2025-04-21)
 
 
