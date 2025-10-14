@@ -328,12 +328,17 @@ export class Conversation {
       schema &&
       (typeof (schema as any).safeParse === 'function' ||
         (!!(schema as any)._def && typeof (schema as any)._def.typeName === 'string'));
-    const normalizedSchema = isZod ? (schema as any) : jsonSchema(schema as any);
+    const normalizedSchema = isZod ? (schema as any) : jsonSchema(this.strictifyJsonSchema(schema as any));
 
     const result = await aiGenerateObject({
       model,
-      messages: combined as any,
+      messages: combined,
       schema: normalizedSchema,
+      providerOptions: {
+        openai: {
+          strictJsonSchema: true,
+        },
+      },
       maxOutputTokens: maxTokens,
       temperature,
       topP,
@@ -396,6 +401,99 @@ export class Conversation {
       const role = m.role === 'system' || m.role === 'user' || m.role === 'assistant' ? m.role : 'user';
       return { role, content: text };
     });
+  }
+
+  /**
+   * Strictifies a plain JSON Schema for OpenAI Structured Outputs (strict mode):
+   *  - Ensures every object has `additionalProperties: false`
+   *  - Ensures every object has a `required` array that includes **all** keys in `properties`
+   *  - Adds missing `type: "object"` / `type: "array"` where implied by keywords
+   */
+  private strictifyJsonSchema(schema: any): any {
+    const root = JSON.parse(JSON.stringify(schema));
+
+    const visit = (node: any) => {
+      if (!node || typeof node !== 'object') {
+        return;
+      }
+
+      // If keywords imply a type but it's missing, add it (helps downstream validators)
+      if (!node.type) {
+        if (node.properties || node.additionalProperties || node.patternProperties) {
+          node.type = 'object';
+        } else if (node.items || node.prefixItems) {
+          node.type = 'array';
+        }
+      }
+
+      const types = Array.isArray(node.type) ? node.type : node.type ? [node.type] : [];
+
+      // Objects: enforce strict requirements
+      if (types.includes('object')) {
+        // 1) additionalProperties: false
+        if (node.additionalProperties !== false) {
+          node.additionalProperties = false;
+        }
+
+        // 2) required must exist and include every key in properties
+        if (node.properties && typeof node.properties === 'object') {
+          const propKeys = Object.keys(node.properties);
+          const currentReq: string[] = Array.isArray(node.required) ? node.required.slice() : [];
+          const union = Array.from(new Set([...currentReq, ...propKeys]));
+          node.required = union;
+
+          // Recurse into each property schema
+          for (const k of propKeys) {
+            visit(node.properties[k]);
+          }
+        }
+
+        // Recurse into patternProperties
+        if (node.patternProperties && typeof node.patternProperties === 'object') {
+          for (const k of Object.keys(node.patternProperties)) {
+            visit(node.patternProperties[k]);
+          }
+        }
+
+        // Recurse into $defs / definitions
+        for (const defsKey of ['$defs', 'definitions']) {
+          if (node[defsKey] && typeof node[defsKey] === 'object') {
+            for (const key of Object.keys(node[defsKey])) {
+              visit(node[defsKey][key]);
+            }
+          }
+        }
+      }
+
+      // Arrays: recurse into items/prefixItems
+      if (types.includes('array')) {
+        if (node.items) {
+          if (Array.isArray(node.items)) {
+            node.items.forEach(visit);
+          } else {
+            visit(node.items);
+          }
+        }
+        if (Array.isArray(node.prefixItems)) {
+          node.prefixItems.forEach(visit);
+        }
+      }
+
+      // Combinators
+      for (const k of ['oneOf', 'anyOf', 'allOf']) {
+        if (Array.isArray(node[k])) {
+          node[k].forEach(visit);
+        }
+      }
+
+      // Negation
+      if (node.not) {
+        visit(node.not);
+      }
+    };
+
+    visit(root);
+    return root;
   }
 
   // ---- Usage + provider metadata normalization ----
