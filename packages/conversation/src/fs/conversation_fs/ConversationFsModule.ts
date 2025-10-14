@@ -6,7 +6,8 @@ import { ConversationFsModerator } from './ConversationFsModerator';
 import {
   fsFunctions,
   getRecentlyAccessedFilePathsFunction,
-  getRecentlyAccessedFilePathsFunctionName,
+  grepFunction,
+  grepFunctionName,
   readFilesFunction,
   readFilesFunctionName,
   writeFilesFunction,
@@ -36,7 +37,7 @@ export class ConversationFsModule implements ConversationModule {
       `When reading/writing a file in a specified package, join the package directory with the relative path to form the file path`,
       `When searching for source files, do not look in the dist or node_modules directories`,
       `If you don't know a file path, don't try to guess it, use the ${searchFilesFunctionName} function to find it`,
-      `When searching for something (ie. a file to work with/in), unless more context is specified, use the ${searchLibrariesFunctionName} function first, then fall back to functions: ${searchPackagesFunctionName}, ${searchFilesFunctionName}`,
+      `When searching for something (ie. a file to work with/in), unless more context is specified, use the ${grepFunctionName} function first, then fall back to functions: ${searchPackagesFunctionName}, ${searchFilesFunctionName}`,
       `After finding a file to work with, assume the user's following question pertains to that file and use ${readFilesFunctionName} to read the file if needed`,
     ];
   }
@@ -46,6 +47,7 @@ export class ConversationFsModule implements ConversationModule {
       readFilesFunction(this),
       writeFilesFunction(this),
       getRecentlyAccessedFilePathsFunction(this),
+      grepFunction(this),
       ...fsFunctions,
     ];
   }
@@ -60,6 +62,10 @@ export class ConversationFsModule implements ConversationModule {
 
   getRecentlyAccessedFilePaths() {
     return this.recentlyAccessedFilePaths;
+  }
+
+  getRepoPath(): string {
+    return this.repoPath;
   }
 }
 
