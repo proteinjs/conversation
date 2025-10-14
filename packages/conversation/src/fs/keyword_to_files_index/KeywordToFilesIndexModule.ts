@@ -7,7 +7,8 @@ import { searchFilesFunction, searchFilesFunctionName } from './KeywordToFilesIn
 
 export type KeywordToFilesIndexModuleParams = {
   dir: string;
-  keywordFilesIndex: { [keyword: string]: string[] /** file paths */ };
+  // Map from lowercase filename *stem* (no extension) → file paths
+  keywordFilesIndex: { [keyword: string]: string[] };
 };
 
 export class KeywordToFilesIndexModule implements ConversationModule {
@@ -22,15 +23,19 @@ export class KeywordToFilesIndexModule implements ConversationModule {
     return 'Keyword to files index';
   }
 
+  /**
+   * Case-insensitive file name search that ignores extension.
+   */
   searchFiles(params: { keyword: string }) {
-    this.logger.info({ message: `Searching for file, keyword: ${params.keyword}` });
-    const filePaths = this.params.keywordFilesIndex[params.keyword];
+    this.logger.debug({ message: `Searching for file, keyword: ${params.keyword}` });
+    const keywordLowerNoExtension = path.parse(params.keyword).name.toLowerCase();
+    const filePaths = this.params.keywordFilesIndex[keywordLowerNoExtension];
     return filePaths || [];
   }
 
   getSystemMessages(): string[] {
     return [
-      `If you're searching for something, use the ${searchFilesFunctionName} function to find a file matching the search string`,
+      `If you're searching for something, use the ${searchFilesFunctionName} function to find a file (by name) matching the search string`,
     ];
   }
 
@@ -76,14 +81,14 @@ export class KeywordToFilesIndexModuleFactory implements ConversationModuleFacto
 
     // Process each file path
     for (const filePath of filePaths) {
-      const fileName = path.parse(filePath).name; // Get file name without extension
+      const fileNameLower = path.parse(filePath).name.toLowerCase(); // Get file name without extension
 
-      if (!keywordFilesIndex[fileName]) {
-        keywordFilesIndex[fileName] = [];
+      if (!keywordFilesIndex[fileNameLower]) {
+        keywordFilesIndex[fileNameLower] = [];
       }
 
-      this.logger.debug({ message: `fileName: ${fileName}, filePath: ${filePath}` });
-      keywordFilesIndex[fileName].push(filePath);
+      this.logger.debug({ message: `fileName: ${fileNameLower}, filePath: ${filePath}` });
+      keywordFilesIndex[fileNameLower].push(filePath);
     }
 
     return keywordFilesIndex;
