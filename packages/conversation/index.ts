@@ -11,4 +11,13 @@ export * from './src/history/MessageModerator';
 export * from './src/history/MessageHistory';
 export * from './src/ChatCompletionMessageParamFactory';
 export { AssistantResponseStreamChunk } from './src/OpenAiStreamProcessor';
-export { UsageData } from './src/UsageData';
+export { UsageData, TokenUsage } from './src/UsageData';
+
+// Conversation modules
+export * from './src/fs/conversation_fs/ConversationFsModule';
+export * from './src/fs/conversation_fs/FsFunctions';
+export * from './src/fs/git/GitModule';
+export * from './src/fs/keyword_to_files_index/KeywordToFilesIndexModule';
+export * from './src/fs/keyword_to_files_index/KeywordToFilesIndexFunctions';
+export * from './src/fs/package/PackageModule';
+export * from './src/fs/package/PackageFunctions';
