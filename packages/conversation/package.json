@@ -31,6 +31,7 @@
     "@proteinjs/logger": "1.0.10",
     "@proteinjs/util": "1.5.0",
     "@proteinjs/util-node": "1.4.2",
+    "ai": "5.0.57",
     "fs-extra": "11.1.1",
     "openai": "4.85.3",
     "readline-sync": "1.4.10",

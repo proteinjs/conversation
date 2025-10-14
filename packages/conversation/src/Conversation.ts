@@ -1,5 +1,5 @@
 import { ChatCompletionMessageParam } from 'openai/resources/chat';
-import { DEFAULT_MODEL, OpenAi } from './OpenAi';
+import { DEFAULT_MODEL, OpenAi, ToolInvocationProgressEvent } from './OpenAi';
 import { MessageHistory } from './history/MessageHistory';
 import { Function } from './Function';
 import { Logger, LogLevel } from '@proteinjs/logger';
@@ -9,6 +9,8 @@ import { ConversationModule } from './ConversationModule';
 import { TiktokenModel, encoding_for_model } from 'tiktoken';
 import { searchLibrariesFunctionName } from './fs/package/PackageFunctions';
 import { UsageData } from './UsageData';
+import type { ModelMessage, LanguageModel } from 'ai';
+import { generateObject as aiGenerateObject, jsonSchema } from 'ai';
 
 export type ConversationParams = {
   name: string;
@@ -21,8 +23,36 @@ export type ConversationParams = {
   };
 };
 
+/** Object-only generation (no tool calls in this run). */
+export type GenerateObjectParams<S> = {
+  /** Same input contract as generateResponse */
+  messages: (string | ChatCompletionMessageParam)[];
+
+  /** A ready AI SDK model, e.g., openai('gpt-5') / openai('gpt-4o') */
+  model: LanguageModel;
+
+  /** Zod schema or JSON Schema */
+  schema: S;
+
+  /** Sampling & limits */
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+
+  /** Usage callback */
+  onUsageData?: (usageData: UsageData) => Promise<void>;
+
+  /** Append final JSON to history as assistant text; default true */
+  recordInHistory?: boolean;
+};
+
+export type GenerateObjectOutcome<T> = {
+  object: T; // validated final object
+  usageData: UsageData;
+};
+
 export class Conversation {
-  private tokenLimit = 3000;
+  private tokenLimit = 50000;
   private history;
   private systemMessages: ChatCompletionMessageParam[] = [];
   private functions: Function[] = [];
@@ -42,7 +72,7 @@ export class Conversation {
     });
     this.logger = new Logger({ name: params.name, logLevel: params.logLevel });
 
-    if (typeof params.limits?.enforceLimits === 'undefined' || params.limits.enforceLimits) {
+    if (params?.limits?.enforceLimits) {
       this.addFunctions('Conversation', [summarizeConversationHistoryFunction(this)]);
     }
 
@@ -137,7 +167,7 @@ export class Conversation {
   }
 
   private async enforceTokenLimit(messages: (string | ChatCompletionMessageParam)[], model?: TiktokenModel) {
-    if (this.params.limits?.enforceLimits === false) {
+    if (!this.params.limits?.enforceLimits) {
       return;
     }
 
@@ -234,9 +264,12 @@ export class Conversation {
   async generateResponse({
     messages,
     model,
+    ...rest
   }: {
     messages: (string | ChatCompletionMessageParam)[];
     model?: TiktokenModel;
+    onUsageData?: (usageData: UsageData) => Promise<void>;
+    onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
   }) {
     await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
@@ -245,7 +278,7 @@ export class Conversation {
       functions: this.functions,
       messageModerators: this.messageModerators,
       logLevel: this.params.logLevel,
-    }).generateResponse({ messages, model });
+    }).generateResponse({ messages, model, ...rest });
   }
 
   async generateStreamingResponse({
@@ -257,6 +290,7 @@ export class Conversation {
     model?: TiktokenModel;
     abortSignal?: AbortSignal;
     onUsageData?: (usageData: UsageData) => Promise<void>;
+    onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
   }) {
     await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
@@ -266,6 +300,180 @@ export class Conversation {
       messageModerators: this.messageModerators,
       logLevel: this.params.logLevel,
     }).generateStreamingResponse({ messages, model, ...rest });
+  }
+
+  /**
+   * Generate a validated JSON object (no tools in this run).
+   * Uses AI SDK `generateObject` which leverages provider-native structured outputs when available.
+   */
+  async generateObject<T>({
+    messages,
+    model,
+    schema,
+    temperature,
+    topP,
+    maxTokens,
+    onUsageData,
+    recordInHistory = true,
+  }: GenerateObjectParams<unknown>): Promise<GenerateObjectOutcome<T>> {
+    await this.ensureModulesProcessed();
+
+    const combined: ModelMessage[] = [
+      ...this.toModelMessages(this.history.getMessages()),
+      ...this.toModelMessages(messages),
+    ];
+
+    // Schema normalization (Zod OR JSON Schema supported)
+    const isZod =
+      schema &&
+      (typeof (schema as any).safeParse === 'function' ||
+        (!!(schema as any)._def && typeof (schema as any)._def.typeName === 'string'));
+    const normalizedSchema = isZod ? (schema as any) : jsonSchema(schema as any);
+
+    const result = await aiGenerateObject({
+      model,
+      messages: combined as any,
+      schema: normalizedSchema,
+      maxOutputTokens: maxTokens,
+      temperature,
+      topP,
+      experimental_repairText: async ({ text }: any) => {
+        const cleaned = String(text ?? '')
+          .trim()
+          .replace(/^```(?:json)?/i, '')
+          .replace(/```$/, '');
+        try {
+          JSON.parse(cleaned);
+          return cleaned;
+        } catch {
+          return null;
+        }
+      },
+    } as any);
+
+    // Record user messages to history (parity with other methods)
+    const chatCompletions: ChatCompletionMessageParam[] = messages.map((m) =>
+      typeof m === 'string' ? ({ role: 'user', content: m } as ChatCompletionMessageParam) : m
+    );
+    this.addMessagesToHistory(chatCompletions);
+
+    // Optionally persist the final JSON in history
+    if (recordInHistory) {
+      try {
+        const toRecord = typeof result?.object === 'object' ? JSON.stringify(result.object) : '';
+        if (toRecord) {
+          this.addAssistantMessagesToHistory([toRecord]);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const usageData = this.processUsageData({
+      result,
+      model,
+    });
+
+    if (onUsageData) {
+      await onUsageData(usageData);
+    }
+
+    return {
+      object: (result?.object ?? ({} as any)) as T,
+      usageData,
+    };
+  }
+
+  /** Convert (string | ChatCompletionMessageParam)[] -> AI SDK ModelMessage[] */
+  private toModelMessages(input: (string | ChatCompletionMessageParam)[]): ModelMessage[] {
+    return input.map((m) => {
+      if (typeof m === 'string') {
+        return { role: 'user', content: m };
+      }
+      const text = Array.isArray(m.content)
+        ? m.content.map((p: any) => (typeof p === 'string' ? p : p?.text ?? '')).join('\n')
+        : (m.content as string | undefined) ?? '';
+      const role = m.role === 'system' || m.role === 'user' || m.role === 'assistant' ? m.role : 'user';
+      return { role, content: text };
+    });
+  }
+
+  // ---- Usage + provider metadata normalization ----
+
+  private processUsageData(args: {
+    result: any;
+    model?: LanguageModel;
+    toolCounts?: Map<string, number>;
+    toolLedgerLen?: number;
+  }): UsageData {
+    const { result, model, toolCounts, toolLedgerLen } = args;
+
+    // Try several shapes used by AI SDK / providers
+    const u: any = result?.usage ?? result?.response?.usage ?? result?.response?.metadata?.usage;
+
+    // Provider-specific extras (OpenAI Responses variants)
+    const { cachedInputTokens } = this.extractOpenAiUsageDetails?.(result) ?? {};
+
+    const input = Number.isFinite(u?.inputTokens) ? Number(u.inputTokens) : 0;
+    const output = Number.isFinite(u?.outputTokens) ? Number(u.outputTokens) : 0;
+    const total = Number.isFinite(u?.totalTokens) ? Number(u.totalTokens) : input + output;
+    const cached = Number.isFinite(cachedInputTokens) ? Number(cachedInputTokens) : 0;
+
+    // Resolve model id for pricing/telemetry
+    const modelId: any =
+      (model as any)?.modelId ??
+      result?.response?.providerMetadata?.openai?.model ??
+      result?.providerMetadata?.openai?.model ??
+      result?.response?.model ??
+      undefined;
+
+    const tokenUsage = {
+      promptTokens: input,
+      cachedPromptTokens: cached,
+      completionTokens: output,
+      totalTokens: total,
+    };
+
+    const callsPerTool = toolCounts ? Object.fromEntries(toolCounts) : {};
+    const totalToolCalls =
+      typeof toolLedgerLen === 'number' ? toolLedgerLen : Object.values(callsPerTool).reduce((a, b) => a + (b || 0), 0);
+
+    return {
+      model: modelId,
+      initialRequestTokenUsage: { ...tokenUsage },
+      totalTokenUsage: { ...tokenUsage },
+      totalRequestsToAssistant: 1,
+      totalToolCalls,
+      callsPerTool,
+    };
+  }
+
+  // Pull OpenAI-specific cached/extra usage from provider metadata or raw usage.
+  // Safe across providers; returns undefined if not available.
+  private extractOpenAiUsageDetails(result: any): {
+    cachedInputTokens?: number;
+    reasoningTokens?: number;
+  } {
+    try {
+      const md = result?.providerMetadata?.openai ?? result?.response?.providerMetadata?.openai;
+      const usage = md?.usage ?? result?.response?.usage ?? result?.usage;
+
+      // OpenAI Responses API has used different shapes over time; try both:
+      const cachedInputTokens =
+        usage?.input_tokens_details?.cached_tokens ??
+        usage?.prompt_tokens_details?.cached_tokens ??
+        usage?.cached_input_tokens;
+
+      // Reasoning tokens (when available on reasoning models)
+      const reasoningTokens = usage?.output_tokens_details?.reasoning_tokens ?? usage?.reasoning_tokens;
+
+      return {
+        cachedInputTokens: typeof cachedInputTokens === 'number' ? cachedInputTokens : undefined,
+        reasoningTokens: typeof reasoningTokens === 'number' ? reasoningTokens : undefined,
+      };
+    } catch {
+      return {};
+    }
   }
 
   async generateCode({ description, model }: { description: string[]; model?: TiktokenModel }) {
