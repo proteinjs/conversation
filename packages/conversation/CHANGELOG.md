@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.1.6](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.1.5...@proteinjs/conversation@2.1.6) (2025-10-18)
+
+
+### Bug Fixes
+
+* Ensure `FsFunctions` do not throw, but return the error message to the assistant. ([a9e8722](https://github.com/proteinjs/conversation/commit/a9e87227ed14f02733c3c9f5d329b7266f78121f))
+
+
+
+
+
 ## [2.1.5](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.1.4...@proteinjs/conversation@2.1.5) (2025-10-14)
 
 
