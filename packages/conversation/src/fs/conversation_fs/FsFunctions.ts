@@ -67,7 +67,11 @@ export function readFilesFunction(fsModule: ConversationFsModule) {
     call: async (params: { filePaths: string[] }) => {
       fsModule.pushRecentlyAccessedFilePath(params.filePaths);
       const absPaths = await canonicalizePaths(fsModule, params.filePaths);
-      return await Fs.readFiles(absPaths);
+      try {
+        return await Fs.readFiles(absPaths);
+      } catch (error: any) {
+        return error.message;
+      }
     },
     instructions: [`To read files from the local file system, use the ${readFilesFunctionName} function`],
   };
@@ -101,7 +105,11 @@ export function writeFilesFunction(fsModule: ConversationFsModule) {
         params.files.map((f) => f.path)
       );
       const absFiles = params.files.map((f, i) => ({ ...f, path: canon[i] }));
-      return await Fs.writeFiles(absFiles);
+      try {
+        return await Fs.writeFiles(absFiles);
+      } catch (error: any) {
+        return error.message;
+      }
     },
     instructions: [`To write files to the local file system, use the ${writeFilesFunctionName} function`],
   };
@@ -139,7 +147,13 @@ const createFolderFunction: Function = {
       required: ['path'],
     },
   },
-  call: async (params: { path: string }) => await Fs.createFolder(params.path),
+  call: async (params: { path: string }) => {
+    try {
+      await Fs.createFolder(params.path);
+    } catch (error: any) {
+      return error.message;
+    }
+  },
   instructions: [`To create a folder on the local file system, use the ${createFolderFunctionName} function`],
 };
 
@@ -159,7 +173,13 @@ export const fileOrDirectoryExistsFunction: Function = {
       required: ['path'],
     },
   },
-  call: async (params: { path: string }) => await Fs.exists(params.path),
+  call: async (params: { path: string }) => {
+    try {
+      return await Fs.exists(params.path);
+    } catch (error: any) {
+      return error.message;
+    }
+  },
   instructions: [
     `To check if a file or folder exists on the local file system, use the ${fileOrDirectoryExistsFunctionName} function`,
   ],
@@ -192,8 +212,13 @@ const getFilePathsMatchingGlobFunction: Function = {
       required: ['dirPrefix', 'glob'],
     },
   },
-  call: async (params: { dirPrefix: string; glob: string; globIgnorePatterns?: string[] }) =>
-    await Fs.getFilePathsMatchingGlob(params.dirPrefix, params.glob, params.globIgnorePatterns),
+  call: async (params: { dirPrefix: string; glob: string; globIgnorePatterns?: string[] }) => {
+    try {
+      await Fs.getFilePathsMatchingGlob(params.dirPrefix, params.glob, params.globIgnorePatterns);
+    } catch (error: any) {
+      return error.message;
+    }
+  },
   instructions: [`To get file paths matching a glob, use the ${getFilePathsMatchingGlobFunctionName} function`],
 };
 
@@ -217,7 +242,13 @@ const renameFunction: Function = {
       required: ['oldPath', 'newName'],
     },
   },
-  call: async (params: { oldPath: string; newName: string }) => await Fs.rename(params.oldPath, params.newName),
+  call: async (params: { oldPath: string; newName: string }) => {
+    try {
+      await Fs.rename(params.oldPath, params.newName);
+    } catch (error: any) {
+      return error.message;
+    }
+  },
   instructions: [`To rename a file or directory, use the ${renameFunctionName} function`],
 };
 
@@ -241,8 +272,13 @@ const copyFunction: Function = {
       required: ['sourcePath', 'destinationPath'],
     },
   },
-  call: async (params: { sourcePath: string; destinationPath: string }) =>
-    await Fs.copy(params.sourcePath, params.destinationPath),
+  call: async (params: { sourcePath: string; destinationPath: string }) => {
+    try {
+      await Fs.copy(params.sourcePath, params.destinationPath);
+    } catch (error: any) {
+      return error.message;
+    }
+  },
   instructions: [`To copy a file or directory, use the ${copyFunctionName} function`],
 };
 
@@ -266,8 +302,13 @@ const moveFunction: Function = {
       required: ['sourcePath', 'destinationPath'],
     },
   },
-  call: async (params: { sourcePath: string; destinationPath: string }) =>
-    await Fs.move(params.sourcePath, params.destinationPath),
+  call: async (params: { sourcePath: string; destinationPath: string }) => {
+    try {
+      await Fs.move(params.sourcePath, params.destinationPath);
+    } catch (error: any) {
+      return error.message;
+    }
+  },
   instructions: [`To move a file or directory, use the ${moveFunctionName} function`],
 };
 
@@ -302,7 +343,11 @@ export function grepFunction(fsModule: ConversationFsModule) {
     call: async (params: { pattern: string; dir?: string; maxResults?: number }) => {
       const repo = fsModule.getRepoPath();
       const cwd = params.dir ? toRepoAbs(fsModule, params.dir) : repo;
-      return await Fs.grep({ pattern: params.pattern, dir: cwd, maxResults: params.maxResults });
+      try {
+        return await Fs.grep({ pattern: params.pattern, dir: cwd, maxResults: params.maxResults });
+      } catch (error: any) {
+        return error.message;
+      }
     },
     instructions: [
       `Use ${grepFunctionName} to search for literal text across the repo.`,
