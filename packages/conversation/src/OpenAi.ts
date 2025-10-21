@@ -53,6 +53,8 @@ export type GenerateResponseParams = {
   model?: TiktokenModel;
   /** Optional realtime hook for tool-call lifecycle (started/finished). */
   onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
+  /** Per-call override for reasoning effort (reasoning models only). */
+  reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
 };
 
 export type GenerateResponseReturn = {
@@ -140,6 +142,7 @@ export class OpenAi {
     usageDataAccumulator,
     currentFunctionCalls = 0,
     toolInvocations = [],
+    reasoningEffort,
   }: GenerateResponseHelperParams): Promise<GenerateResponseReturn | Readable> {
     const logger = new Logger({ name: 'OpenAi.generateResponseHelper', logLevel: this.logLevel });
     this.updateMessageHistory(messages);
@@ -151,7 +154,13 @@ export class OpenAi {
     const executeInContext = !contextDataUsageAccumulator;
 
     const execute = async () => {
-      const response = await this.executeRequest(model, stream, resolvedUsageDataAccumulator, abortSignal);
+      const response = await this.executeRequest(
+        model,
+        stream,
+        resolvedUsageDataAccumulator,
+        abortSignal,
+        reasoningEffort
+      );
       if (stream) {
         logger.info({ message: `Processing response stream` });
         const inputStream = response as Stream<ChatCompletionChunk>;
@@ -241,7 +250,8 @@ export class OpenAi {
     model: TiktokenModel,
     stream: boolean,
     usageDataAccumulator: UsageDataAccumulator,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort
   ): Promise<ChatCompletion | Stream<ChatCompletionChunk>> {
     const logger = new Logger({ name: 'OpenAi.executeRequest', logLevel: this.logLevel });
     const openaiApi = new OpenAIApi();
@@ -252,6 +262,7 @@ export class OpenAi {
       const response = await openaiApi.chat.completions.create(
         {
           model,
+          reasoning_effort: reasoningEffort,
           messages: this.history.getMessages(),
           ...(this.functions &&
             this.functions.length > 0 && {
@@ -310,6 +321,7 @@ export class OpenAi {
       logger.info({ message: `Usage data`, obj: { usageData: response.usage } });
       usageDataAccumulator.addTokenUsage({
         promptTokens: response.usage.prompt_tokens,
+        reasoningTokens: response.usage.completion_tokens_details?.reasoning_tokens ?? 0,
         cachedPromptTokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0,
         completionTokens: response.usage.completion_tokens,
         totalTokens: response.usage.total_tokens,

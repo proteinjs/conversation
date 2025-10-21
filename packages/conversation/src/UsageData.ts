@@ -2,6 +2,7 @@ import { TiktokenModel } from 'tiktoken';
 
 export type TokenUsage = {
   promptTokens: number;
+  reasoningTokens: number;
   cachedPromptTokens: number;
   completionTokens: number;
   totalTokens: number;
@@ -39,12 +40,14 @@ export class UsageDataAccumulator {
       model,
       initialRequestTokenUsage: {
         promptTokens: 0,
+        reasoningTokens: 0,
         cachedPromptTokens: 0,
         completionTokens: 0,
         totalTokens: 0,
       },
       totalTokenUsage: {
         promptTokens: 0,
+        reasoningTokens: 0,
         cachedPromptTokens: 0,
         completionTokens: 0,
         totalTokens: 0,
@@ -63,6 +66,7 @@ export class UsageDataAccumulator {
     }
     this.usageData.totalTokenUsage = {
       promptTokens: this.usageData.totalTokenUsage.promptTokens + tokenUsage.promptTokens,
+      reasoningTokens: this.usageData.totalTokenUsage.reasoningTokens + tokenUsage.reasoningTokens,
       cachedPromptTokens: this.usageData.totalTokenUsage.promptTokens + tokenUsage.cachedPromptTokens,
       completionTokens: this.usageData.totalTokenUsage.completionTokens + tokenUsage.completionTokens,
       totalTokens: this.usageData.totalTokenUsage.totalTokens + tokenUsage.totalTokens,

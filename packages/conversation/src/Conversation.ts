@@ -1,5 +1,6 @@
 import { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { DEFAULT_MODEL, OpenAi, ToolInvocationProgressEvent } from './OpenAi';
+import { OpenAI as OpenAIApi } from 'openai';
 import { MessageHistory } from './history/MessageHistory';
 import { Function } from './Function';
 import { Logger, LogLevel } from '@proteinjs/logger';
@@ -44,6 +45,9 @@ export type GenerateObjectParams<S> = {
 
   /** Append final JSON to history as assistant text; default true */
   recordInHistory?: boolean;
+
+  /** Per-call override for reasoning effort (reasoning models only). */
+  reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
 };
 
 export type GenerateObjectOutcome<T> = {
@@ -270,6 +274,7 @@ export class Conversation {
     model?: TiktokenModel;
     onUsageData?: (usageData: UsageData) => Promise<void>;
     onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
+    reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
   }) {
     await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
@@ -291,6 +296,7 @@ export class Conversation {
     abortSignal?: AbortSignal;
     onUsageData?: (usageData: UsageData) => Promise<void>;
     onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
+    reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
   }) {
     await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
@@ -315,6 +321,7 @@ export class Conversation {
     maxTokens,
     onUsageData,
     recordInHistory = true,
+    reasoningEffort,
   }: GenerateObjectParams<unknown>): Promise<GenerateObjectOutcome<T>> {
     await this.ensureModulesProcessed();
 
@@ -337,6 +344,7 @@ export class Conversation {
       providerOptions: {
         openai: {
           strictJsonSchema: true,
+          reasoningEffort,
         },
       },
       maxOutputTokens: maxTokens,
@@ -510,9 +518,10 @@ export class Conversation {
     const u: any = result?.usage ?? result?.response?.usage ?? result?.response?.metadata?.usage;
 
     // Provider-specific extras (OpenAI Responses variants)
-    const { cachedInputTokens } = this.extractOpenAiUsageDetails?.(result) ?? {};
+    const { cachedInputTokens, reasoningTokens } = this.extractOpenAiUsageDetails?.(result) ?? {};
 
     const input = Number.isFinite(u?.inputTokens) ? Number(u.inputTokens) : 0;
+    const reasoning = Number.isFinite(reasoningTokens) ? Number(reasoningTokens) : 0;
     const output = Number.isFinite(u?.outputTokens) ? Number(u.outputTokens) : 0;
     const total = Number.isFinite(u?.totalTokens) ? Number(u.totalTokens) : input + output;
     const cached = Number.isFinite(cachedInputTokens) ? Number(cachedInputTokens) : 0;
@@ -527,6 +536,7 @@ export class Conversation {
 
     const tokenUsage = {
       promptTokens: input,
+      reasoningTokens: reasoning,
       cachedPromptTokens: cached,
       completionTokens: output,
       totalTokens: total,
@@ -563,7 +573,10 @@ export class Conversation {
         usage?.cached_input_tokens;
 
       // Reasoning tokens (when available on reasoning models)
-      const reasoningTokens = usage?.output_tokens_details?.reasoning_tokens ?? usage?.reasoning_tokens;
+      const reasoningTokens =
+        usage?.output_tokens_details?.reasoning_tokens ??
+        usage?.completion_tokens_details?.reasoning_tokens ??
+        usage?.reasoning_tokens;
 
       return {
         cachedInputTokens: typeof cachedInputTokens === 'number' ? cachedInputTokens : undefined,
