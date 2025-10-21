@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.1.6...@proteinjs/conversation@2.2.0) (2025-10-21)
+
+
+### Features
+
+* Added reasoningEffort to `Conversation` and `OpenAi` APIs. ([9e43462](https://github.com/proteinjs/conversation/commit/9e434620f644d562bdf3f3b3f03dfa51e4f5f46e))
+
+
+
+
+
 ## [2.1.6](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.1.5...@proteinjs/conversation@2.1.6) (2025-10-18)
 
 
