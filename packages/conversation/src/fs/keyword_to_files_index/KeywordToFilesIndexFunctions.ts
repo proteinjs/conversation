@@ -5,13 +5,13 @@ export const searchFilesFunction = (module: KeywordToFilesIndexModule) => {
   return {
     definition: {
       name: searchFilesFunctionName,
-      description: 'Get file paths to files that contain keyword',
+      description: 'Get file paths to files whose name contains the keyword',
       parameters: {
         type: 'object',
         properties: {
           keyword: {
             type: 'string',
-            description: 'Search files for this keyword',
+            description: 'Search files by name for this keyword',
           },
         },
         required: ['keyword'],
@@ -19,7 +19,7 @@ export const searchFilesFunction = (module: KeywordToFilesIndexModule) => {
     },
     call: async (params: { keyword: string }) => module.searchFiles(params),
     instructions: [
-      `If the user is trying to interact with a file, but does not provide a path, you can find file paths that match a keyword using the ${searchFilesFunctionName} function`,
+      `If the user is trying to interact with a file, but does not provide a path, you can find files whose name matches a keyword using the ${searchFilesFunctionName} function`,
       `Only call functions that take in filePaths with valid file paths, if you don't know the valid file path try and search for it by keyword with the ${searchFilesFunctionName} function`,
       `If the user references a file in a package without providing a path, use the ${searchFilesFunctionName} function on the keyword to find potentially relevant files, and choose the one that references the package name in its path`,
     ],
