@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.2.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.2.0...@proteinjs/conversation@2.2.1) (2025-11-02)
+
+
+### Bug Fixes
+
+* `FsFunctions` wrap all code in read/write so exceptions are always caught and logged to the assistant. ([2f5511d](https://github.com/proteinjs/conversation/commit/2f5511d2d85d1a2cbc19ace128f1245f7c7f2395))
+
+
+
+
+
 # [2.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.1.6...@proteinjs/conversation@2.2.0) (2025-10-21)
 
 
