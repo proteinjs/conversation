@@ -65,9 +65,9 @@ export function readFilesFunction(fsModule: ConversationFsModule) {
       },
     },
     call: async (params: { filePaths: string[] }) => {
-      fsModule.pushRecentlyAccessedFilePath(params.filePaths);
-      const absPaths = await canonicalizePaths(fsModule, params.filePaths);
       try {
+        fsModule.pushRecentlyAccessedFilePath(params.filePaths);
+        const absPaths = await canonicalizePaths(fsModule, params.filePaths);
         return await Fs.readFiles(absPaths);
       } catch (error: any) {
         return error.message;
@@ -99,13 +99,13 @@ export function writeFilesFunction(fsModule: ConversationFsModule) {
       },
     },
     call: async (params: { files: File[] }) => {
-      fsModule.pushRecentlyAccessedFilePath(params.files.map((f) => f.path));
-      const canon = await canonicalizePaths(
-        fsModule,
-        params.files.map((f) => f.path)
-      );
-      const absFiles = params.files.map((f, i) => ({ ...f, path: canon[i] }));
       try {
+        fsModule.pushRecentlyAccessedFilePath(params.files.map((f) => f.path));
+        const canon = await canonicalizePaths(
+          fsModule,
+          params.files.map((f) => f.path)
+        );
+        const absFiles = params.files.map((f, i) => ({ ...f, path: canon[i] }));
         return await Fs.writeFiles(absFiles);
       } catch (error: any) {
         return error.message;
