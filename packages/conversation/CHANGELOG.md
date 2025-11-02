@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.2.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.2.1...@proteinjs/conversation@2.2.2) (2025-11-02)
+
+
+### Bug Fixes
+
+* `KeyworkfToFilesIndexFunctions` should be clear that searchFiles keywords are file name matches. ([35468e6](https://github.com/proteinjs/conversation/commit/35468e61c969fea71368bb3d133758ba846ff25d))
+
+
+
+
+
 ## [2.2.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.2.0...@proteinjs/conversation@2.2.1) (2025-11-02)
 
 
