@@ -32,6 +32,8 @@ export type GenerateObjectParams<S> = {
   /** A ready AI SDK model, e.g., openai('gpt-5') / openai('gpt-4o') */
   model: LanguageModel;
 
+  abortSignal?: AbortSignal;
+
   /** Zod schema or JSON Schema */
   schema: S;
 
@@ -272,12 +274,18 @@ export class Conversation {
   }: {
     messages: (string | ChatCompletionMessageParam)[];
     model?: TiktokenModel;
+    abortSignal?: AbortSignal;
     onUsageData?: (usageData: UsageData) => Promise<void>;
     onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
     reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
   }) {
     await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
+
+    this.logger.debug({ message: `=============== Conversation.generateResponse (start) ===============` });
+    this.logger.debug({ message: `Message history`, obj: { history: this.history.getMessages(), messages } });
+    this.logger.debug({ message: `=============== Conversation.generateResponse (end) ===============` });
+
     return await new OpenAi({
       history: this.history,
       functions: this.functions,
@@ -315,6 +323,7 @@ export class Conversation {
   async generateObject<T>({
     messages,
     model,
+    abortSignal,
     schema,
     temperature,
     topP,
@@ -337,8 +346,13 @@ export class Conversation {
         (!!(schema as any)._def && typeof (schema as any)._def.typeName === 'string'));
     const normalizedSchema = isZod ? (schema as any) : jsonSchema(this.strictifyJsonSchema(schema as any));
 
+    this.logger.debug({ message: `=============== Conversation.generateObject (start) ===============` });
+    this.logger.debug({ message: `Message history`, obj: { messages: combined } });
+    this.logger.debug({ message: `=============== Conversation.generateObject (end) ===============` });
+
     const result = await aiGenerateObject({
       model,
+      abortSignal,
       messages: combined,
       schema: normalizedSchema,
       providerOptions: {
