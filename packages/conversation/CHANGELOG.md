@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.2.2...@proteinjs/conversation@2.3.0) (2025-11-03)
+
+
+### Features
+
+* `Conversation` add optional abortSignal to `generateResponse` and `generateObject`. ([6167107](https://github.com/proteinjs/conversation/commit/616710771832448f47e1d1e2d087b4ceccb1b3cc))
+
+
+
+
+
 ## [2.2.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.2.1...@proteinjs/conversation@2.2.2) (2025-11-02)
 
 
