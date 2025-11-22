@@ -35,18 +35,26 @@ export type ToolInvocationResult = {
 };
 
 /** Realtime progress hook for tool calls. */
-export type ToolInvocationProgressEvent =
-  | {
-      type: 'started';
-      id: string;
-      name: string;
-      startedAt: Date;
-      input: unknown;
-    }
-  | {
-      type: 'finished';
-      result: ToolInvocationResult;
-    };
+export type ToolInvocationStartEvent = {
+  type: 'started';
+  id: string;
+  name: string;
+  startedAt: Date;
+  input: unknown;
+};
+
+export const isToolInvocationStartEvent = (event: ToolInvocationProgressEvent): event is ToolInvocationStartEvent =>
+  event.type === 'started';
+
+export type ToolInvocationFinishEvent = {
+  type: 'finished';
+  result: ToolInvocationResult;
+};
+
+export const isToolInvocationFinishEvent = (event: ToolInvocationProgressEvent): event is ToolInvocationFinishEvent =>
+  event.type === 'finished';
+
+export type ToolInvocationProgressEvent = ToolInvocationStartEvent | ToolInvocationFinishEvent;
 
 export type GenerateResponseParams = {
   messages: (string | ChatCompletionMessageParam)[];
