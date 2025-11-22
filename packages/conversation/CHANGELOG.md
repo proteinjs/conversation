@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.4.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.3.1...@proteinjs/conversation@2.4.0) (2025-11-22)
+
+
+### Features
+
+* Added `ToolInvocationProgressEvent` type helpers. ([7781ba5](https://github.com/proteinjs/conversation/commit/7781ba54710845ea3d852d051b6b2bb643c915cc))
+
+
+
+
+
 # [2.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.2.2...@proteinjs/conversation@2.3.0) (2025-11-03)
 
 
