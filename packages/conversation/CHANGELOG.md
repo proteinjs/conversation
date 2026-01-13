@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [2.4.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.4.1...@proteinjs/conversation@2.4.2) (2026-01-13)
+
+
+### Bug Fixes
+
+* `ConversationFsModule` shut off `ConversationFsModerator`. Not currently being used and therefore is non-trivial complexity that runs and only has the change of causing failures (even if it's only made the open ai request logs look confusing). ([7cef54b](https://github.com/proteinjs/conversation/commit/7cef54bdf2923a3539624b8556c4d031093acd9a))
+
+
+
+
+
 ## [2.4.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.4.0...@proteinjs/conversation@2.4.1) (2026-01-07)
 
 **Note:** Version bump only for package @proteinjs/conversation
