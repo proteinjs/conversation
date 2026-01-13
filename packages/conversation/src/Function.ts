@@ -1,7 +1,7 @@
-import { ChatCompletionTool } from 'openai/resources/chat';
+import { ChatCompletionFunctionTool } from 'openai/resources/chat';
 
 export interface Function {
-  definition: ChatCompletionTool['function'];
+  definition: ChatCompletionFunctionTool['function'];
   call(obj: any): Promise<any>;
   instructions?: string[];
 }

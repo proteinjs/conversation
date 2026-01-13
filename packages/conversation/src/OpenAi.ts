@@ -2,6 +2,7 @@ import { OpenAI as OpenAIApi } from 'openai';
 import {
   ChatCompletionMessageParam,
   ChatCompletion,
+  ChatCompletionMessageFunctionToolCall,
   ChatCompletionMessageToolCall,
   ChatCompletionChunk,
 } from 'openai/resources/chat';
@@ -21,6 +22,9 @@ import { UsageDataAccumulatorContext } from './UsageDataContext';
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+const isFunctionToolCall = (call: ChatCompletionMessageToolCall): call is ChatCompletionMessageFunctionToolCall =>
+  call.type === 'function';
 
 /** Structured capture of each tool call during a single generateResponse loop. */
 export type ToolInvocationResult = {
@@ -179,9 +183,10 @@ export class OpenAi {
         }
 
         // For the initial call to `generateResponseHelper`, return the `OpenAiStreamProcessor` output stream
-        const onToolCalls = ((toolCalls, currentFunctionCalls) =>
-          this.handleToolCalls(
-            toolCalls,
+        const onToolCalls = (async (toolCalls, currentFunctionCalls) => {
+          const functionToolCalls = toolCalls.filter(isFunctionToolCall);
+          return (await this.handleToolCalls(
+            functionToolCalls,
             model,
             stream,
             currentFunctionCalls,
@@ -190,7 +195,9 @@ export class OpenAi {
             onUsageData,
             toolInvocations,
             onToolInvocation
-          )) as (toolCalls: ChatCompletionMessageToolCall[], currentFunctionCalls: number) => Promise<Readable>;
+          )) as Readable;
+        }) as (toolCalls: ChatCompletionMessageToolCall[], currentFunctionCalls: number) => Promise<Readable>;
+
         const streamProcessor = new OpenAiStreamProcessor(
           inputStream,
           onToolCalls,
@@ -204,8 +211,9 @@ export class OpenAi {
 
       const responseMessage = (response as ChatCompletion).choices[0].message;
       if (responseMessage.tool_calls) {
+        const functionToolCalls = responseMessage.tool_calls.filter(isFunctionToolCall);
         return await this.handleToolCalls(
-          responseMessage.tool_calls,
+          functionToolCalls,
           model,
           stream,
           currentFunctionCalls,
@@ -318,9 +326,12 @@ export class OpenAi {
     if (responseMessage.content) {
       logger.info({ message: `Received response`, obj: { response: responseMessage.content } });
     } else if (responseMessage.tool_calls) {
+      const functionToolCalls = responseMessage.tool_calls.filter(isFunctionToolCall);
       logger.info({
         message: `Received response: call functions`,
-        obj: { functions: responseMessage.tool_calls.map((toolCall) => toolCall.function.name) },
+        obj: {
+          functions: functionToolCalls.map((toolCall) => toolCall.function.name),
+        },
       });
     } else {
       logger.info({ message: `Received response` });
@@ -367,7 +378,7 @@ export class OpenAi {
   }
 
   private async handleToolCalls(
-    toolCalls: ChatCompletionMessageToolCall[],
+    toolCalls: ChatCompletionMessageFunctionToolCall[],
     model: TiktokenModel,
     stream: boolean,
     currentFunctionCalls: number,
@@ -412,7 +423,7 @@ export class OpenAi {
   }
 
   private async callTools(
-    toolCalls: ChatCompletionMessageToolCall[],
+    toolCalls: ChatCompletionMessageFunctionToolCall[],
     usageDataAccumulator: UsageDataAccumulator,
     toolInvocations: ToolInvocationResult[],
     onToolInvocation?: (evt: ToolInvocationProgressEvent) => void
@@ -436,7 +447,7 @@ export class OpenAi {
   }
 
   private async callFunction(
-    functionCall: ChatCompletionMessageToolCall.Function,
+    functionCall: ChatCompletionMessageFunctionToolCall.Function,
     toolCallId: string,
     usageDataAccumulator: UsageDataAccumulator,
     toolInvocations: ToolInvocationResult[],

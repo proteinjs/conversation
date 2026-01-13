@@ -1,4 +1,4 @@
-import { ChatCompletionMessageToolCall, ChatCompletionChunk } from 'openai/resources/chat';
+import { ChatCompletionChunk, ChatCompletionMessageFunctionToolCall } from 'openai/resources/chat';
 import { LogLevel, Logger } from '@proteinjs/logger';
 import { Stream } from 'openai/streaming';
 import { Readable, Transform, TransformCallback, PassThrough } from 'stream';
@@ -16,9 +16,9 @@ export interface AssistantResponseStreamChunk {
  */
 export class OpenAiStreamProcessor {
   private logger: Logger;
-  private accumulatedToolCalls: Partial<ChatCompletionMessageToolCall>[] = [];
+  private accumulatedToolCalls: Partial<ChatCompletionMessageFunctionToolCall>[] = [];
   private toolCallsExecuted = 0;
-  private currentToolCall: Partial<ChatCompletionMessageToolCall> | null = null;
+  private currentToolCall: Partial<ChatCompletionMessageFunctionToolCall> | null = null;
   private inputStream: Readable;
   private controlStream: Transform;
   private outputStream: Readable;
@@ -27,7 +27,7 @@ export class OpenAiStreamProcessor {
   constructor(
     inputStream: Stream<ChatCompletionChunk>,
     private onToolCalls: (
-      toolCalls: ChatCompletionMessageToolCall[],
+      toolCalls: ChatCompletionMessageFunctionToolCall[],
       currentFunctionCalls: number
     ) => Promise<Readable>,
     private usageDataAccumulator: UsageDataAccumulator,
@@ -169,7 +169,7 @@ export class OpenAiStreamProcessor {
     }
 
     const completedToolCalls = this.accumulatedToolCalls.filter(
-      (tc): tc is ChatCompletionMessageToolCall =>
+      (tc): tc is ChatCompletionMessageFunctionToolCall =>
         tc.id !== undefined && tc.function !== undefined && tc.type !== undefined
     );
 
