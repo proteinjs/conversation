@@ -53,7 +53,8 @@ export class ConversationFsModule implements ConversationModule {
   }
 
   getMessageModerators() {
-    return [new ConversationFsModerator()];
+    // return [new ConversationFsModerator()];
+    return [];
   }
 
   pushRecentlyAccessedFilePath(filePaths: string[]) {
