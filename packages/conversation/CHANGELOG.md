@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.5.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.4.2...@proteinjs/conversation@2.5.0) (2026-01-16)
+
+
+### Bug Fixes
+
+* `KeywordToFilesIndexFunctions` add additional details to the `searchFilesFunction` description regarding the expectation of search terms (case-insensitive and extensions ignored). ([aa14d9b](https://github.com/proteinjs/conversation/commit/aa14d9b723b2087217549f167f1cfa111f9891db))
+
+
+### Features
+
+* `Conversation` enable setting of `maxToolCalls`. ([c8c8398](https://github.com/proteinjs/conversation/commit/c8c8398fcf6247d9ed81c6a4b69fd041fc3dd1f2))
+
+
+
+
+
 ## [2.4.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.4.1...@proteinjs/conversation@2.4.2) (2026-01-13)
 
 
