@@ -270,6 +270,7 @@ export class Conversation {
   async generateResponse({
     messages,
     model,
+    maxToolCalls,
     ...rest
   }: {
     messages: (string | ChatCompletionMessageParam)[];
@@ -278,6 +279,7 @@ export class Conversation {
     onUsageData?: (usageData: UsageData) => Promise<void>;
     onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
     reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+    maxToolCalls?: number;
   }) {
     await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
@@ -291,12 +293,14 @@ export class Conversation {
       functions: this.functions,
       messageModerators: this.messageModerators,
       logLevel: this.params.logLevel,
+      ...(typeof maxToolCalls !== 'undefined' ? { maxFunctionCalls: maxToolCalls } : {}),
     }).generateResponse({ messages, model, ...rest });
   }
 
   async generateStreamingResponse({
     messages,
     model,
+    maxToolCalls,
     ...rest
   }: {
     messages: (string | ChatCompletionMessageParam)[];
@@ -305,6 +309,7 @@ export class Conversation {
     onUsageData?: (usageData: UsageData) => Promise<void>;
     onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
     reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+    maxToolCalls?: number;
   }) {
     await this.ensureModulesProcessed();
     await this.enforceTokenLimit(messages, model);
@@ -313,6 +318,7 @@ export class Conversation {
       functions: this.functions,
       messageModerators: this.messageModerators,
       logLevel: this.params.logLevel,
+      ...(typeof maxToolCalls !== 'undefined' ? { maxFunctionCalls: maxToolCalls } : {}),
     }).generateStreamingResponse({ messages, model, ...rest });
   }
 
