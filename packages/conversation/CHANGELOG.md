@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.6.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.5.0...@proteinjs/conversation@2.6.0) (2026-01-16)
+
+
+### Features
+
+* Added `OpenAiResponses` as a wrapper around the responses api. ([8fa7470](https://github.com/proteinjs/conversation/commit/8fa7470265cc5157e980600a910e96225ba8c43f))
+
+
+
+
+
 # [2.5.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.4.2...@proteinjs/conversation@2.5.0) (2026-01-16)
 
 
