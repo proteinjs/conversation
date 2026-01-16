@@ -12,6 +12,7 @@ export * from './src/history/MessageHistory';
 export * from './src/ChatCompletionMessageParamFactory';
 export { AssistantResponseStreamChunk } from './src/OpenAiStreamProcessor';
 export { UsageData, TokenUsage } from './src/UsageData';
+export * from './src/OpenAiResponses';
 
 // Conversation modules
 export * from './src/fs/conversation_fs/ConversationFsModule';
