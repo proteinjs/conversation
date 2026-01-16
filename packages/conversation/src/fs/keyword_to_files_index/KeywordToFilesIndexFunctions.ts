@@ -5,7 +5,8 @@ export const searchFilesFunction = (module: KeywordToFilesIndexModule) => {
   return {
     definition: {
       name: searchFilesFunctionName,
-      description: 'Get file paths to files whose name contains the keyword',
+      description:
+        'Get file paths to files whose name contains the keyword. Case-insensitive file name search that ignores extension.',
       parameters: {
         type: 'object',
         properties: {
