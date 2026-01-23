@@ -183,7 +183,10 @@ export class OpenAiResponses {
       textFormat,
     });
 
-    const object = this.parseAndValidateStructuredOutput<T>(result.message, args.schema);
+    const object = this.parseAndValidateStructuredOutput<T>(result.message, args.schema, {
+      model,
+      maxOutputTokens: args.maxTokens,
+    });
 
     const outcome = {
       object,
@@ -235,7 +238,8 @@ export class OpenAiResponses {
     for (;;) {
       const response = await this.createResponseAndMaybeWait({
         model: args.model,
-        instructions: previousResponseId ? undefined : instructions,
+        // Always pass instructions; they are not carried over with previous_response_id.
+        instructions,
         input: nextInput,
         previousResponseId,
         tools,
@@ -249,6 +253,15 @@ export class OpenAiResponses {
       });
 
       this.addUsageFromResponse(response, usage);
+
+      // For structured outputs we should not attempt to parse incomplete/failed/cancelled responses.
+      // For plain-text generation, we allow "incomplete" to pass through (partial output),
+      // but still fail on other non-completed statuses.
+      this.throwIfResponseUnusable(response as any, {
+        allowIncomplete: !args.textFormat,
+        model: args.model,
+        maxOutputTokens: args.maxTokens,
+      });
 
       const functionCalls = this.extractFunctionCalls(response);
       if (functionCalls.length < 1) {
@@ -285,6 +298,168 @@ export class OpenAiResponses {
         obj: { toolCallsExecuted, lastToolCallCount: functionCalls.length, responseId: previousResponseId },
       });
     }
+  }
+
+  private throwIfResponseUnusable(
+    response: any,
+    opts: { allowIncomplete: boolean; model?: string; maxOutputTokens?: number }
+  ): void {
+    const statusRaw = typeof response?.status === 'string' ? String(response.status) : '';
+    const status = statusRaw.toLowerCase();
+
+    if (!status || status === 'completed') {
+      return;
+    }
+
+    if (status === 'incomplete' && opts.allowIncomplete) {
+      return;
+    }
+
+    const id = typeof response?.id === 'string' ? response.id : '';
+    const reason = response?.incomplete_details?.reason;
+    const apiErr = response?.error;
+
+    const directOutputText = typeof response?.output_text === 'string' ? response.output_text : '';
+    const assistantText = this.extractAssistantText(response as any);
+
+    const outTextLen = directOutputText ? directOutputText.length : 0;
+    const assistantLen = assistantText ? assistantText.length : 0;
+
+    const usage = response?.usage;
+    const inputTokens = typeof usage?.input_tokens === 'number' ? usage.input_tokens : undefined;
+    const outputTokens = typeof usage?.output_tokens === 'number' ? usage.output_tokens : undefined;
+    const totalTokens =
+      typeof usage?.total_tokens === 'number'
+        ? usage.total_tokens
+        : typeof inputTokens === 'number' && typeof outputTokens === 'number'
+          ? inputTokens + outputTokens
+          : undefined;
+
+    let msg = `Responses API returned status="${status}"`;
+    if (id) {
+      msg += ` (id=${id})`;
+    }
+    msg += `.`;
+
+    const details: Record<string, unknown> = {
+      response_id: id || undefined,
+      status,
+      model: typeof opts.model === 'string' && opts.model.trim() ? opts.model : undefined,
+      max_output_tokens: typeof opts.maxOutputTokens === 'number' ? opts.maxOutputTokens : undefined,
+
+      incomplete_reason: typeof reason === 'string' && reason.trim() ? reason : undefined,
+      api_error: apiErr ?? undefined,
+
+      usage_input_tokens: inputTokens,
+      usage_output_tokens: outputTokens,
+      usage_total_tokens: totalTokens,
+
+      output_text_len: outTextLen || undefined,
+      output_text_tail: outTextLen > 0 ? truncateTail(directOutputText, 400) : undefined,
+
+      assistant_text_len: assistantLen || undefined,
+      assistant_text_tail: assistantLen > 0 ? truncateTail(assistantText, 400) : undefined,
+    };
+
+    const extra: string[] = [];
+    if (details.model) {
+      extra.push(`model=${details.model}`);
+    }
+    if (typeof details.max_output_tokens === 'number') {
+      extra.push(`max_output_tokens=${details.max_output_tokens}`);
+    }
+    if (details.incomplete_reason) {
+      extra.push(`reason=${details.incomplete_reason}`);
+    }
+    if (typeof details.output_text_len === 'number') {
+      extra.push(`output_text_len=${details.output_text_len}`);
+    }
+    if (typeof details.assistant_text_len === 'number') {
+      extra.push(`assistant_text_len=${details.assistant_text_len}`);
+    }
+
+    if (extra.length > 0) {
+      msg += ` ${extra.join(' ')}.`;
+    }
+
+    throw new OpenAiResponsesError({
+      code: 'RESPONSE_STATUS',
+      message: msg,
+      details,
+    });
+  }
+
+  private toOpenAiApiError(
+    error: unknown,
+    meta: {
+      operation: 'responses.create' | 'responses.retrieve';
+      model?: string;
+      reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+      backgroundMode?: boolean;
+      responseId?: string;
+      previousResponseId?: string;
+      pollAttempt?: number;
+    }
+  ): OpenAiResponsesError {
+    const status = extractHttpStatus(error);
+    const requestId = extractRequestId(error);
+    const retryable = isRetryableHttpStatus(status);
+
+    const errMsg = error instanceof Error ? error.message : String(error ?? '');
+    const errName = error instanceof Error ? error.name : undefined;
+
+    let msg = `OpenAI ${meta.operation} failed.`;
+    const extra: string[] = [];
+
+    if (typeof status === 'number') {
+      extra.push(`status=${status}`);
+    }
+    if (requestId) {
+      extra.push(`requestId=${requestId}`);
+    }
+    if (meta.responseId) {
+      extra.push(`responseId=${meta.responseId}`);
+    }
+    if (meta.backgroundMode) {
+      extra.push(`background=true`);
+    }
+    if (typeof meta.pollAttempt === 'number') {
+      extra.push(`pollAttempt=${meta.pollAttempt}`);
+    }
+    if (typeof meta.model === 'string' && meta.model.trim()) {
+      extra.push(`model=${meta.model.trim()}`);
+    }
+    if (meta.reasoningEffort) {
+      extra.push(`reasoningEffort=${meta.reasoningEffort}`);
+    }
+
+    if (extra.length > 0) {
+      msg += ` ${extra.join(' ')}.`;
+    }
+    if (errMsg) {
+      msg += ` error=${JSON.stringify(errMsg)}.`;
+    }
+
+    const details: Record<string, unknown> = {
+      operation: meta.operation,
+      status: typeof status === 'number' ? status : undefined,
+      request_id: requestId,
+      response_id: meta.responseId,
+      previous_response_id: meta.previousResponseId,
+      background: meta.backgroundMode ? true : undefined,
+      poll_attempt: meta.pollAttempt,
+      model: typeof meta.model === 'string' && meta.model.trim() ? meta.model.trim() : undefined,
+      reasoning_effort: meta.reasoningEffort,
+      error_name: errName,
+    };
+
+    return new OpenAiResponsesError({
+      code: 'OPENAI_API',
+      message: msg,
+      details,
+      cause: error,
+      retryable,
+    });
   }
 
   private async createResponseAndMaybeWait(args: {
@@ -348,10 +523,21 @@ export class OpenAiResponses {
       body.store = true;
     }
 
-    const created = await this.client.responses.create(
-      body as never,
-      args.abortSignal ? { signal: args.abortSignal } : undefined
-    );
+    let created: any;
+    try {
+      created = await this.client.responses.create(
+        body as never,
+        args.abortSignal ? { signal: args.abortSignal } : undefined
+      );
+    } catch (error: unknown) {
+      throw this.toOpenAiApiError(error, {
+        operation: 'responses.create',
+        model: args.model,
+        reasoningEffort: args.reasoningEffort,
+        backgroundMode: args.backgroundMode,
+        previousResponseId: args.previousResponseId,
+      });
+    }
 
     if (!args.backgroundMode) {
       return created as unknown as {
@@ -373,12 +559,16 @@ export class OpenAiResponses {
       };
     }
 
-    return await this.waitForCompletion(created.id, args.abortSignal);
+    return await this.waitForCompletion(created.id, args.abortSignal, {
+      model: args.model,
+      reasoningEffort: args.reasoningEffort,
+    });
   }
 
   private async waitForCompletion(
     responseId: string,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    ctx?: { model?: string; reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort }
   ): Promise<{
     id?: string;
     status?: string;
@@ -387,17 +577,32 @@ export class OpenAiResponses {
     usage?: unknown;
   }> {
     let delayMs = 500;
+    let pollAttempt = 0;
 
     for (;;) {
       if (abortSignal?.aborted) {
         throw new Error(`Request aborted`);
       }
 
-      const resp = await this.client.responses.retrieve(
-        responseId,
-        undefined,
-        abortSignal ? { signal: abortSignal } : undefined
-      );
+      pollAttempt += 1;
+
+      let resp: any;
+      try {
+        resp = await this.client.responses.retrieve(
+          responseId,
+          undefined,
+          abortSignal ? { signal: abortSignal } : undefined
+        );
+      } catch (error: unknown) {
+        throw this.toOpenAiApiError(error, {
+          operation: 'responses.retrieve',
+          model: ctx?.model,
+          reasoningEffort: ctx?.reasoningEffort,
+          backgroundMode: true,
+          responseId,
+          pollAttempt,
+        });
+      }
 
       const status = typeof (resp as any)?.status === 'string' ? String((resp as any).status).toLowerCase() : '';
       if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'incomplete') {
@@ -677,12 +882,10 @@ export class OpenAiResponses {
   }
 
   private extractAssistantText(response: { output_text?: string; output?: unknown[] }): string {
-    const direct = typeof response.output_text === 'string' ? response.output_text.trim() : '';
-    if (direct) {
-      return direct;
-    }
-
     const out = Array.isArray(response.output) ? response.output : [];
+
+    let lastJoined = '';
+
     for (const item of out) {
       if (!item || typeof item !== 'object') {
         continue;
@@ -717,8 +920,17 @@ export class OpenAiResponses {
 
       const joined = pieces.join('\n').trim();
       if (joined) {
-        return joined;
+        lastJoined = joined;
       }
+    }
+
+    if (lastJoined) {
+      return lastJoined;
+    }
+
+    const direct = typeof response.output_text === 'string' ? response.output_text.trim() : '';
+    if (direct) {
+      return direct;
     }
 
     return '';
@@ -744,8 +956,12 @@ export class OpenAiResponses {
     };
   }
 
-  private parseAndValidateStructuredOutput<T>(text: string, schema: unknown): T {
-    const parsed = this.parseJson(text);
+  private parseAndValidateStructuredOutput<T>(
+    text: string,
+    schema: unknown,
+    ctx?: { model?: string; maxOutputTokens?: number }
+  ): T {
+    const parsed = this.parseJson(text, ctx);
 
     if (this.isZodSchema(schema)) {
       const res = schema.safeParse(parsed);
@@ -765,7 +981,7 @@ export class OpenAiResponses {
     return typeof (schema as any).safeParse === 'function';
   }
 
-  private parseJson(text: string): any {
+  private parseJson(text: string, ctx?: { model?: string; maxOutputTokens?: number }): any {
     const cleaned = String(text ?? '')
       .trim()
       .replace(/^```(?:json)?/i, '')
@@ -774,7 +990,9 @@ export class OpenAiResponses {
 
     try {
       return JSON.parse(cleaned);
-    } catch {
+    } catch (err1: unknown) {
+      const firstErrMsg = err1 instanceof Error ? err1.message : String(err1);
+
       const s = cleaned;
       const firstObj = s.indexOf('{');
       const firstArr = s.indexOf('[');
@@ -785,10 +1003,88 @@ export class OpenAiResponses {
       const end = Math.max(lastObj, lastArr);
 
       if (start >= 0 && end > start) {
-        return JSON.parse(s.slice(start, end + 1));
+        const candidate = s.slice(start, end + 1);
+        try {
+          return JSON.parse(candidate);
+        } catch (err2: unknown) {
+          const secondErrMsg = err2 instanceof Error ? err2.message : String(err2);
+
+          const pos2rel = extractJsonParsePosition(secondErrMsg);
+          const pos2 = typeof pos2rel === 'number' ? start + pos2rel : undefined;
+
+          const pos1 = extractJsonParsePosition(firstErrMsg);
+          const pos = typeof pos2 === 'number' ? pos2 : pos1;
+
+          const lc = extractJsonParseLineCol(secondErrMsg) ?? extractJsonParseLineCol(firstErrMsg);
+
+          const details: Record<string, unknown> = {
+            model: typeof ctx?.model === 'string' && ctx.model.trim() ? ctx.model : undefined,
+            max_output_tokens: typeof ctx?.maxOutputTokens === 'number' ? ctx.maxOutputTokens : undefined,
+
+            cleaned_len: s.length,
+            cleaned_head: truncateHead(s, 250),
+            cleaned_tail: truncateTail(s, 500),
+
+            json_start: start,
+            json_end: end,
+            json_candidate_len: candidate.length,
+
+            first_error: firstErrMsg,
+            second_error: secondErrMsg,
+
+            error_pos: typeof pos === 'number' ? pos : undefined,
+            error_line: lc?.line,
+            error_column: lc?.column,
+            error_context: typeof pos === 'number' ? snippetAround(s, pos, 160) : undefined,
+          };
+
+          const msg =
+            `Failed to parse model output as JSON. ` +
+            `cleaned_len=${s.length} json_start=${start} json_end=${end}. ` +
+            `first_error=${JSON.stringify(firstErrMsg)} second_error=${JSON.stringify(secondErrMsg)}.`;
+
+          throw new OpenAiResponsesError({
+            code: 'JSON_PARSE',
+            message: msg,
+            details,
+            cause: err2,
+          });
+        }
       }
 
-      throw new Error(`Failed to parse model output as JSON`);
+      const pos = extractJsonParsePosition(firstErrMsg);
+      const lc = extractJsonParseLineCol(firstErrMsg);
+
+      const details: Record<string, unknown> = {
+        model: typeof ctx?.model === 'string' && ctx.model.trim() ? ctx.model : undefined,
+        max_output_tokens: typeof ctx?.maxOutputTokens === 'number' ? ctx.maxOutputTokens : undefined,
+
+        cleaned_len: s.length,
+        cleaned_head: truncateHead(s, 250),
+        cleaned_tail: truncateTail(s, 500),
+
+        json_start: start >= 0 ? start : undefined,
+        json_end: end >= 0 ? end : undefined,
+
+        first_error: firstErrMsg,
+
+        error_pos: typeof pos === 'number' ? pos : undefined,
+        error_line: lc?.line,
+        error_column: lc?.column,
+        error_context: typeof pos === 'number' ? snippetAround(s, pos, 160) : undefined,
+      };
+
+      const msg =
+        `Failed to parse model output as JSON. ` +
+        `cleaned_len=${s.length}. ` +
+        `error=${JSON.stringify(firstErrMsg)}.`;
+
+      throw new OpenAiResponsesError({
+        code: 'JSON_PARSE',
+        message: msg,
+        details,
+        cause: err1,
+      });
     }
   }
 
@@ -1071,6 +1367,155 @@ export class OpenAiResponses {
   }
 }
 
+export type OpenAiResponsesErrorCode = 'OPENAI_API' | 'RESPONSE_STATUS' | 'JSON_PARSE';
+
+export class OpenAiResponsesError extends Error {
+  public readonly code: OpenAiResponsesErrorCode;
+  public readonly details: Record<string, unknown>;
+  public readonly cause?: unknown;
+  public readonly retryable: boolean;
+
+  constructor(args: {
+    code: OpenAiResponsesErrorCode;
+    message: string;
+    details?: Record<string, unknown>;
+    cause?: unknown;
+    retryable?: boolean;
+  }) {
+    super(args.message);
+    this.name = 'OpenAiResponsesError';
+    this.code = args.code;
+    this.details = args.details ?? {};
+    this.cause = args.cause;
+    this.retryable = typeof args.retryable === 'boolean' ? args.retryable : true;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+function truncateHead(text: string, max: number): string {
+  const s = String(text ?? '');
+  if (max <= 0) {
+    return '';
+  }
+  if (s.length <= max) {
+    return s;
+  }
+  return s.slice(0, max) + '...';
+}
+
+function truncateTail(text: string, max: number): string {
+  const s = String(text ?? '');
+  if (max <= 0) {
+    return '';
+  }
+  if (s.length <= max) {
+    return s;
+  }
+  return '...' + s.slice(s.length - max);
+}
+
+function extractJsonParsePosition(errMsg: string): number | undefined {
+  const m = String(errMsg ?? '').match(/at position\s+(\d+)/i);
+  if (!m) {
+    return undefined;
+  }
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function extractJsonParseLineCol(errMsg: string): { line?: number; column?: number } | undefined {
+  const m = String(errMsg ?? '').match(/line\s+(\d+)\s+column\s+(\d+)/i);
+  if (!m) {
+    return undefined;
+  }
+  const line = Number(m[1]);
+  const column = Number(m[2]);
+  return {
+    line: Number.isFinite(line) ? line : undefined,
+    column: Number.isFinite(column) ? column : undefined,
+  };
+}
+
+function snippetAround(text: string, pos: number, radius: number): string {
+  const s = String(text ?? '');
+  const p = Math.max(0, Math.min(s.length, Number.isFinite(pos) ? pos : 0));
+  const r = Math.max(0, radius);
+
+  const start = Math.max(0, p - r);
+  const end = Math.min(s.length, p + r);
+
+  const before = s.slice(start, p);
+  const after = s.slice(p, end);
+
+  const left = start > 0 ? '...' : '';
+  const right = end < s.length ? '...' : '';
+
+  return `${left}${before}<<HERE>>${after}${right}`;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function extractHttpStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+  const rec = error as Record<string, unknown>;
+  const status = rec.status;
+  if (typeof status === 'number' && Number.isFinite(status)) {
+    return status;
+  }
+  const statusCode = rec.statusCode;
+  if (typeof statusCode === 'number' && Number.isFinite(statusCode)) {
+    return statusCode;
+  }
+  return undefined;
+}
+
+function extractRequestId(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined;
+  }
+  const rec = error as Record<string, unknown>;
+
+  const direct = rec.request_id ?? rec.requestId;
+  if (typeof direct === 'string' && direct.trim()) {
+    return direct.trim();
+  }
+
+  const headers = rec.headers as any;
+  if (!headers) {
+    return undefined;
+  }
+
+  if (typeof headers.get === 'function') {
+    const v = headers.get('x-request-id');
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  }
+
+  if (typeof headers === 'object' && !Array.isArray(headers)) {
+    for (const k of Object.keys(headers)) {
+      if (String(k).toLowerCase() !== 'x-request-id') {
+        continue;
+      }
+      const v = (headers as any)[k];
+      return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+    }
+  }
+
+  return undefined;
+}
+
+function isRetryableHttpStatus(status: number | undefined): boolean {
+  if (typeof status !== 'number') {
+    return true;
+  }
+  if (status === 408 || status === 409 || status === 429) {
+    return true;
+  }
+  if (status >= 500) {
+    return true;
+  }
+  return false;
 }
