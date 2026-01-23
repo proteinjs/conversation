@@ -4,6 +4,7 @@ import { searchFilesFunctionName } from '../keyword_to_files_index/KeywordToFile
 import { searchLibrariesFunctionName, searchPackagesFunctionName } from '../package/PackageFunctions';
 import { ConversationFsModerator } from './ConversationFsModerator';
 import {
+  deleteFilesFunction,
   fsFunctions,
   getRecentlyAccessedFilePathsFunction,
   grepFunction,
@@ -46,6 +47,7 @@ export class ConversationFsModule implements ConversationModule {
     return [
       readFilesFunction(this),
       writeFilesFunction(this),
+      deleteFilesFunction(this),
       getRecentlyAccessedFilePathsFunction(this),
       grepFunction(this),
       ...fsFunctions,

@@ -115,6 +115,36 @@ export function writeFilesFunction(fsModule: ConversationFsModule) {
   };
 }
 
+export const deleteFilesFunctionName = 'deleteFiles';
+export function deleteFilesFunction(fsModule: ConversationFsModule) {
+  return {
+    definition: {
+      name: deleteFilesFunctionName,
+      description: 'Delete files from the file system',
+      parameters: {
+        type: 'object',
+        properties: {
+          paths: {
+            type: 'array',
+            description: 'Paths to the files',
+            items: { type: 'string' },
+          },
+        },
+        required: ['paths'],
+      },
+    },
+    call: async (params: { paths: string[] }) => {
+      try {
+        const absPaths = await canonicalizePaths(fsModule, params.paths);
+        return await Fs.deleteFiles(absPaths);
+      } catch (error: any) {
+        return error.message;
+      }
+    },
+    instructions: [`To delete files from the local file system, use the ${deleteFilesFunctionName} function`],
+  };
+}
+
 export const getRecentlyAccessedFilePathsFunctionName = 'getRecentlyAccessedFilePaths';
 export function getRecentlyAccessedFilePathsFunction(fsModule: ConversationFsModule) {
   return {
@@ -131,8 +161,8 @@ export function getRecentlyAccessedFilePathsFunction(fsModule: ConversationFsMod
   };
 }
 
-const createFolderFunctionName = 'createFolder';
-const createFolderFunction: Function = {
+export const createFolderFunctionName = 'createFolder';
+export const createFolderFunction: Function = {
   definition: {
     name: createFolderFunctionName,
     description: 'Create a folder/directory',
