@@ -11,6 +11,12 @@ import { DEFAULT_MODEL } from './OpenAi';
 export const DEFAULT_RESPONSES_MODEL = 'gpt-5.2';
 export const DEFAULT_MAX_TOOL_CALLS = 50;
 
+/** Default hard cap for background-mode polling duration (ms): 1 hour. */
+export const DEFAULT_MAX_BACKGROUND_WAIT_MS = 60 * 60 * 1000;
+
+/** Best-effort timeout for cancel calls (avoid hanging abort/timeout paths). */
+const DEFAULT_CANCEL_TIMEOUT_MS = 10_000;
+
 export type OpenAiResponsesParams = {
   modules?: ConversationModule[];
   /** If provided, only these functions will be exposed to the model. */
@@ -22,6 +28,9 @@ export type OpenAiResponsesParams = {
 
   /** Default cap for tool calls (per call). */
   maxToolCalls?: number;
+
+  /** Default hard cap for background-mode polling duration (ms). Default: 1 hour. */
+  maxBackgroundWaitMs?: number;
 };
 
 export type GenerateTextParams = {
@@ -29,6 +38,9 @@ export type GenerateTextParams = {
   model?: string;
 
   abortSignal?: AbortSignal;
+
+  /** Hard cap for background-mode polling duration (ms). Default: 1 hour. */
+  maxBackgroundWaitMs?: number;
 
   /** Sampling & limits */
   temperature?: number;
@@ -56,6 +68,9 @@ export type ResponsesGenerateObjectParams<S> = {
   model?: string;
 
   abortSignal?: AbortSignal;
+
+  /** Hard cap for background-mode polling duration (ms). Default: 1 hour. */
+  maxBackgroundWaitMs?: number;
 
   /** Zod schema or JSON Schema */
   schema: S;
@@ -98,6 +113,7 @@ export class OpenAiResponses {
   private readonly allowedFunctionNames?: string[];
   private readonly defaultModel: string;
   private readonly defaultMaxToolCalls: number;
+  private readonly defaultMaxBackgroundWaitMs: number;
 
   private modulesProcessed = false;
   private processingModulesPromise: Promise<void> | null = null;
@@ -114,6 +130,13 @@ export class OpenAiResponses {
 
     this.defaultModel = (opts.defaultModel ?? DEFAULT_RESPONSES_MODEL).trim();
     this.defaultMaxToolCalls = typeof opts.maxToolCalls === 'number' ? opts.maxToolCalls : DEFAULT_MAX_TOOL_CALLS;
+
+    this.defaultMaxBackgroundWaitMs =
+      typeof opts.maxBackgroundWaitMs === 'number' &&
+      Number.isFinite(opts.maxBackgroundWaitMs) &&
+      opts.maxBackgroundWaitMs > 0
+        ? Math.floor(opts.maxBackgroundWaitMs)
+        : DEFAULT_MAX_BACKGROUND_WAIT_MS;
   }
 
   /** Plain text generation (supports tool calling). */
@@ -128,6 +151,7 @@ export class OpenAiResponses {
     });
 
     const maxToolCalls = typeof args.maxToolCalls === 'number' ? args.maxToolCalls : this.defaultMaxToolCalls;
+    const maxBackgroundWaitMs = this.resolveMaxBackgroundWaitMs(args.maxBackgroundWaitMs);
 
     const result = await this.run({
       model,
@@ -140,6 +164,7 @@ export class OpenAiResponses {
       reasoningEffort: args.reasoningEffort,
       maxToolCalls,
       backgroundMode,
+      maxBackgroundWaitMs,
       textFormat: undefined,
     });
 
@@ -167,6 +192,7 @@ export class OpenAiResponses {
     });
 
     const maxToolCalls = typeof args.maxToolCalls === 'number' ? args.maxToolCalls : this.defaultMaxToolCalls;
+    const maxBackgroundWaitMs = this.resolveMaxBackgroundWaitMs(args.maxBackgroundWaitMs);
     const textFormat = this.buildTextFormat(args.schema);
 
     const result = await this.run({
@@ -180,6 +206,7 @@ export class OpenAiResponses {
       reasoningEffort: args.reasoningEffort,
       maxToolCalls,
       backgroundMode,
+      maxBackgroundWaitMs,
       textFormat,
     });
 
@@ -219,6 +246,7 @@ export class OpenAiResponses {
 
     maxToolCalls: number;
     backgroundMode: boolean;
+    maxBackgroundWaitMs: number;
 
     textFormat?: unknown;
   }): Promise<GenerateResponseReturn> {
@@ -249,6 +277,7 @@ export class OpenAiResponses {
         reasoningEffort: args.reasoningEffort,
         textFormat: args.textFormat,
         backgroundMode: args.backgroundMode,
+        maxBackgroundWaitMs: args.maxBackgroundWaitMs,
         abortSignal: args.abortSignal,
       });
 
@@ -392,13 +421,17 @@ export class OpenAiResponses {
   private toOpenAiApiError(
     error: unknown,
     meta: {
-      operation: 'responses.create' | 'responses.retrieve';
+      operation: 'responses.create' | 'responses.retrieve' | 'responses.cancel';
       model?: string;
       reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
       backgroundMode?: boolean;
       responseId?: string;
       previousResponseId?: string;
       pollAttempt?: number;
+      aborted?: boolean;
+      waitedMs?: number;
+      maxWaitMs?: number;
+      lastStatus?: string;
     }
   ): OpenAiResponsesError {
     const status = extractHttpStatus(error);
@@ -408,9 +441,14 @@ export class OpenAiResponses {
     const errMsg = error instanceof Error ? error.message : String(error ?? '');
     const errName = error instanceof Error ? error.name : undefined;
 
+    const aborted = meta.aborted === true || isAbortError(error);
+
     let msg = `OpenAI ${meta.operation} failed.`;
     const extra: string[] = [];
 
+    if (aborted) {
+      extra.push(`aborted=true`);
+    }
     if (typeof status === 'number') {
       extra.push(`status=${status}`);
     }
@@ -425,6 +463,15 @@ export class OpenAiResponses {
     }
     if (typeof meta.pollAttempt === 'number') {
       extra.push(`pollAttempt=${meta.pollAttempt}`);
+    }
+    if (typeof meta.waitedMs === 'number') {
+      extra.push(`waitedMs=${meta.waitedMs}`);
+    }
+    if (typeof meta.maxWaitMs === 'number') {
+      extra.push(`maxWaitMs=${meta.maxWaitMs}`);
+    }
+    if (typeof meta.lastStatus === 'string' && meta.lastStatus.trim()) {
+      extra.push(`lastStatus=${meta.lastStatus.trim()}`);
     }
     if (typeof meta.model === 'string' && meta.model.trim()) {
       extra.push(`model=${meta.model.trim()}`);
@@ -448,9 +495,13 @@ export class OpenAiResponses {
       previous_response_id: meta.previousResponseId,
       background: meta.backgroundMode ? true : undefined,
       poll_attempt: meta.pollAttempt,
+      waited_ms: meta.waitedMs,
+      max_wait_ms: meta.maxWaitMs,
+      last_status: typeof meta.lastStatus === 'string' && meta.lastStatus.trim() ? meta.lastStatus.trim() : undefined,
       model: typeof meta.model === 'string' && meta.model.trim() ? meta.model.trim() : undefined,
       reasoning_effort: meta.reasoningEffort,
       error_name: errName,
+      aborted: aborted ? true : undefined,
     };
 
     return new OpenAiResponsesError({
@@ -460,6 +511,61 @@ export class OpenAiResponses {
       cause: error,
       retryable,
     });
+  }
+
+  private resolveMaxBackgroundWaitMs(ms?: number): number {
+    const n =
+      typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? Math.floor(ms) : this.defaultMaxBackgroundWaitMs;
+    // Ensure we never return a non-positive number even if misconfigured elsewhere.
+    return n > 0 ? n : DEFAULT_MAX_BACKGROUND_WAIT_MS;
+  }
+
+  private async cancelResponseBestEffort(
+    responseId: string,
+    opts?: { timeoutMs?: number }
+  ): Promise<
+    | { attempted: false }
+    | { attempted: true; ok: true }
+    | { attempted: true; ok: false; timedOut?: boolean; error?: Record<string, unknown> }
+  > {
+    const cancelFn = (this.client.responses as any)?.cancel;
+    if (typeof cancelFn !== 'function') {
+      return { attempted: false };
+    }
+
+    const timeoutMs =
+      typeof opts?.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+        ? Math.floor(opts.timeoutMs)
+        : DEFAULT_CANCEL_TIMEOUT_MS;
+
+    const cancelPromise = (async (): Promise<{ ok: true } | { ok: false; error: Record<string, unknown> }> => {
+      try {
+        // Signature differs across SDK versions; JS ignores extra args.
+        await cancelFn.call(this.client.responses, responseId);
+        return { ok: true as const };
+      } catch (e: unknown) {
+        return { ok: false as const, error: safeErrorSummary(e) };
+      }
+    })();
+
+    // Ensure we never leak an unhandled rejection if the race times out.
+    void cancelPromise.catch(() => undefined);
+
+    const raced = await Promise.race([
+      cancelPromise,
+      sleep(timeoutMs).then(() => ({ ok: false as const, error: { message: 'Cancel timed out' }, timedOut: true })),
+    ]);
+
+    if (raced.ok) {
+      return { attempted: true, ok: true };
+    }
+
+    return {
+      attempted: true,
+      ok: false,
+      timedOut: (raced as any).timedOut ? true : undefined,
+      error: (raced as any).error ? (raced as any).error : undefined,
+    };
   }
 
   private async createResponseAndMaybeWait(args: {
@@ -477,6 +583,7 @@ export class OpenAiResponses {
     textFormat?: unknown;
 
     backgroundMode: boolean;
+    maxBackgroundWaitMs: number;
     abortSignal?: AbortSignal;
   }): Promise<{
     id?: string;
@@ -536,6 +643,7 @@ export class OpenAiResponses {
         reasoningEffort: args.reasoningEffort,
         backgroundMode: args.backgroundMode,
         previousResponseId: args.previousResponseId,
+        aborted: args.abortSignal?.aborted ? true : undefined,
       });
     }
 
@@ -562,13 +670,18 @@ export class OpenAiResponses {
     return await this.waitForCompletion(created.id, args.abortSignal, {
       model: args.model,
       reasoningEffort: args.reasoningEffort,
+      maxWaitMs: this.resolveMaxBackgroundWaitMs(args.maxBackgroundWaitMs),
     });
   }
 
   private async waitForCompletion(
     responseId: string,
     abortSignal?: AbortSignal,
-    ctx?: { model?: string; reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort }
+    ctx?: {
+      model?: string;
+      reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+      maxWaitMs?: number;
+    }
   ): Promise<{
     id?: string;
     status?: string;
@@ -576,12 +689,72 @@ export class OpenAiResponses {
     output?: unknown[];
     usage?: unknown;
   }> {
+    const maxWaitMs = this.resolveMaxBackgroundWaitMs(ctx?.maxWaitMs);
+
+    const startedAtMs = Date.now();
+
     let delayMs = 500;
     let pollAttempt = 0;
 
+    let lastStatus = '';
+    let cancelAttempted = false;
+
+    const throwPollingStop = async (args: { kind: 'aborted' | 'timeout'; cause?: unknown }): Promise<never> => {
+      const waitedMs = Date.now() - startedAtMs;
+
+      // Best-effort cancellation to stop server-side work when we're done waiting.
+      let cancel: Awaited<ReturnType<OpenAiResponses['cancelResponseBestEffort']>> | undefined = undefined;
+      if (!cancelAttempted) {
+        cancelAttempted = true;
+        cancel = await this.cancelResponseBestEffort(responseId, { timeoutMs: DEFAULT_CANCEL_TIMEOUT_MS });
+      }
+
+      const baseDetails: Record<string, unknown> = {
+        operation: 'responses.retrieve',
+        response_id: responseId,
+        background: true,
+        poll_attempt: pollAttempt,
+        waited_ms: waitedMs,
+        max_wait_ms: maxWaitMs,
+        last_status: lastStatus || undefined,
+        model: typeof ctx?.model === 'string' && ctx.model.trim() ? ctx.model.trim() : undefined,
+        reasoning_effort: ctx?.reasoningEffort,
+        aborted: args.kind === 'aborted' ? true : undefined,
+        timeout: args.kind === 'timeout' ? true : undefined,
+        cancel_attempted: cancel?.attempted ? true : undefined,
+        cancel_ok: cancel && cancel.attempted && 'ok' in cancel ? (cancel as any).ok : undefined,
+        cancel_timed_out: cancel && cancel.attempted && (cancel as any).timedOut ? true : undefined,
+        cancel_error: cancel && cancel.attempted && (cancel as any).error ? (cancel as any).error : undefined,
+      };
+
+      if (args.cause) {
+        baseDetails.polling_cause = safeErrorSummary(args.cause);
+      }
+
+      const msg =
+        args.kind === 'timeout'
+          ? `Background response exceeded max wait (maxWaitMs=${maxWaitMs}) while polling (id=${responseId}).`
+          : `Background polling aborted (id=${responseId}).`;
+
+      throw new OpenAiResponsesError({
+        code: 'OPENAI_API',
+        message: msg,
+        details: baseDetails,
+        cause: args.cause,
+      });
+    };
+
     for (;;) {
+      const waitedMs = Date.now() - startedAtMs;
+
+      // Abort wins immediately.
       if (abortSignal?.aborted) {
-        throw new Error(`Request aborted`);
+        await throwPollingStop({ kind: 'aborted' });
+      }
+
+      // Max wait cap (1h default) to prevent runaway polling.
+      if (waitedMs >= maxWaitMs) {
+        await throwPollingStop({ kind: 'timeout' });
       }
 
       pollAttempt += 1;
@@ -594,6 +767,11 @@ export class OpenAiResponses {
           abortSignal ? { signal: abortSignal } : undefined
         );
       } catch (error: unknown) {
+        // If the request was aborted mid-flight, treat it as an abort and still attempt cancellation.
+        if (abortSignal?.aborted || isAbortError(error)) {
+          await throwPollingStop({ kind: 'aborted', cause: error });
+        }
+
         throw this.toOpenAiApiError(error, {
           operation: 'responses.retrieve',
           model: ctx?.model,
@@ -601,11 +779,23 @@ export class OpenAiResponses {
           backgroundMode: true,
           responseId,
           pollAttempt,
+          waitedMs,
+          maxWaitMs,
+          lastStatus,
         });
       }
 
       const status = typeof (resp as any)?.status === 'string' ? String((resp as any).status).toLowerCase() : '';
-      if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'incomplete') {
+      lastStatus = status;
+
+      // Terminal states (support both spellings for safety).
+      if (
+        status === 'completed' ||
+        status === 'failed' ||
+        status === 'incomplete' ||
+        status === 'cancelled' ||
+        status === 'canceled'
+      ) {
         return resp as unknown as {
           id?: string;
           status?: string;
@@ -615,9 +805,10 @@ export class OpenAiResponses {
         };
       }
 
-      this.logger.debug({ message: `Polling response`, obj: { responseId, status, delayMs } });
+      this.logger.debug({ message: `Polling response`, obj: { responseId, status, delayMs, pollAttempt, waitedMs } });
 
-      await sleep(delayMs);
+      // Sleep but wake early if aborted, so abort latency is low.
+      await sleepWithAbort(delayMs, abortSignal);
       delayMs = Math.min(5000, Math.floor(delayMs * 1.5));
     }
   }
@@ -1457,6 +1648,50 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Sleep, but wake early if the signal is aborted.
+ * (We do not throw here; the caller should check `signal.aborted` and act.)
+ */
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    return sleep(ms);
+  }
+  if (signal.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const t = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = () => {
+      cleanup();
+      resolve();
+    };
+
+    const cleanup = () => {
+      try {
+        clearTimeout(t);
+      } catch {
+        // ignore
+      }
+      try {
+        signal.removeEventListener?.('abort', onAbort as any);
+      } catch {
+        // ignore
+      }
+    };
+
+    try {
+      signal.addEventListener?.('abort', onAbort as any, { once: true });
+    } catch {
+      // If addEventListener isn't available, fall back to plain sleep.
+    }
+  });
+}
+
 function extractHttpStatus(error: unknown): number | undefined {
   if (!error || typeof error !== 'object') {
     return undefined;
@@ -1518,4 +1753,70 @@ function isRetryableHttpStatus(status: number | undefined): boolean {
     return true;
   }
   return false;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (!error) {
+    return false;
+  }
+
+  // Most fetch implementations:
+  //  - error.name === 'AbortError'
+  //  - or error.code === 'ABORT_ERR'
+  if (error instanceof Error) {
+    const name = String(error.name ?? '').toLowerCase();
+    if (name === 'aborterror') {
+      return true;
+    }
+    const msg = String(error.message ?? '').toLowerCase();
+    // Keep this conservative; don't treat every "abort" substring as abort.
+    if (msg === 'aborted' || msg === 'request aborted') {
+      return true;
+    }
+  }
+
+  if (typeof error === 'object') {
+    const rec = error as Record<string, unknown>;
+    const code = rec.code;
+    if (typeof code === 'string' && code.toUpperCase() === 'ABORT_ERR') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function safeErrorSummary(error: unknown): Record<string, unknown> {
+  if (!error) {
+    return { message: 'Unknown error' };
+  }
+
+  const status = extractHttpStatus(error);
+  const requestId = extractRequestId(error);
+
+  if (error instanceof OpenAiResponsesError) {
+    return {
+      name: error.name,
+      message: error.message,
+      code: error.code,
+      details: error.details,
+      status: typeof status === 'number' ? status : undefined,
+      request_id: requestId,
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      status: typeof status === 'number' ? status : undefined,
+      request_id: requestId,
+    };
+  }
+
+  return {
+    message: String(error),
+    status: typeof status === 'number' ? status : undefined,
+    request_id: requestId,
+  };
 }
