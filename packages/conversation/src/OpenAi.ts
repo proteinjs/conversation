@@ -339,10 +339,10 @@ export class OpenAi {
     if (response.usage) {
       logger.info({ message: `Usage data`, obj: { usageData: response.usage } });
       usageDataAccumulator.addTokenUsage({
-        promptTokens: response.usage.prompt_tokens,
+        inputTokens: response.usage.prompt_tokens,
         reasoningTokens: response.usage.completion_tokens_details?.reasoning_tokens ?? 0,
-        cachedPromptTokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0,
-        completionTokens: response.usage.completion_tokens,
+        cachedInputTokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0,
+        outputTokens: response.usage.completion_tokens,
         totalTokens: response.usage.total_tokens,
       });
     } else {

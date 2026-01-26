@@ -6,9 +6,9 @@ import type { Function } from './Function';
 import { UsageData, UsageDataAccumulator } from './UsageData';
 import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
 import type { GenerateResponseReturn, ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
-import { DEFAULT_MODEL } from './OpenAi';
+import { TiktokenModel } from 'tiktoken';
 
-export const DEFAULT_RESPONSES_MODEL = 'gpt-5.2';
+export const DEFAULT_RESPONSES_MODEL = 'gpt-5.2' as TiktokenModel;
 export const DEFAULT_MAX_TOOL_CALLS = 50;
 
 /** Default hard cap for background-mode polling duration (ms): 1 hour. */
@@ -17,6 +17,12 @@ export const DEFAULT_MAX_BACKGROUND_WAIT_MS = 60 * 60 * 1000;
 /** Best-effort timeout for cancel calls (avoid hanging abort/timeout paths). */
 const DEFAULT_CANCEL_TIMEOUT_MS = 10_000;
 
+/**
+ * Responses API service tier.
+ * See: Responses API `service_tier` request param and response field.
+ */
+export type OpenAiServiceTier = 'auto' | 'default' | 'flex' | 'priority' | (string & {});
+
 export type OpenAiResponsesParams = {
   modules?: ConversationModule[];
   /** If provided, only these functions will be exposed to the model. */
@@ -24,7 +30,7 @@ export type OpenAiResponsesParams = {
   logLevel?: LogLevel;
 
   /** Default model when none is provided per call. */
-  defaultModel?: string;
+  defaultModel?: TiktokenModel;
 
   /** Default cap for tool calls (per call). */
   maxToolCalls?: number;
@@ -35,7 +41,7 @@ export type OpenAiResponsesParams = {
 
 export type GenerateTextParams = {
   messages: (string | ChatCompletionMessageParam)[];
-  model?: string;
+  model?: TiktokenModel;
 
   abortSignal?: AbortSignal;
 
@@ -61,11 +67,14 @@ export type GenerateTextParams = {
 
   /** If true, run using Responses API background mode (polling). */
   backgroundMode?: boolean;
+
+  /** Optional Responses API service tier override (per-request). */
+  serviceTier?: OpenAiServiceTier;
 };
 
 export type ResponsesGenerateObjectParams<S> = {
   messages: (string | ChatCompletionMessageParam)[];
-  model?: string;
+  model?: TiktokenModel;
 
   abortSignal?: AbortSignal;
 
@@ -94,6 +103,9 @@ export type ResponsesGenerateObjectParams<S> = {
 
   /** If true, run using Responses API background mode (polling). */
   backgroundMode?: boolean;
+
+  /** Optional Responses API service tier override (per-request). */
+  serviceTier?: OpenAiServiceTier;
 };
 
 /**
@@ -111,7 +123,7 @@ export class OpenAiResponses {
 
   private readonly modules: ConversationModule[];
   private readonly allowedFunctionNames?: string[];
-  private readonly defaultModel: string;
+  private readonly defaultModel: TiktokenModel;
   private readonly defaultMaxToolCalls: number;
   private readonly defaultMaxBackgroundWaitMs: number;
 
@@ -128,7 +140,7 @@ export class OpenAiResponses {
     this.modules = opts.modules ?? [];
     this.allowedFunctionNames = opts.allowedFunctionNames;
 
-    this.defaultModel = (opts.defaultModel ?? DEFAULT_RESPONSES_MODEL).trim();
+    this.defaultModel = opts.defaultModel ?? DEFAULT_RESPONSES_MODEL;
     this.defaultMaxToolCalls = typeof opts.maxToolCalls === 'number' ? opts.maxToolCalls : DEFAULT_MAX_TOOL_CALLS;
 
     this.defaultMaxBackgroundWaitMs =
@@ -166,6 +178,7 @@ export class OpenAiResponses {
       backgroundMode,
       maxBackgroundWaitMs,
       textFormat: undefined,
+      serviceTier: args.serviceTier,
     });
 
     if (args.onUsageData) {
@@ -208,11 +221,14 @@ export class OpenAiResponses {
       backgroundMode,
       maxBackgroundWaitMs,
       textFormat,
+      serviceTier: args.serviceTier,
     });
 
     const object = this.parseAndValidateStructuredOutput<T>(result.message, args.schema, {
       model,
       maxOutputTokens: args.maxTokens,
+      requestedServiceTier: args.serviceTier,
+      serviceTier: result.serviceTier,
     });
 
     const outcome = {
@@ -232,7 +248,7 @@ export class OpenAiResponses {
   // -----------------------------------------
 
   private async run(args: {
-    model: string;
+    model: TiktokenModel;
     messages: (string | ChatCompletionMessageParam)[];
 
     temperature?: number;
@@ -249,10 +265,12 @@ export class OpenAiResponses {
     maxBackgroundWaitMs: number;
 
     textFormat?: unknown;
-  }): Promise<GenerateResponseReturn> {
+
+    serviceTier?: OpenAiServiceTier;
+  }): Promise<GenerateResponseReturn & { serviceTier?: OpenAiServiceTier }> {
     // UsageDataAccumulator is typed around TiktokenModel; keep accumulator model stable,
     // and (optionally) report the actual model via upstream telemetry if you later choose to.
-    const usage = new UsageDataAccumulator({ model: DEFAULT_MODEL });
+    const usage = new UsageDataAccumulator({ model: args.model });
     const toolInvocations: ToolInvocationResult[] = [];
 
     const tools = this.buildResponseTools(this.functions);
@@ -279,9 +297,10 @@ export class OpenAiResponses {
         backgroundMode: args.backgroundMode,
         maxBackgroundWaitMs: args.maxBackgroundWaitMs,
         abortSignal: args.abortSignal,
+        serviceTier: args.serviceTier,
       });
 
-      this.addUsageFromResponse(response, usage);
+      this.addUsageFromResponse(response, usage, { requestedServiceTier: args.serviceTier });
 
       // For structured outputs we should not attempt to parse incomplete/failed/cancelled responses.
       // For plain-text generation, we allow "incomplete" to pass through (partial output),
@@ -290,6 +309,7 @@ export class OpenAiResponses {
         allowIncomplete: !args.textFormat,
         model: args.model,
         maxOutputTokens: args.maxTokens,
+        requestedServiceTier: args.serviceTier,
       });
 
       const functionCalls = this.extractFunctionCalls(response);
@@ -298,7 +318,12 @@ export class OpenAiResponses {
         if (!message) {
           throw new Error(`Response was empty`);
         }
-        return { message, usagedata: usage.usageData, toolInvocations };
+        return {
+          message,
+          usagedata: usage.usageData,
+          toolInvocations,
+          serviceTier: response.service_tier ? response.service_tier : undefined,
+        };
       }
 
       if (toolCallsExecuted + functionCalls.length > args.maxToolCalls) {
@@ -331,7 +356,12 @@ export class OpenAiResponses {
 
   private throwIfResponseUnusable(
     response: any,
-    opts: { allowIncomplete: boolean; model?: string; maxOutputTokens?: number }
+    opts: {
+      allowIncomplete: boolean;
+      model?: string;
+      maxOutputTokens?: number;
+      requestedServiceTier?: OpenAiServiceTier;
+    }
   ): void {
     const statusRaw = typeof response?.status === 'string' ? String(response.status) : '';
     const status = statusRaw.toLowerCase();
@@ -347,6 +377,9 @@ export class OpenAiResponses {
     const id = typeof response?.id === 'string' ? response.id : '';
     const reason = response?.incomplete_details?.reason;
     const apiErr = response?.error;
+
+    const serviceTier =
+      typeof response?.service_tier === 'string' && response.service_tier.trim() ? response.service_tier.trim() : '';
 
     const directOutputText = typeof response?.output_text === 'string' ? response.output_text : '';
     const assistantText = this.extractAssistantText(response as any);
@@ -376,6 +409,12 @@ export class OpenAiResponses {
       model: typeof opts.model === 'string' && opts.model.trim() ? opts.model : undefined,
       max_output_tokens: typeof opts.maxOutputTokens === 'number' ? opts.maxOutputTokens : undefined,
 
+      requested_service_tier:
+        typeof opts.requestedServiceTier === 'string' && opts.requestedServiceTier.trim()
+          ? opts.requestedServiceTier.trim()
+          : undefined,
+      service_tier: serviceTier || undefined,
+
       incomplete_reason: typeof reason === 'string' && reason.trim() ? reason : undefined,
       api_error: apiErr ?? undefined,
 
@@ -396,6 +435,12 @@ export class OpenAiResponses {
     }
     if (typeof details.max_output_tokens === 'number') {
       extra.push(`max_output_tokens=${details.max_output_tokens}`);
+    }
+    if (typeof details.requested_service_tier === 'string') {
+      extra.push(`requested_service_tier=${details.requested_service_tier}`);
+    }
+    if (typeof details.service_tier === 'string') {
+      extra.push(`service_tier=${details.service_tier}`);
     }
     if (details.incomplete_reason) {
       extra.push(`reason=${details.incomplete_reason}`);
@@ -432,6 +477,8 @@ export class OpenAiResponses {
       waitedMs?: number;
       maxWaitMs?: number;
       lastStatus?: string;
+      requestedServiceTier?: OpenAiServiceTier;
+      serviceTier?: string;
     }
   ): OpenAiResponsesError {
     const status = extractHttpStatus(error);
@@ -479,6 +526,12 @@ export class OpenAiResponses {
     if (meta.reasoningEffort) {
       extra.push(`reasoningEffort=${meta.reasoningEffort}`);
     }
+    if (typeof meta.requestedServiceTier === 'string' && meta.requestedServiceTier.trim()) {
+      extra.push(`requested_service_tier=${meta.requestedServiceTier.trim()}`);
+    }
+    if (typeof meta.serviceTier === 'string' && meta.serviceTier.trim()) {
+      extra.push(`service_tier=${meta.serviceTier.trim()}`);
+    }
 
     if (extra.length > 0) {
       msg += ` ${extra.join(' ')}.`;
@@ -500,6 +553,12 @@ export class OpenAiResponses {
       last_status: typeof meta.lastStatus === 'string' && meta.lastStatus.trim() ? meta.lastStatus.trim() : undefined,
       model: typeof meta.model === 'string' && meta.model.trim() ? meta.model.trim() : undefined,
       reasoning_effort: meta.reasoningEffort,
+      requested_service_tier:
+        typeof meta.requestedServiceTier === 'string' && meta.requestedServiceTier.trim()
+          ? meta.requestedServiceTier.trim()
+          : undefined,
+      service_tier:
+        typeof meta.serviceTier === 'string' && meta.serviceTier.trim() ? meta.serviceTier.trim() : undefined,
       error_name: errName,
       aborted: aborted ? true : undefined,
     };
@@ -521,51 +580,35 @@ export class OpenAiResponses {
   }
 
   private async cancelResponseBestEffort(
-    responseId: string,
-    opts?: { timeoutMs?: number }
+    responseId: string
   ): Promise<
     | { attempted: false }
     | { attempted: true; ok: true }
-    | { attempted: true; ok: false; timedOut?: boolean; error?: Record<string, unknown> }
+    | { attempted: true; ok: false; error?: Record<string, unknown> }
   > {
-    const cancelFn = (this.client.responses as any)?.cancel;
-    if (typeof cancelFn !== 'function') {
+    if (!responseId) {
       return { attempted: false };
     }
 
-    const timeoutMs =
-      typeof opts?.timeoutMs === 'number' && Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
-        ? Math.floor(opts.timeoutMs)
-        : DEFAULT_CANCEL_TIMEOUT_MS;
+    try {
+      const resp = await this.client.responses.cancel(responseId);
 
-    const cancelPromise = (async (): Promise<{ ok: true } | { ok: false; error: Record<string, unknown> }> => {
-      try {
-        // Signature differs across SDK versions; JS ignores extra args.
-        await cancelFn.call(this.client.responses, responseId);
-        return { ok: true as const };
-      } catch (e: unknown) {
-        return { ok: false as const, error: safeErrorSummary(e) };
+      // Docs show cancelled as the post-cancel status.
+      if (resp?.status === 'cancelled') {
+        return { attempted: true, ok: true };
       }
-    })();
 
-    // Ensure we never leak an unhandled rejection if the race times out.
-    void cancelPromise.catch(() => undefined);
-
-    const raced = await Promise.race([
-      cancelPromise,
-      sleep(timeoutMs).then(() => ({ ok: false as const, error: { message: 'Cancel timed out' }, timedOut: true })),
-    ]);
-
-    if (raced.ok) {
-      return { attempted: true, ok: true };
+      return {
+        attempted: true,
+        ok: false,
+        error: {
+          message: 'Cancel did not return status=cancelled',
+          status: resp?.status,
+        },
+      };
+    } catch (e: unknown) {
+      return { attempted: true, ok: false, error: safeErrorSummary(e) };
     }
-
-    return {
-      attempted: true,
-      ok: false,
-      timedOut: (raced as any).timedOut ? true : undefined,
-      error: (raced as any).error ? (raced as any).error : undefined,
-    };
   }
 
   private async createResponseAndMaybeWait(args: {
@@ -585,13 +628,9 @@ export class OpenAiResponses {
     backgroundMode: boolean;
     maxBackgroundWaitMs: number;
     abortSignal?: AbortSignal;
-  }): Promise<{
-    id?: string;
-    status?: string;
-    output_text?: string;
-    output?: unknown[];
-    usage?: unknown;
-  }> {
+
+    serviceTier?: OpenAiServiceTier;
+  }): Promise<OpenAIApi.Responses.Response> {
     const body: Record<string, unknown> = {
       model: args.model,
       input: args.input,
@@ -625,12 +664,16 @@ export class OpenAiResponses {
       body.text = { format: args.textFormat };
     }
 
+    if (typeof args.serviceTier === 'string' && args.serviceTier.trim()) {
+      body.service_tier = args.serviceTier.trim();
+    }
+
     if (args.backgroundMode) {
       body.background = true;
       body.store = true;
     }
 
-    let created: any;
+    let created: OpenAIApi.Responses.Response;
     try {
       created = await this.client.responses.create(
         body as never,
@@ -644,33 +687,23 @@ export class OpenAiResponses {
         backgroundMode: args.backgroundMode,
         previousResponseId: args.previousResponseId,
         aborted: args.abortSignal?.aborted ? true : undefined,
+        requestedServiceTier: args.serviceTier,
       });
     }
 
     if (!args.backgroundMode) {
-      return created as unknown as {
-        id?: string;
-        status?: string;
-        output_text?: string;
-        output?: unknown[];
-        usage?: unknown;
-      };
+      return created;
     }
 
     if (!created?.id) {
-      return created as unknown as {
-        id?: string;
-        status?: string;
-        output_text?: string;
-        output?: unknown[];
-        usage?: unknown;
-      };
+      return created;
     }
 
     return await this.waitForCompletion(created.id, args.abortSignal, {
       model: args.model,
       reasoningEffort: args.reasoningEffort,
       maxWaitMs: this.resolveMaxBackgroundWaitMs(args.maxBackgroundWaitMs),
+      requestedServiceTier: args.serviceTier,
     });
   }
 
@@ -681,23 +714,22 @@ export class OpenAiResponses {
       model?: string;
       reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
       maxWaitMs?: number;
+      requestedServiceTier?: OpenAiServiceTier;
     }
-  ): Promise<{
-    id?: string;
-    status?: string;
-    output_text?: string;
-    output?: unknown[];
-    usage?: unknown;
-  }> {
+  ): Promise<OpenAIApi.Responses.Response> {
+    this.logger.debug({ message: 'Waiting for completion', obj: { responseId } });
     const maxWaitMs = this.resolveMaxBackgroundWaitMs(ctx?.maxWaitMs);
 
     const startedAtMs = Date.now();
 
-    let delayMs = 500;
+    const delayMs = 1000;
     let pollAttempt = 0;
 
     let lastStatus = '';
     let cancelAttempted = false;
+
+    const warnEveryMs = 10 * 60 * 1000;
+    let nextWarnAtMs = warnEveryMs;
 
     const throwPollingStop = async (args: { kind: 'aborted' | 'timeout'; cause?: unknown }): Promise<never> => {
       const waitedMs = Date.now() - startedAtMs;
@@ -706,7 +738,7 @@ export class OpenAiResponses {
       let cancel: Awaited<ReturnType<OpenAiResponses['cancelResponseBestEffort']>> | undefined = undefined;
       if (!cancelAttempted) {
         cancelAttempted = true;
-        cancel = await this.cancelResponseBestEffort(responseId, { timeoutMs: DEFAULT_CANCEL_TIMEOUT_MS });
+        cancel = await this.cancelResponseBestEffort(responseId);
       }
 
       const baseDetails: Record<string, unknown> = {
@@ -719,6 +751,10 @@ export class OpenAiResponses {
         last_status: lastStatus || undefined,
         model: typeof ctx?.model === 'string' && ctx.model.trim() ? ctx.model.trim() : undefined,
         reasoning_effort: ctx?.reasoningEffort,
+        requested_service_tier:
+          typeof ctx?.requestedServiceTier === 'string' && ctx.requestedServiceTier.trim()
+            ? ctx.requestedServiceTier.trim()
+            : undefined,
         aborted: args.kind === 'aborted' ? true : undefined,
         timeout: args.kind === 'timeout' ? true : undefined,
         cancel_attempted: cancel?.attempted ? true : undefined,
@@ -757,9 +793,30 @@ export class OpenAiResponses {
         await throwPollingStop({ kind: 'timeout' });
       }
 
+      // Warn every 10 minutes elapsed (best-effort; may log slightly after the boundary).
+      if (waitedMs >= nextWarnAtMs) {
+        nextWarnAtMs += warnEveryMs;
+
+        this.logger.warn({
+          message: `Background polling still in progress`,
+          obj: {
+            responseId,
+            status: lastStatus || undefined,
+            waitedMs,
+            pollAttempt,
+            model: typeof ctx?.model === 'string' && ctx.model.trim() ? ctx.model.trim() : undefined,
+            reasoningEffort: ctx?.reasoningEffort,
+            serviceTier:
+              typeof ctx?.requestedServiceTier === 'string' && ctx.requestedServiceTier.trim()
+                ? ctx.requestedServiceTier.trim()
+                : undefined,
+          },
+        });
+      }
+
       pollAttempt += 1;
 
-      let resp: any;
+      let resp: OpenAIApi.Responses.Response;
       try {
         resp = await this.client.responses.retrieve(
           responseId,
@@ -782,34 +839,22 @@ export class OpenAiResponses {
           waitedMs,
           maxWaitMs,
           lastStatus,
+          requestedServiceTier: ctx?.requestedServiceTier,
         });
       }
 
-      const status = typeof (resp as any)?.status === 'string' ? String((resp as any).status).toLowerCase() : '';
+      const status = typeof resp?.status === 'string' ? resp.status : '';
       lastStatus = status;
 
-      // Terminal states (support both spellings for safety).
-      if (
-        status === 'completed' ||
-        status === 'failed' ||
-        status === 'incomplete' ||
-        status === 'cancelled' ||
-        status === 'canceled'
-      ) {
-        return resp as unknown as {
-          id?: string;
-          status?: string;
-          output_text?: string;
-          output?: unknown[];
-          usage?: unknown;
-        };
+      // Terminal states
+      if (status === 'completed' || status === 'failed' || status === 'incomplete' || status === 'cancelled') {
+        return resp;
       }
 
       this.logger.debug({ message: `Polling response`, obj: { responseId, status, delayMs, pollAttempt, waitedMs } });
 
       // Sleep but wake early if aborted, so abort latency is low.
       await sleepWithAbort(delayMs, abortSignal);
-      delayMs = Math.min(5000, Math.floor(delayMs * 1.5));
     }
   }
 
@@ -1037,39 +1082,25 @@ export class OpenAiResponses {
   // Usage + text extraction
   // -----------------------------------------
 
-  private addUsageFromResponse(response: { usage?: unknown }, usage: UsageDataAccumulator): void {
-    const u = response.usage;
-    if (!u || typeof u !== 'object') {
+  private addUsageFromResponse(
+    response: OpenAIApi.Responses.Response,
+    usage: UsageDataAccumulator,
+    ctx?: { requestedServiceTier?: OpenAiServiceTier }
+  ): void {
+    if (!response.usage) {
       return;
     }
 
-    const rec = u as Record<string, unknown>;
-    const input = typeof rec.input_tokens === 'number' ? rec.input_tokens : 0;
-    const output = typeof rec.output_tokens === 'number' ? rec.output_tokens : 0;
-    const total = typeof rec.total_tokens === 'number' ? rec.total_tokens : input + output;
-
-    let cached = 0;
-    let reasoning = 0;
-
-    const inputDetails = rec.input_tokens_details;
-    if (inputDetails && typeof inputDetails === 'object') {
-      const id = inputDetails as Record<string, unknown>;
-      cached = typeof id.cached_tokens === 'number' ? id.cached_tokens : 0;
-    }
-
-    const outputDetails = rec.output_tokens_details;
-    if (outputDetails && typeof outputDetails === 'object') {
-      const od = outputDetails as Record<string, unknown>;
-      reasoning = typeof od.reasoning_tokens === 'number' ? od.reasoning_tokens : 0;
-    }
-
-    usage.addTokenUsage({
-      promptTokens: input,
-      cachedPromptTokens: cached,
-      completionTokens: output,
-      reasoningTokens: reasoning,
-      totalTokens: total,
-    });
+    usage.addTokenUsage(
+      {
+        inputTokens: response.usage.input_tokens,
+        cachedInputTokens: response.usage.input_tokens_details.cached_tokens,
+        outputTokens: response.usage.output_tokens,
+        reasoningTokens: response.usage.output_tokens_details.reasoning_tokens,
+        totalTokens: response.usage.total_tokens,
+      },
+      { serviceTier: response.service_tier ?? ctx?.requestedServiceTier }
+    );
   }
 
   private extractAssistantText(response: { output_text?: string; output?: unknown[] }): string {
@@ -1150,7 +1181,7 @@ export class OpenAiResponses {
   private parseAndValidateStructuredOutput<T>(
     text: string,
     schema: unknown,
-    ctx?: { model?: string; maxOutputTokens?: number }
+    ctx?: { model?: string; maxOutputTokens?: number; requestedServiceTier?: OpenAiServiceTier; serviceTier?: string }
   ): T {
     const parsed = this.parseJson(text, ctx);
 
@@ -1172,7 +1203,10 @@ export class OpenAiResponses {
     return typeof (schema as any).safeParse === 'function';
   }
 
-  private parseJson(text: string, ctx?: { model?: string; maxOutputTokens?: number }): any {
+  private parseJson(
+    text: string,
+    ctx?: { model?: string; maxOutputTokens?: number; requestedServiceTier?: OpenAiServiceTier; serviceTier?: string }
+  ): any {
     const cleaned = String(text ?? '')
       .trim()
       .replace(/^```(?:json)?/i, '')
@@ -1212,6 +1246,13 @@ export class OpenAiResponses {
             model: typeof ctx?.model === 'string' && ctx.model.trim() ? ctx.model : undefined,
             max_output_tokens: typeof ctx?.maxOutputTokens === 'number' ? ctx.maxOutputTokens : undefined,
 
+            requested_service_tier:
+              typeof ctx?.requestedServiceTier === 'string' && String(ctx.requestedServiceTier).trim()
+                ? String(ctx.requestedServiceTier).trim()
+                : undefined,
+            service_tier:
+              typeof ctx?.serviceTier === 'string' && ctx.serviceTier.trim() ? ctx.serviceTier.trim() : undefined,
+
             cleaned_len: s.length,
             cleaned_head: truncateHead(s, 250),
             cleaned_tail: truncateTail(s, 500),
@@ -1249,6 +1290,13 @@ export class OpenAiResponses {
       const details: Record<string, unknown> = {
         model: typeof ctx?.model === 'string' && ctx.model.trim() ? ctx.model : undefined,
         max_output_tokens: typeof ctx?.maxOutputTokens === 'number' ? ctx.maxOutputTokens : undefined,
+
+        requested_service_tier:
+          typeof ctx?.requestedServiceTier === 'string' && String(ctx.requestedServiceTier).trim()
+            ? String(ctx.requestedServiceTier).trim()
+            : undefined,
+        service_tier:
+          typeof ctx?.serviceTier === 'string' && ctx.serviceTier.trim() ? ctx.serviceTier.trim() : undefined,
 
         cleaned_len: s.length,
         cleaned_head: truncateHead(s, 250),
@@ -1525,9 +1573,8 @@ export class OpenAiResponses {
   // Model/background defaults
   // -----------------------------------------
 
-  private resolveModel(model?: string): string {
-    const m = (model ?? this.defaultModel).trim();
-    return m.length > 0 ? m : DEFAULT_RESPONSES_MODEL;
+  private resolveModel(model?: TiktokenModel): TiktokenModel {
+    return model ?? this.defaultModel;
   }
 
   private resolveBackgroundMode(args: {

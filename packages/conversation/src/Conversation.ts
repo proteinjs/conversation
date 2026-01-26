@@ -9,8 +9,8 @@ import { MessageModerator } from './history/MessageModerator';
 import { ConversationModule } from './ConversationModule';
 import { TiktokenModel, encoding_for_model } from 'tiktoken';
 import { searchLibrariesFunctionName } from './fs/package/PackageFunctions';
-import { UsageData } from './UsageData';
-import type { ModelMessage, LanguageModel } from 'ai';
+import { UsageData, UsageDataAccumulator } from './UsageData';
+import type { ModelMessage, LanguageModel, GenerateObjectResult, JSONValue } from 'ai';
 import { generateObject as aiGenerateObject, jsonSchema } from 'ai';
 
 export type ConversationParams = {
@@ -527,15 +527,14 @@ export class Conversation {
   // ---- Usage + provider metadata normalization ----
 
   private processUsageData(args: {
-    result: any;
+    result: GenerateObjectResult<JSONValue>;
     model?: LanguageModel;
     toolCounts?: Map<string, number>;
     toolLedgerLen?: number;
   }): UsageData {
     const { result, model, toolCounts, toolLedgerLen } = args;
 
-    // Try several shapes used by AI SDK / providers
-    const u: any = result?.usage ?? result?.response?.usage ?? result?.response?.metadata?.usage;
+    const u = result?.usage;
 
     // Provider-specific extras (OpenAI Responses variants)
     const { cachedInputTokens, reasoningTokens } = this.extractOpenAiUsageDetails?.(result) ?? {};
@@ -547,29 +546,27 @@ export class Conversation {
     const cached = Number.isFinite(cachedInputTokens) ? Number(cachedInputTokens) : 0;
 
     // Resolve model id for pricing/telemetry
-    const modelId: any =
-      (model as any)?.modelId ??
-      result?.response?.providerMetadata?.openai?.model ??
-      result?.providerMetadata?.openai?.model ??
-      result?.response?.model ??
-      undefined;
+    const modelId: any = model?.toString();
+
+    const resolvedModel = typeof modelId === 'string' && modelId.trim().length > 0 ? modelId : 'unknown';
 
     const tokenUsage = {
-      promptTokens: input,
+      inputTokens: input,
       reasoningTokens: reasoning,
-      cachedPromptTokens: cached,
-      completionTokens: output,
+      cachedInputTokens: cached,
+      outputTokens: output,
       totalTokens: total,
     };
+
+    const uda = new UsageDataAccumulator({ model: modelId });
+    uda.addTokenUsage(tokenUsage);
 
     const callsPerTool = toolCounts ? Object.fromEntries(toolCounts) : {};
     const totalToolCalls =
       typeof toolLedgerLen === 'number' ? toolLedgerLen : Object.values(callsPerTool).reduce((a, b) => a + (b || 0), 0);
 
     return {
-      model: modelId,
-      initialRequestTokenUsage: { ...tokenUsage },
-      totalTokenUsage: { ...tokenUsage },
+      ...uda.usageData,
       totalRequestsToAssistant: 1,
       totalToolCalls,
       callsPerTool,
