@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [2.7.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.6.0...@proteinjs/conversation@2.7.0) (2026-01-26)
+
+
+### Bug Fixes
+
+* `OpenAiResponses` enhanced error logging and added custom `OpenAiResponsesError` class. ([76eb085](https://github.com/proteinjs/conversation/commit/76eb0854eb49bc9e6ec8b9599347f86e5f889bd5))
+
+
+### Features
+
+* `FsFunctions` added `deleteFilesFunction`. ([0cb2722](https://github.com/proteinjs/conversation/commit/0cb272209aa60a4c1100efc84a511c5c3fe0c188))
+* `OpenAiResponses` added `maxBackgroundWaitMs` param. ([a008e18](https://github.com/proteinjs/conversation/commit/a008e188be0f7071d5581e92ac0ede6471f3ac1e))
+* Enhanced `UsageData` to track cost; considers service tier. ([8ff62f8](https://github.com/proteinjs/conversation/commit/8ff62f8e1d930e7f121724ffc7ded669eeeb7728))
+
+
+
+
+
 # [2.6.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.5.0...@proteinjs/conversation@2.6.0) (2026-01-16)
 
 
