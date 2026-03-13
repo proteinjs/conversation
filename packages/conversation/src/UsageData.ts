@@ -246,6 +246,31 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
 
   'gpt-5.1-codex-mini': { inputUsdPer1M: 0.25, cachedInputUsdPer1M: 0.025, outputUsdPer1M: 2.0 },
   'codex-mini-latest': { inputUsdPer1M: 1.5, cachedInputUsdPer1M: 0.375, outputUsdPer1M: 6.0 },
+
+  // ── Anthropic Claude models ──
+  'claude-opus-4.5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
+  'claude-opus-4-20250514': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, outputUsdPer1M: 75.0 },
+  'claude-opus-4.1': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, outputUsdPer1M: 75.0 },
+  'claude-sonnet-4.6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
+  'claude-sonnet-4.5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
+  'claude-sonnet-4-20250514': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
+  'claude-haiku-4.5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, outputUsdPer1M: 5.0 },
+  'claude-3-haiku-20240307': { inputUsdPer1M: 0.25, cachedInputUsdPer1M: 0.03, outputUsdPer1M: 1.25 },
+
+  // ── Google Gemini models ──
+  'gemini-3-pro-preview': { inputUsdPer1M: 2.0, outputUsdPer1M: 12.0 },
+  'gemini-3-flash': { inputUsdPer1M: 0.5, outputUsdPer1M: 3.0 },
+  'gemini-2.5-pro': { inputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 10.0 },
+  'gemini-2.5-flash': { inputUsdPer1M: 0.3, cachedInputUsdPer1M: 0.03, outputUsdPer1M: 2.5 },
+  'gemini-2.0-flash': { inputUsdPer1M: 0.1, outputUsdPer1M: 0.4 },
+  'gemini-2.0-flash-lite': { inputUsdPer1M: 0.1, outputUsdPer1M: 0.4 },
+
+  // ── xAI Grok models ──
+  'grok-4': { inputUsdPer1M: 3.0, outputUsdPer1M: 15.0 },
+  'grok-4-fast': { inputUsdPer1M: 0.2, outputUsdPer1M: 0.5 },
+  'grok-4.1-fast': { inputUsdPer1M: 0.2, outputUsdPer1M: 0.5 },
+  'grok-3': { inputUsdPer1M: 3.0, outputUsdPer1M: 15.0 },
+  'grok-3-mini': { inputUsdPer1M: 0.3, outputUsdPer1M: 0.5 },
 };
 
 export const MODEL_API_COST_USD_PER_1M_TOKENS_BATCH: Record<string, ModelApiCost> = {

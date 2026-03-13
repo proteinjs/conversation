@@ -32,7 +32,7 @@ export class CodegenConversation {
     });
     // eslint-disable-next-line no-constant-condition
     while (true) {
-      const userInput = this.respondToUser(responseObject.message);
+      const userInput = this.respondToUser(responseObject.text);
       responseObject = await conversation.generateResponse({ messages: [userInput], model: CodegenConversation.MODEL });
     }
   }

@@ -1,5 +1,6 @@
 export * from './src/Sentence';
 export * from './src/Paragraph';
+/** @deprecated — Use `Conversation` instead of `OpenAi`. */
 export * from './src/OpenAi';
 export * from './src/code_template/CodeTemplate';
 export * from './src/Conversation';
@@ -10,9 +11,11 @@ export * from './src/Function';
 export * from './src/history/MessageModerator';
 export * from './src/history/MessageHistory';
 export * from './src/ChatCompletionMessageParamFactory';
+/** @deprecated — Use `StreamResult.textStream` from `Conversation.generateStream` instead. */
 export { AssistantResponseStreamChunk } from './src/OpenAiStreamProcessor';
 export * from './src/UsageData';
 export * from './src/OpenAiResponses';
+export * from './src/resolveModel';
 
 // Conversation modules
 export * from './src/fs/conversation_fs/ConversationFsModule';
