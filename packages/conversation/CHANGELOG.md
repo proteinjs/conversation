@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [3.0.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.7.3...@proteinjs/conversation@3.0.0) (2026-03-25)
+
+
+### chore
+
+* **conversation:** trigger major version bump ([f1598e6](https://github.com/proteinjs/conversation/commit/f1598e63e6d24d79b86c9bfcf9d39a94d67474e3))
+
+
+### BREAKING CHANGES
+
+* **conversation:** Conversation v2 rewrites the class API to use Vercel AI SDK v6
+
+
+
+
+
 ## [2.7.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.7.2...@proteinjs/conversation@2.7.3) (2026-03-25)
 
 **Note:** Version bump only for package @proteinjs/conversation
