@@ -38,13 +38,13 @@ export type ConversationMessage =
   | string
   | {
       role: 'system' | 'user' | 'assistant' | 'developer' | 'tool' | 'function' | (string & {});
-      content: string | null | unknown;
+      content?: string | null | unknown;
     };
 
 /** @deprecated Use `GenerateObjectResult` instead. */
 export type GenerateObjectOutcome<T> = GenerateObjectResult<T>;
 
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max' | 'xhigh';
 
 export type GenerateStreamParams = {
   messages: ConversationMessage[];
@@ -63,12 +63,25 @@ export type GenerateStreamParams = {
   maxBackgroundWaitMs?: number;
 };
 
+/** A single part emitted by the interleaved full stream. */
+export type StreamPart =
+  | { type: 'text-delta'; textDelta: string }
+  | { type: 'reasoning-delta'; textDelta: string }
+  | { type: 'source'; source: StreamSource };
+
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
 export type StreamResult = {
   /** Async iterable of text content chunks. */
   textStream: AsyncIterable<string>;
   /** Async iterable of reasoning/thinking chunks (empty if model doesn't support reasoning). */
   reasoningStream: AsyncIterable<string>;
+  /**
+   * Interleaved stream of all parts (text, reasoning, sources) for real-time
+   * consumption. Prefer this over consuming `textStream` and `reasoningStream`
+   * separately, since those may share the same underlying data source and
+   * cannot be consumed concurrently.
+   */
+  fullStream: AsyncIterable<StreamPart>;
   /** Resolves to the full text when generation completes. */
   text: Promise<string>;
   /** Resolves to the full reasoning text when generation completes. */
@@ -172,20 +185,34 @@ export class Conversation {
     const modelString = this.getModelString(params.model);
     const provider = inferProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
 
+    this.logger.info({
+      message: `generateStream`,
+      obj: { model: modelString, provider, reasoningEffort: params.reasoningEffort, webSearch: params.webSearch },
+    });
+
     // Check if we should use background/polling mode (OpenAI-specific)
     if (provider === 'openai' && this.shouldUseBackgroundMode(modelString, params)) {
       return this.generateStreamViaPolling(params, modelString);
     }
 
     // Build messages for the AI SDK
-    const messages = this.buildAiSdkMessages(params.messages);
+    let messages = this.buildAiSdkMessages(params.messages);
+
+    // Google requires all system messages at the beginning of the conversation.
+    // Reorder so system messages come first, preserving relative order within
+    // each group.
+    if (provider === 'google') {
+      const system = messages.filter((m) => m.role === 'system');
+      const nonSystem = messages.filter((m) => m.role !== 'system');
+      messages = [...system, ...nonSystem];
+    }
 
     // Build tools from module functions + any extra tools
     const allFunctions = [...this.functions, ...(params.tools ?? [])];
     const tools = this.buildAiSdkTools(allFunctions);
 
     // Build provider options
-    const providerOptions = this.buildProviderOptions(provider, params);
+    const providerOptions = this.buildProviderOptions(provider, params, modelString);
 
     const result = streamText({
       model,
@@ -201,26 +228,78 @@ export class Conversation {
     const usagePromise = this.buildUsagePromise(result, modelString, params);
     const toolInvocationsPromise = this.buildToolInvocationsPromise(result);
 
-    return {
-      textStream: result.textStream,
-      reasoningStream: this.extractReasoningStream(result),
-      text: Promise.resolve(result.text),
-      reasoning: Promise.resolve(result.reasoning).then((parts: ReasoningOutput[]) =>
+    // Wrap ALL AI SDK promises with catch handlers to prevent unhandled rejections
+    // when the stream is aborted mid-generation. The AI SDK's internal transform
+    // stream throws NoOutputGeneratedError on flush if aborted before any output,
+    // rejecting finishReason, totalUsage, steps, text, etc. Any uncaught rejection
+    // crashes the Node process.
+    const safeText = Promise.resolve(result.text).catch(() => '');
+    const safeReasoning = Promise.resolve(result.reasoning)
+      .then((parts: ReasoningOutput[]) =>
         parts
           ? parts
               .filter((part) => part.type === 'reasoning')
               .map((part) => part.text)
               .join('')
           : ''
-      ),
-      sources: Promise.resolve(result.sources).then((s: LanguageModelV3Source[]) =>
+      )
+      .catch(() => '');
+    const safeSources = Promise.resolve(result.sources)
+      .then((s: LanguageModelV3Source[]) =>
         (s ?? []).map((source) => ({
           url: source.sourceType === 'url' ? source.url : undefined,
           title: source.sourceType === 'url' ? source.title : undefined,
         }))
-      ),
-      usage: usagePromise,
-      toolInvocations: toolInvocationsPromise,
+      )
+      .catch(() => [] as StreamSource[]);
+    const safeUsage = usagePromise.catch(
+      () =>
+        ({
+          model: modelString,
+          initialRequestTokenUsage: {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            reasoningTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          initialRequestCostUsd: { inputUsd: 0, cachedInputUsd: 0, reasoningUsd: 0, outputUsd: 0, totalUsd: 0 },
+          totalTokenUsage: {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            reasoningTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          totalCostUsd: { inputUsd: 0, cachedInputUsd: 0, reasoningUsd: 0, outputUsd: 0, totalUsd: 0 },
+          totalRequestsToAssistant: 0,
+          callsPerTool: {},
+          totalToolCalls: 0,
+        }) as UsageData
+    );
+    const safeToolInvocations = toolInvocationsPromise.catch(() => [] as ToolInvocationResult[]);
+
+    // Catch remaining AI SDK promises that are rejected by NoOutputGeneratedError
+    // on flush when the stream is aborted before any output. The AI SDK's internal
+    // flush rejects _finishReason, _rawFinishReason, _totalUsage, and _steps.
+    // We already catch totalUsage and steps above; these catch the rest so the
+    // unhandled rejections don't crash the Node process.
+    Promise.resolve(result.finishReason).catch(() => {});
+    Promise.resolve((result as any).rawFinishReason).catch(() => {});
+    Promise.resolve(result.response).catch(() => {});
+
+    return {
+      textStream: result.textStream,
+      reasoningStream: (async function* () {
+        // Reasoning is available via the promise after generation completes.
+        // For real-time streaming, use fullStream instead.
+      })(),
+      fullStream: this.mapFullStream(result.fullStream),
+      text: safeText,
+      reasoning: safeReasoning,
+      sources: safeSources,
+      usage: safeUsage,
+      toolInvocations: safeToolInvocations,
     };
   }
 
@@ -245,7 +324,14 @@ export class Conversation {
       return this.generateObjectViaPolling(params, modelString);
     }
 
-    const messages = this.buildAiSdkMessages(params.messages);
+    let messages = this.buildAiSdkMessages(params.messages);
+
+    // Google requires all system messages at the beginning
+    if (provider === 'google') {
+      const system = messages.filter((m) => m.role === 'system');
+      const nonSystem = messages.filter((m) => m.role !== 'system');
+      messages = [...system, ...nonSystem];
+    }
 
     // Schema normalization
     const isZod = this.isZodSchema(params.schema);
@@ -259,7 +345,7 @@ export class Conversation {
       maxOutputTokens: params.maxTokens,
       temperature: params.temperature,
       topP: params.topP,
-      providerOptions: this.buildProviderOptions(provider, params),
+      providerOptions: this.buildProviderOptions(provider, params, modelString),
       experimental_repairText: (async ({ text }) => {
         const cleaned = String(text ?? '')
           .trim()
@@ -545,14 +631,18 @@ export class Conversation {
 
   private buildProviderOptions(
     provider: string,
-    params: { reasoningEffort?: ReasoningEffort; webSearch?: boolean; serviceTier?: OpenAiServiceTier }
+    params: { reasoningEffort?: ReasoningEffort; webSearch?: boolean; serviceTier?: OpenAiServiceTier },
+    modelString?: string
   ): Record<string, any> {
     const options: Record<string, any> = {};
+    const effort = params.reasoningEffort;
 
     if (provider === 'openai') {
       const openaiOpts: Record<string, any> = {};
-      if (params.reasoningEffort) {
-        openaiOpts.reasoningEffort = params.reasoningEffort;
+      if (effort) {
+        // OpenAI accepts: none | low | medium | high | xhigh
+        // 'max' → 'xhigh' (OpenAI's highest)
+        openaiOpts.reasoningEffort = effort === 'max' ? 'xhigh' : effort;
       }
       if (params.serviceTier) {
         openaiOpts.serviceTier = params.serviceTier;
@@ -562,20 +652,47 @@ export class Conversation {
 
     if (provider === 'anthropic') {
       const anthropicOpts: Record<string, any> = {};
-      if (params.reasoningEffort) {
-        // Map reasoning effort to Anthropic's thinking budget
-        const budgetMap: Record<string, number> = {
-          low: 2048,
-          medium: 8192,
-          high: 16384,
-          xhigh: 32768,
-        };
-        anthropicOpts.thinking = {
-          type: 'enabled',
-          budgetTokens: budgetMap[params.reasoningEffort] ?? 8192,
-        };
+      if (effort && effort !== 'none') {
+        // Use adaptive thinking (Sonnet 4.6+, Opus 4.6+) with effort level.
+        // Anthropic accepts effort: low | medium | high | max
+        // 'xhigh' has no Anthropic equivalent → map to 'max'
+        anthropicOpts.thinking = { type: 'adaptive' };
+        anthropicOpts.effort = effort === 'xhigh' ? 'max' : effort;
       }
       options.anthropic = anthropicOpts;
+    }
+
+    if (provider === 'google') {
+      const googleOpts: Record<string, any> = {};
+      if (effort && effort !== 'none') {
+        // Google accepts thinkingLevel: minimal | low | medium | high
+        // Our 'max'/'xhigh' have no Google equivalent → map to 'high'
+        const levelMap: Record<string, string> = {
+          low: 'low',
+          medium: 'medium',
+          high: 'high',
+          xhigh: 'high',
+          max: 'high',
+        };
+        googleOpts.thinkingConfig = {
+          thinkingLevel: levelMap[effort] ?? 'medium',
+        };
+      }
+      options.google = googleOpts;
+    }
+
+    if (provider === 'xai') {
+      const xaiOpts: Record<string, any> = {};
+      // Only models with reasoning support accept the reasoningEffort parameter.
+      // Models like grok-4 (no "-fast" suffix) reject it with a 400 error.
+      const xaiSupportsReasoning = modelString ? /fast/i.test(modelString) : false;
+      if (effort && effort !== 'none' && xaiSupportsReasoning) {
+        // xAI accepts: low | high
+        // Map everything to the closest valid value
+        const xaiEffort = effort === 'low' ? 'low' : 'high';
+        xaiOpts.reasoningEffort = xaiEffort;
+      }
+      options.xai = xaiOpts;
     }
 
     return options;
@@ -606,7 +723,24 @@ export class Conversation {
   }
 
   private isHighReasoningEffort(effort?: ReasoningEffort): boolean {
-    return effort === 'high' || effort === 'xhigh';
+    return effort === 'high' || effort === 'xhigh' || effort === 'max';
+  }
+
+  /**
+   * Map our ReasoningEffort to OpenAI's accepted values.
+   * OpenAI accepts: none | low | medium | high | xhigh
+   * 'max' → 'xhigh' (OpenAI's highest).
+   */
+  private mapReasoningEffortForOpenAi(
+    effort?: ReasoningEffort
+  ): 'none' | 'low' | 'medium' | 'high' | 'xhigh' | undefined {
+    if (!effort) {
+      return undefined;
+    }
+    if (effort === 'max') {
+      return 'xhigh';
+    }
+    return effort as 'none' | 'low' | 'medium' | 'high' | 'xhigh';
   }
 
   /**
@@ -625,7 +759,7 @@ export class Conversation {
       abortSignal: params.abortSignal,
       onToolInvocation: params.onToolInvocation,
       onUsageData: params.onUsageData,
-      reasoningEffort: params.reasoningEffort,
+      reasoningEffort: this.mapReasoningEffortForOpenAi(params.reasoningEffort),
       maxToolCalls: params.maxToolCalls,
       backgroundMode: params.backgroundMode,
       maxBackgroundWaitMs: params.maxBackgroundWaitMs,
@@ -643,6 +777,9 @@ export class Conversation {
       })(),
       reasoningStream: (async function* () {
         // Reasoning not available via polling mode
+      })(),
+      fullStream: (async function* () {
+        yield { type: 'text-delta' as const, textDelta: text };
       })(),
       text: Promise.resolve(text),
       reasoning: Promise.resolve(''),
@@ -669,7 +806,7 @@ export class Conversation {
       schema: params.schema,
       abortSignal: params.abortSignal,
       onUsageData: params.onUsageData,
-      reasoningEffort: params.reasoningEffort,
+      reasoningEffort: this.mapReasoningEffortForOpenAi(params.reasoningEffort),
       temperature: params.temperature,
       topP: params.topP,
       maxTokens: params.maxTokens,
@@ -868,33 +1005,33 @@ export class Conversation {
   }
 
   // ────────────────────────────────────────────────────────────
-  // Reasoning stream extraction
+  // Full stream mapping
   // ────────────────────────────────────────────────────────────
 
-  private extractReasoningStream(result: any): AsyncIterable<string> {
-    // The AI SDK exposes reasoning via result.reasoning (promise) and
-    // result.fullStream which includes reasoning-delta events.
-    // We create an async iterable that yields reasoning text from fullStream.
+  /**
+   * Maps the AI SDK's `fullStream` (which emits all event types) into our
+   * `StreamPart` union. This is the primary way to consume streaming output
+   * in real-time, since it yields text, reasoning, and source events in the
+   * order the model produces them.
+   */
+  private mapFullStream(aiSdkFullStream: AsyncIterable<any>): AsyncIterable<StreamPart> {
     return {
-      [Symbol.asyncIterator]() {
-        const fullStream = result.fullStream;
-        const reader = fullStream[Symbol.asyncIterator]();
-
-        return {
-          async next(): Promise<IteratorResult<string>> {
-            // eslint-disable-next-line no-constant-condition
-            while (true) {
-              const { value, done } = await reader.next();
-              if (done) {
-                return { done: true, value: undefined };
-              }
-
-              if (value.type === 'reasoning' && value.textDelta) {
-                return { done: false, value: value.textDelta };
-              }
-            }
-          },
-        };
+      async *[Symbol.asyncIterator]() {
+        for await (const part of aiSdkFullStream) {
+          if (part.type === 'text-delta' && part.textDelta) {
+            yield { type: 'text-delta' as const, textDelta: part.textDelta };
+          } else if (part.type === 'reasoning' && part.textDelta) {
+            yield { type: 'reasoning-delta' as const, textDelta: part.textDelta };
+          } else if (part.type === 'source') {
+            yield {
+              type: 'source' as const,
+              source: {
+                url: part.sourceType === 'url' ? part.url : undefined,
+                title: part.sourceType === 'url' ? part.title : undefined,
+              },
+            };
+          }
+        }
       },
     };
   }
