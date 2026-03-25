@@ -31,7 +31,11 @@ export class Code {
       this.addImports(this.args.imports, this.args.conversation);
     }
 
-    return await this.args.conversation.generateCode({ description: this.args.description, model: 'gpt-4' });
+    const result = await this.args.conversation.generateResponse({
+      messages: this.args.description,
+      model: 'gpt-4',
+    });
+    return result.text;
   }
 
   private addImports(imports: Import[], conversation: Conversation) {

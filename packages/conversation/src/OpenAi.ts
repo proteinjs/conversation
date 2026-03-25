@@ -60,6 +60,7 @@ export const isToolInvocationFinishEvent = (event: ToolInvocationProgressEvent):
 
 export type ToolInvocationProgressEvent = ToolInvocationStartEvent | ToolInvocationFinishEvent;
 
+/** @deprecated Use `GenerateStreamParams` from `Conversation` instead. */
 export type GenerateResponseParams = {
   messages: (string | ChatCompletionMessageParam)[];
   model?: TiktokenModel;
@@ -69,6 +70,7 @@ export type GenerateResponseParams = {
   reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
 };
 
+/** @deprecated Use `GenerateResponseResult` from `Conversation` instead. */
 export type GenerateResponseReturn = {
   message: string;
   usagedata: UsageData;
@@ -76,6 +78,7 @@ export type GenerateResponseReturn = {
   toolInvocations: ToolInvocationResult[];
 };
 
+/** @deprecated Use `GenerateStreamParams` from `Conversation` instead. */
 export type GenerateStreamingResponseParams = GenerateResponseParams & {
   abortSignal?: AbortSignal;
   onUsageData?: (usageData: UsageData) => Promise<void>;
@@ -90,6 +93,7 @@ type GenerateResponseHelperParams = GenerateStreamingResponseParams & {
   toolInvocations?: ToolInvocationResult[];
 };
 
+/** @deprecated Use `ConversationParams` from `Conversation` instead. */
 export type OpenAiParams = {
   model?: TiktokenModel;
   history?: MessageHistory;
@@ -99,9 +103,25 @@ export type OpenAiParams = {
   logLevel?: LogLevel;
 };
 
+/** @deprecated Use `Conversation` with `defaultModel` instead. */
 export const DEFAULT_MODEL: TiktokenModel = 'gpt-4o';
+/** @deprecated Use `GenerateStreamParams.maxToolCalls` instead. */
 export const DEFAULT_MAX_FUNCTION_CALLS = 50;
 
+/**
+ * @deprecated Use the `Conversation` class instead.
+ *
+ * `Conversation` provides multi-provider support (OpenAI, Anthropic, Google, xAI)
+ * via the Vercel AI SDK, with streaming-first text generation (`generateStream`),
+ * structured object output (`generateObject`), and a non-streaming convenience
+ * method (`generateResponse`).
+ *
+ * Migration guide:
+ * - `new OpenAi({ model, functions })` → `new Conversation({ name, modules, defaultModel })`
+ * - `openAi.generateResponse({ messages })` → `conversation.generateResponse({ messages })`
+ * - `openAi.generateStreamingResponse({ messages })` → `conversation.generateStream({ messages })`
+ * - `openAi.generateList({ messages })` → `conversation.generateObject({ messages, schema })`
+ */
 export class OpenAi {
   private model: TiktokenModel;
   private history: MessageHistory;

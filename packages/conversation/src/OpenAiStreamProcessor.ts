@@ -4,15 +4,21 @@ import { Stream } from 'openai/streaming';
 import { Readable, Transform, TransformCallback, PassThrough } from 'stream';
 import { UsageData, UsageDataAccumulator } from './UsageData';
 
+/**
+ * @deprecated Use `StreamResult.textStream` from `Conversation.generateStream` instead.
+ * The AI SDK handles streaming natively.
+ */
 export interface AssistantResponseStreamChunk {
   content?: string;
   finishReason?: string;
 }
 
 /**
- * Processes streaming responses from OpenAI's `ChatCompletions` api.
- *   - When a tool call is received, it delegates processing to `onToolCalls`; this can happen recursively
- *   - When a response to the user is received, it writes to `outputStream`
+ * @deprecated Use `Conversation.generateStream` instead.
+ *
+ * The Vercel AI SDK handles streaming tool call loops internally via
+ * `streamText()` with `execute` functions on each tool. This class
+ * is only retained for backward compatibility with the legacy `OpenAi` class.
  */
 export class OpenAiStreamProcessor {
   private logger: Logger;

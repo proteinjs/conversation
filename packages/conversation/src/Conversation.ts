@@ -1,22 +1,31 @@
-import { ChatCompletionMessageParam } from 'openai/resources/chat';
-import { DEFAULT_MODEL, OpenAi, ToolInvocationProgressEvent } from './OpenAi';
-import { OpenAI as OpenAIApi } from 'openai';
-import { MessageHistory } from './history/MessageHistory';
-import { Function } from './Function';
+import type { LanguageModel, ToolSet, LanguageModelUsage, ReasoningOutput } from 'ai';
+import type { LanguageModelV3Source } from '@ai-sdk/provider';
+import { streamText, generateObject as aiGenerateObject, jsonSchema, stepCountIs } from 'ai';
+import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
-import { Fs } from '@proteinjs/util-node';
-import { MessageModerator } from './history/MessageModerator';
 import { ConversationModule } from './ConversationModule';
-import { TiktokenModel, encoding_for_model } from 'tiktoken';
-import { searchLibrariesFunctionName } from './fs/package/PackageFunctions';
-import { UsageData, UsageDataAccumulator } from './UsageData';
-import type { ModelMessage, LanguageModel, GenerateObjectResult, JSONValue } from 'ai';
-import { generateObject as aiGenerateObject, jsonSchema } from 'ai';
+import { Function } from './Function';
+import { MessageModerator } from './history/MessageModerator';
+import { MessageHistory } from './history/MessageHistory';
+import { UsageData, UsageDataAccumulator, TokenUsage } from './UsageData';
+import { resolveModel, inferProvider } from './resolveModel';
+import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
+import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
+import type { ChatCompletionMessageParam } from 'openai/resources/chat';
+import { TiktokenModel } from 'tiktoken';
+
+// Re-export for convenience
+export type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
+
+// ────────────────────────────────────────────────────────────────
+// Public types
+// ────────────────────────────────────────────────────────────────
 
 export type ConversationParams = {
   name: string;
   modules?: ConversationModule[];
   logLevel?: LogLevel;
+  defaultModel?: LanguageModel | string;
   limits?: {
     enforceLimits?: boolean;
     maxMessagesInHistory?: number;
@@ -24,47 +33,122 @@ export type ConversationParams = {
   };
 };
 
-/** Object-only generation (no tool calls in this run). */
-export type GenerateObjectParams<S> = {
-  /** Same input contract as generateResponse */
-  messages: (string | ChatCompletionMessageParam)[];
+/** Message format accepted by Conversation methods. */
+export type ConversationMessage =
+  | string
+  | {
+      role: 'system' | 'user' | 'assistant' | 'developer' | 'tool' | 'function' | (string & {});
+      content?: string | null | unknown;
+    };
 
-  /** A ready AI SDK model, e.g., openai('gpt-5') / openai('gpt-4o') */
-  model: LanguageModel;
+/** @deprecated Use `GenerateObjectResult` instead. */
+export type GenerateObjectOutcome<T> = GenerateObjectResult<T>;
 
+export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max' | 'xhigh';
+
+export type GenerateStreamParams = {
+  messages: ConversationMessage[];
+  model?: LanguageModel | string;
+  reasoningEffort?: ReasoningEffort;
+  webSearch?: boolean;
+  tools?: Function[];
+  onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
+  onUsageData?: (usageData: UsageData) => Promise<void>;
   abortSignal?: AbortSignal;
+  maxToolCalls?: number;
 
-  /** Zod schema or JSON Schema */
-  schema: S;
+  // OpenAI-specific
+  backgroundMode?: boolean;
+  serviceTier?: OpenAiServiceTier;
+  maxBackgroundWaitMs?: number;
+};
 
-  /** Sampling & limits */
+/** A single part emitted by the interleaved full stream. */
+export type StreamPart =
+  | { type: 'text-delta'; textDelta: string }
+  | { type: 'reasoning-delta'; textDelta: string }
+  | { type: 'source'; source: StreamSource };
+
+/** The result of generateStream. All properties are available immediately for streaming consumption. */
+export type StreamResult = {
+  /** Async iterable of text content chunks. */
+  textStream: AsyncIterable<string>;
+  /** Async iterable of reasoning/thinking chunks (empty if model doesn't support reasoning). */
+  reasoningStream: AsyncIterable<string>;
+  /**
+   * Interleaved stream of all parts (text, reasoning, sources) for real-time
+   * consumption. Prefer this over consuming `textStream` and `reasoningStream`
+   * separately, since those may share the same underlying data source and
+   * cannot be consumed concurrently.
+   */
+  fullStream: AsyncIterable<StreamPart>;
+  /** Resolves to the full text when generation completes. */
+  text: Promise<string>;
+  /** Resolves to the full reasoning text when generation completes. */
+  reasoning: Promise<string>;
+  /** Resolves to source citations (web search results, etc.). */
+  sources: Promise<StreamSource[]>;
+  /** Resolves to usage data when generation completes. */
+  usage: Promise<UsageData>;
+  /** Resolves to tool invocation results. */
+  toolInvocations: Promise<ToolInvocationResult[]>;
+};
+
+export type StreamSource = {
+  url?: string;
+  title?: string;
+};
+
+export type GenerateObjectParams<T> = {
+  messages: ConversationMessage[];
+  model?: LanguageModel | string;
+  schema: any; // Zod schema or JSON Schema
+  reasoningEffort?: ReasoningEffort;
   temperature?: number;
   topP?: number;
   maxTokens?: number;
-
-  /** Usage callback */
+  abortSignal?: AbortSignal;
   onUsageData?: (usageData: UsageData) => Promise<void>;
-
-  /** Append final JSON to history as assistant text; default true */
   recordInHistory?: boolean;
 
-  /** Per-call override for reasoning effort (reasoning models only). */
-  reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+  // OpenAI-specific
+  backgroundMode?: boolean;
+  serviceTier?: OpenAiServiceTier;
+  maxBackgroundWaitMs?: number;
 };
 
-export type GenerateObjectOutcome<T> = {
-  object: T; // validated final object
-  usageData: UsageData;
+export type GenerateObjectResult<T> = {
+  object: T;
+  usage: UsageData;
+  reasoning?: string;
+  toolInvocations: ToolInvocationResult[];
 };
+
+export type GenerateResponseResult = {
+  text: string;
+  reasoning?: string;
+  sources: StreamSource[];
+  usage: UsageData;
+  toolInvocations: ToolInvocationResult[];
+};
+
+// ────────────────────────────────────────────────────────────────
+// Default constants
+// ────────────────────────────────────────────────────────────────
+
+const DEFAULT_MODEL = 'gpt-4o' as TiktokenModel;
+const DEFAULT_TOKEN_LIMIT = 50_000;
+
+// ────────────────────────────────────────────────────────────────
+// Conversation class
+// ────────────────────────────────────────────────────────────────
 
 export class Conversation {
-  private tokenLimit = 50000;
-  private history;
-  private systemMessages: ChatCompletionMessageParam[] = [];
+  private tokenLimit: number;
+  private history: MessageHistory;
+  private systemMessages: ConversationMessage[] = [];
   private functions: Function[] = [];
   private messageModerators: MessageModerator[] = [];
-  private generatedCode = false;
-  private generatedList = false;
   private logger: Logger;
   private params: ConversationParams;
   private modulesProcessed = false;
@@ -72,41 +156,312 @@ export class Conversation {
 
   constructor(params: ConversationParams) {
     this.params = params;
+    this.tokenLimit = params.limits?.tokenLimit ?? DEFAULT_TOKEN_LIMIT;
     this.history = new MessageHistory({
       maxMessages: params.limits?.maxMessagesInHistory,
       enforceMessageLimit: params.limits?.enforceLimits,
     });
     this.logger = new Logger({ name: params.name, logLevel: params.logLevel });
+  }
 
-    if (params?.limits?.enforceLimits) {
-      this.addFunctions('Conversation', [summarizeConversationHistoryFunction(this)]);
+  // ────────────────────────────────────────────────────────────
+  // Public API
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * Stream a text response from the model.
+   *
+   * Returns a `StreamResult` with async iterables for text and reasoning chunks,
+   * plus promises that resolve when generation completes.
+   *
+   * For OpenAI models with high reasoning effort or pro models, this may
+   * fall back to background/polling mode via `OpenAiResponses` and return
+   * the full result as a single-chunk stream.
+   */
+  async generateStream(params: GenerateStreamParams): Promise<StreamResult> {
+    await this.ensureModulesProcessed();
+
+    const model = this.resolveModelInstance(params.model);
+    const modelString = this.getModelString(params.model);
+    const provider = inferProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
+
+    this.logger.info({
+      message: `generateStream`,
+      obj: { model: modelString, provider, reasoningEffort: params.reasoningEffort, webSearch: params.webSearch },
+    });
+
+    // Check if we should use background/polling mode (OpenAI-specific)
+    if (provider === 'openai' && this.shouldUseBackgroundMode(modelString, params)) {
+      return this.generateStreamViaPolling(params, modelString);
     }
 
-    if (params.limits?.tokenLimit) {
-      this.tokenLimit = params.limits.tokenLimit;
+    // Build messages for the AI SDK
+    let messages = this.buildAiSdkMessages(params.messages);
+
+    // Google requires all system messages at the beginning of the conversation.
+    // Reorder so system messages come first, preserving relative order within
+    // each group.
+    if (provider === 'google') {
+      const system = messages.filter((m) => m.role === 'system');
+      const nonSystem = messages.filter((m) => m.role !== 'system');
+      messages = [...system, ...nonSystem];
+    }
+
+    // Build tools from module functions + any extra tools
+    const allFunctions = [...this.functions, ...(params.tools ?? [])];
+    const tools = this.buildAiSdkTools(allFunctions);
+
+    // Build provider options
+    const providerOptions = this.buildProviderOptions(provider, params, modelString);
+
+    const result = streamText({
+      model,
+      messages,
+      tools: Object.keys(tools).length > 0 ? tools : undefined,
+      stopWhen: stepCountIs(params.maxToolCalls ?? 50),
+      abortSignal: params.abortSignal,
+      providerOptions,
+      ...(params.webSearch && provider === 'openai' ? { toolChoice: 'auto' as const } : {}),
+    });
+
+    // Build the StreamResult
+    const usagePromise = this.buildUsagePromise(result, modelString, params);
+    const toolInvocationsPromise = this.buildToolInvocationsPromise(result);
+
+    // Wrap ALL AI SDK promises with catch handlers to prevent unhandled rejections
+    // when the stream is aborted mid-generation. The AI SDK's internal transform
+    // stream throws NoOutputGeneratedError on flush if aborted before any output,
+    // rejecting finishReason, totalUsage, steps, text, etc. Any uncaught rejection
+    // crashes the Node process.
+    const safeText = Promise.resolve(result.text).catch(() => '');
+    const safeReasoning = Promise.resolve(result.reasoning)
+      .then((parts: ReasoningOutput[]) =>
+        parts
+          ? parts
+              .filter((part) => part.type === 'reasoning')
+              .map((part) => part.text)
+              .join('')
+          : ''
+      )
+      .catch(() => '');
+    const safeSources = Promise.resolve(result.sources)
+      .then((s: LanguageModelV3Source[]) =>
+        (s ?? []).map((source) => ({
+          url: source.sourceType === 'url' ? source.url : undefined,
+          title: source.sourceType === 'url' ? source.title : undefined,
+        }))
+      )
+      .catch(() => [] as StreamSource[]);
+    const safeUsage = usagePromise.catch(
+      () =>
+        ({
+          model: modelString,
+          initialRequestTokenUsage: {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            reasoningTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          initialRequestCostUsd: { inputUsd: 0, cachedInputUsd: 0, reasoningUsd: 0, outputUsd: 0, totalUsd: 0 },
+          totalTokenUsage: {
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            reasoningTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+          totalCostUsd: { inputUsd: 0, cachedInputUsd: 0, reasoningUsd: 0, outputUsd: 0, totalUsd: 0 },
+          totalRequestsToAssistant: 0,
+          callsPerTool: {},
+          totalToolCalls: 0,
+        }) as UsageData
+    );
+    const safeToolInvocations = toolInvocationsPromise.catch(() => [] as ToolInvocationResult[]);
+
+    // Catch remaining AI SDK promises that are rejected by NoOutputGeneratedError
+    // on flush when the stream is aborted before any output. The AI SDK's internal
+    // flush rejects _finishReason, _rawFinishReason, _totalUsage, and _steps.
+    // We already catch totalUsage and steps above; these catch the rest so the
+    // unhandled rejections don't crash the Node process.
+    Promise.resolve(result.finishReason).catch(() => {});
+    Promise.resolve((result as any).rawFinishReason).catch(() => {});
+    Promise.resolve(result.response).catch(() => {});
+
+    return {
+      textStream: result.textStream,
+      reasoningStream: (async function* () {
+        // Reasoning is available via the promise after generation completes.
+        // For real-time streaming, use fullStream instead.
+      })(),
+      fullStream: this.mapFullStream(result.fullStream),
+      text: safeText,
+      reasoning: safeReasoning,
+      sources: safeSources,
+      usage: safeUsage,
+      toolInvocations: safeToolInvocations,
+    };
+  }
+
+  /**
+   * Generate a strongly-typed structured object from the model.
+   *
+   * This is promise-based (not streaming-first) to guarantee the
+   * type contract. Reasoning is available on the result after completion.
+   *
+   * For OpenAI models with high reasoning or pro models, this uses
+   * `OpenAiResponses` with background/polling mode.
+   */
+  async generateObject<T>(params: GenerateObjectParams<T>): Promise<GenerateObjectResult<T>> {
+    await this.ensureModulesProcessed();
+
+    const model = this.resolveModelInstance(params.model);
+    const modelString = this.getModelString(params.model);
+    const provider = inferProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
+
+    // Check if we should use background/polling mode (OpenAI-specific)
+    if (provider === 'openai' && this.shouldUseBackgroundMode(modelString, params)) {
+      return this.generateObjectViaPolling(params, modelString);
+    }
+
+    let messages = this.buildAiSdkMessages(params.messages);
+
+    // Google requires all system messages at the beginning
+    if (provider === 'google') {
+      const system = messages.filter((m) => m.role === 'system');
+      const nonSystem = messages.filter((m) => m.role !== 'system');
+      messages = [...system, ...nonSystem];
+    }
+
+    // Schema normalization
+    const isZod = this.isZodSchema(params.schema);
+    const normalizedSchema = isZod ? params.schema : jsonSchema(this.strictifyJsonSchema(params.schema));
+
+    const result = await aiGenerateObject({
+      model,
+      messages,
+      schema: normalizedSchema,
+      abortSignal: params.abortSignal,
+      maxOutputTokens: params.maxTokens,
+      temperature: params.temperature,
+      topP: params.topP,
+      providerOptions: this.buildProviderOptions(provider, params, modelString),
+      experimental_repairText: (async ({ text }) => {
+        const cleaned = String(text ?? '')
+          .trim()
+          .replace(/^```(?:json)?/i, '')
+          .replace(/```$/, '');
+        try {
+          JSON.parse(cleaned);
+          return cleaned;
+        } catch {
+          return null;
+        }
+      }) as RepairTextFunction,
+    });
+
+    // Record in history
+    if (params.recordInHistory !== false) {
+      try {
+        const toRecord = typeof result?.object === 'object' ? JSON.stringify(result.object) : '';
+        if (toRecord) {
+          this.addAssistantMessagesToHistory([toRecord]);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const usage = this.processAiSdkUsage(result, modelString);
+
+    if (params.onUsageData) {
+      await params.onUsageData(usage);
+    }
+
+    // Extract reasoning if available
+    const reasoning = this.extractReasoningFromResult(result);
+
+    return {
+      object: (result?.object ?? {}) as T,
+      usage,
+      reasoning: reasoning || undefined,
+      toolInvocations: [],
+    };
+  }
+
+  /**
+   * Non-streaming convenience: generates a text response and waits for completion.
+   */
+  async generateResponse(params: GenerateStreamParams): Promise<GenerateResponseResult> {
+    const stream = await this.generateStream(params);
+    const [text, reasoning, sources, usage, toolInvocations] = await Promise.all([
+      stream.text,
+      stream.reasoning,
+      stream.sources,
+      stream.usage,
+      stream.toolInvocations,
+    ]);
+    return { text, reasoning: reasoning || undefined, sources, usage, toolInvocations };
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // History management (public, for callers like ThoughtConversation)
+  // ────────────────────────────────────────────────────────────
+
+  addSystemMessagesToHistory(messages: string[], unshift = false) {
+    const formatted: ConversationMessage[] = messages.map((m) => ({ role: 'system' as const, content: m }));
+    this.addMessagesToHistory(formatted, unshift);
+  }
+
+  addAssistantMessagesToHistory(messages: string[], unshift = false) {
+    const formatted: ConversationMessage[] = messages.map((m) => ({ role: 'assistant' as const, content: m }));
+    this.addMessagesToHistory(formatted, unshift);
+  }
+
+  addUserMessagesToHistory(messages: string[], unshift = false) {
+    const formatted: ConversationMessage[] = messages.map((m) => ({ role: 'user' as const, content: m }));
+    this.addMessagesToHistory(formatted, unshift);
+  }
+
+  addMessagesToHistory(messages: ConversationMessage[], unshift = false) {
+    // Convert to the format MessageHistory expects (ChatCompletionMessageParam-like)
+    const historyMessages = messages.map((m) => {
+      if (typeof m === 'string') {
+        return { role: 'user' as const, content: m };
+      }
+      return m;
+    });
+
+    const systemMsgs = historyMessages.filter((m) => m.role === 'system');
+
+    if (unshift) {
+      this.history.getMessages().unshift(...(historyMessages as any[]));
+      this.history.prune();
+      this.systemMessages.unshift(...systemMsgs);
+    } else {
+      this.history.push(historyMessages as any[]);
+      this.systemMessages.push(...systemMsgs);
     }
   }
 
+  // ────────────────────────────────────────────────────────────
+  // Module system
+  // ────────────────────────────────────────────────────────────
+
   private async ensureModulesProcessed(): Promise<void> {
-    // If modules are already processed, return immediately
     if (this.modulesProcessed) {
       return;
     }
-
-    // If modules are currently being processed, wait for that to complete
     if (this.processingModulesPromise) {
       return this.processingModulesPromise;
     }
 
-    // Start processing modules and keep a reference to the promise
     this.processingModulesPromise = this.processModules();
-
     try {
       await this.processingModulesPromise;
       this.modulesProcessed = true;
     } catch (error) {
       this.logger.error({ message: 'Error processing modules', obj: { error } });
-      // Reset the promise so we can try again
       this.processingModulesPromise = null;
       throw error;
     }
@@ -118,334 +473,613 @@ export class Conversation {
     }
 
     for (const module of this.params.modules) {
-      // Get system messages and handle potential Promise
-      const moduleSystemMessagesResult = module.getSystemMessages();
-      let moduleSystemMessages: string[] | string;
+      const moduleName = module.getName();
 
-      // Check if the result is a Promise and await it if needed
-      if (moduleSystemMessagesResult instanceof Promise) {
-        moduleSystemMessages = await moduleSystemMessagesResult;
-      } else {
-        moduleSystemMessages = moduleSystemMessagesResult;
+      // System messages
+      const rawSystem = await Promise.resolve(module.getSystemMessages());
+      const sysArr = Array.isArray(rawSystem) ? rawSystem : rawSystem ? [rawSystem] : [];
+      const trimmed = sysArr.map((s) => String(s ?? '').trim()).filter(Boolean);
+
+      if (trimmed.length > 0) {
+        const formatted = trimmed.join('. ');
+        this.addSystemMessagesToHistory([
+          `The following are instructions from the ${moduleName} module:\n${formatted}`,
+        ]);
       }
 
-      if (!moduleSystemMessages || (Array.isArray(moduleSystemMessages) && moduleSystemMessages.length < 1)) {
+      // Functions
+      const moduleFunctions = module.getFunctions();
+      this.functions.push(...moduleFunctions);
+
+      // Function instructions
+      let functionInstructions = `The following are instructions from functions in the ${moduleName} module:`;
+      let hasInstructions = false;
+      for (const f of moduleFunctions) {
+        if (f.instructions && f.instructions.length > 0) {
+          hasInstructions = true;
+          const paragraph = f.instructions.join('. ');
+          functionInstructions += ` ${f.definition.name}: ${paragraph}.`;
+        }
+      }
+      if (hasInstructions) {
+        this.addSystemMessagesToHistory([functionInstructions]);
+      }
+
+      // Message moderators
+      this.messageModerators.push(...module.getMessageModerators());
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // AI SDK message building
+  // ────────────────────────────────────────────────────────────
+
+  private buildAiSdkMessages(
+    callMessages: ConversationMessage[]
+  ): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+    const result: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+
+    // Add history messages
+    for (const msg of this.history.getMessages()) {
+      const m = msg as any;
+      const rawRole = String(m.role ?? 'user');
+      // Map non-standard roles to the closest AI SDK role
+      const role = (rawRole === 'system' ? 'system' : rawRole === 'assistant' ? 'assistant' : 'user') as
+        | 'system'
+        | 'user'
+        | 'assistant';
+      const content = typeof m.content === 'string' ? m.content : this.extractTextFromContent(m.content);
+      if (content.trim()) {
+        result.push({ role, content });
+      }
+    }
+
+    // Add call messages
+    for (const msg of callMessages) {
+      if (typeof msg === 'string') {
+        result.push({ role: 'user', content: msg });
+      } else {
+        const rawRole = String(msg.role ?? 'user');
+        const role = (rawRole === 'system' ? 'system' : rawRole === 'assistant' ? 'assistant' : 'user') as
+          | 'system'
+          | 'user'
+          | 'assistant';
+        result.push({ role, content: typeof msg.content === 'string' ? msg.content : '' });
+      }
+    }
+
+    return result;
+  }
+
+  private extractTextFromContent(content: any): string {
+    if (typeof content === 'string') {
+      return content;
+    }
+    if (Array.isArray(content)) {
+      return content
+        .map((p: any) => {
+          if (typeof p === 'string') {
+            return p;
+          }
+          if (p?.type === 'text') {
+            return p.text;
+          }
+          return '';
+        })
+        .join('\n');
+    }
+    return '';
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // AI SDK tool building
+  // ────────────────────────────────────────────────────────────
+
+  private buildAiSdkTools(functions: Function[]): ToolSet {
+    const tools: ToolSet = {};
+
+    for (const f of functions) {
+      const def = f.definition;
+      if (!def?.name) {
         continue;
       }
 
-      const formattedSystemMessages = Array.isArray(moduleSystemMessages)
-        ? moduleSystemMessages.join('. ')
-        : moduleSystemMessages;
-
-      this.addSystemMessagesToHistory([
-        `The following are instructions from the ${module.getName()} module:\n${formattedSystemMessages}`,
-      ]);
-      this.addFunctions(module.getName(), module.getFunctions());
-      this.addMessageModerators(module.getMessageModerators());
-    }
-  }
-
-  private addFunctions(moduleName: string, functions: Function[]) {
-    this.functions.push(...functions);
-    let functionInstructions = `The following are instructions from functions in the ${moduleName} module:`;
-    let functionInstructionsAdded = false;
-    for (const f of functions) {
-      if (f.instructions) {
-        if (!f.instructions || f.instructions.length < 1) {
-          continue;
-        }
-
-        functionInstructionsAdded = true;
-        const instructionsParagraph = f.instructions.join('. ');
-        functionInstructions += ` ${f.definition.name}: ${instructionsParagraph}.`;
-      }
-    }
-
-    if (!functionInstructionsAdded) {
-      return;
-    }
-
-    this.addSystemMessagesToHistory([functionInstructions]);
-  }
-
-  private addMessageModerators(messageModerators: MessageModerator[]) {
-    this.messageModerators.push(...messageModerators);
-  }
-
-  private async enforceTokenLimit(messages: (string | ChatCompletionMessageParam)[], model?: TiktokenModel) {
-    if (!this.params.limits?.enforceLimits) {
-      return;
-    }
-
-    const resolvedModel = model ? model : DEFAULT_MODEL;
-    const encoder = encoding_for_model(resolvedModel);
-    const conversation =
-      this.history.toString() +
-      messages
-        .map((message) => {
-          if (typeof message === 'string') {
-            return message;
-          } else {
-            // Extract content from ChatCompletionMessageParam
-            const contentParts = Array.isArray(message.content) ? message.content : [message.content];
-            return contentParts
-              .map((part) => {
-                if (typeof part === 'string') {
-                  return part;
-                } else if (part?.type === 'text') {
-                  return part.text;
-                } else {
-                  return ''; // Handle non-text content types as empty string
-                }
-              })
-              .join(' ');
+      tools[def.name] = {
+        description: def.description,
+        inputSchema: jsonSchema(this.normalizeToolParameters(def.parameters)),
+        execute: async (args: any) => {
+          const result = await f.call(args);
+          if (typeof result === 'undefined') {
+            return { result: 'Function executed successfully' };
           }
-        })
-        .join('. ');
-    const encoded = encoder.encode(conversation);
-    console.log(`current tokens: ${encoded.length}`);
-    if (encoded.length < this.tokenLimit) {
-      return;
+          return result;
+        },
+      } as any;
     }
 
-    const summarizeConversationRequest = `First, call the ${summarizeConversationHistoryFunctionName} function`;
-    await new OpenAi({
-      history: this.history,
-      functions: this.functions,
-      messageModerators: this.messageModerators,
-      logLevel: this.params.logLevel,
-    }).generateResponse({ messages: [summarizeConversationRequest], model });
-    const referenceSummaryRequest = `If there's a file mentioned in the conversation summary, find and read the file to better respond to my next request. If that doesn't find anything, call the ${searchLibrariesFunctionName} function on other keywords in the conversation summary to find a file to read`;
-    await new OpenAi({
-      history: this.history,
-      functions: this.functions,
-      messageModerators: this.messageModerators,
-      logLevel: this.params.logLevel,
-    }).generateResponse({ messages: [referenceSummaryRequest], model });
-  }
-
-  summarizeConversationHistory(summary: string) {
-    this.clearHistory();
-    this.history.push([{ role: 'assistant', content: `Previous conversation summary: ${summary}` }]);
-  }
-
-  private clearHistory() {
-    this.history = new MessageHistory();
-    this.history.push(this.systemMessages);
-  }
-
-  addSystemMessagesToHistory(messages: string[], unshift = false) {
-    const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
-      return { role: 'system', content: message };
-    });
-    this.addMessagesToHistory(chatCompletions, unshift);
-  }
-
-  addAssistantMessagesToHistory(messages: string[], unshift = false) {
-    const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
-      return { role: 'assistant', content: message };
-    });
-    this.addMessagesToHistory(chatCompletions, unshift);
-  }
-
-  addUserMessagesToHistory(messages: string[], unshift = false) {
-    const chatCompletions: ChatCompletionMessageParam[] = messages.map((message) => {
-      return { role: 'user', content: message };
-    });
-    this.addMessagesToHistory(chatCompletions, unshift);
-  }
-
-  addMessagesToHistory(messages: ChatCompletionMessageParam[], unshift = false) {
-    const systemMessages = messages.filter((message) => message.role === 'system');
-    if (unshift) {
-      this.history.getMessages().unshift(...messages);
-      this.history.prune();
-      this.systemMessages.unshift(...systemMessages);
-    } else {
-      this.history.push(messages);
-      this.systemMessages.push(...systemMessages);
-    }
-  }
-
-  async generateResponse({
-    messages,
-    model,
-    maxToolCalls,
-    ...rest
-  }: {
-    messages: (string | ChatCompletionMessageParam)[];
-    model?: TiktokenModel;
-    abortSignal?: AbortSignal;
-    onUsageData?: (usageData: UsageData) => Promise<void>;
-    onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
-    reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
-    maxToolCalls?: number;
-  }) {
-    await this.ensureModulesProcessed();
-    await this.enforceTokenLimit(messages, model);
-
-    this.logger.debug({ message: `=============== Conversation.generateResponse (start) ===============` });
-    this.logger.debug({ message: `Message history`, obj: { history: this.history.getMessages(), messages } });
-    this.logger.debug({ message: `=============== Conversation.generateResponse (end) ===============` });
-
-    return await new OpenAi({
-      history: this.history,
-      functions: this.functions,
-      messageModerators: this.messageModerators,
-      logLevel: this.params.logLevel,
-      ...(typeof maxToolCalls !== 'undefined' ? { maxFunctionCalls: maxToolCalls } : {}),
-    }).generateResponse({ messages, model, ...rest });
-  }
-
-  async generateStreamingResponse({
-    messages,
-    model,
-    maxToolCalls,
-    ...rest
-  }: {
-    messages: (string | ChatCompletionMessageParam)[];
-    model?: TiktokenModel;
-    abortSignal?: AbortSignal;
-    onUsageData?: (usageData: UsageData) => Promise<void>;
-    onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
-    reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
-    maxToolCalls?: number;
-  }) {
-    await this.ensureModulesProcessed();
-    await this.enforceTokenLimit(messages, model);
-    return await new OpenAi({
-      history: this.history,
-      functions: this.functions,
-      messageModerators: this.messageModerators,
-      logLevel: this.params.logLevel,
-      ...(typeof maxToolCalls !== 'undefined' ? { maxFunctionCalls: maxToolCalls } : {}),
-    }).generateStreamingResponse({ messages, model, ...rest });
+    return tools;
   }
 
   /**
-   * Generate a validated JSON object (no tools in this run).
-   * Uses AI SDK `generateObject` which leverages provider-native structured outputs when available.
+   * Normalize tool parameter schemas to ensure they are valid JSON Schema
+   * with `type: "object"`. Handles missing, null, or invalid schemas
+   * (e.g. `type: "None"` which some functions produce).
    */
-  async generateObject<T>({
-    messages,
-    model,
-    abortSignal,
-    schema,
-    temperature,
-    topP,
-    maxTokens,
-    onUsageData,
-    recordInHistory = true,
-    reasoningEffort,
-  }: GenerateObjectParams<unknown>): Promise<GenerateObjectOutcome<T>> {
-    await this.ensureModulesProcessed();
+  private normalizeToolParameters(parameters: any): Record<string, any> {
+    const emptySchema = { type: 'object', properties: {} };
 
-    const combined: ModelMessage[] = [
-      ...this.toModelMessages(this.history.getMessages()),
-      ...this.toModelMessages(messages),
-    ];
-
-    // Schema normalization (Zod OR JSON Schema supported)
-    const isZod =
-      schema &&
-      (typeof (schema as any).safeParse === 'function' ||
-        (!!(schema as any)._def && typeof (schema as any)._def.typeName === 'string'));
-    const normalizedSchema = isZod ? (schema as any) : jsonSchema(this.strictifyJsonSchema(schema as any));
-
-    this.logger.debug({ message: `=============== Conversation.generateObject (start) ===============` });
-    this.logger.debug({ message: `Message history`, obj: { messages: combined } });
-    this.logger.debug({ message: `=============== Conversation.generateObject (end) ===============` });
-
-    const result = await aiGenerateObject({
-      model,
-      abortSignal,
-      messages: combined,
-      schema: normalizedSchema,
-      providerOptions: {
-        openai: {
-          strictJsonSchema: true,
-          reasoningEffort,
-        },
-      },
-      maxOutputTokens: maxTokens,
-      temperature,
-      topP,
-      experimental_repairText: async ({ text }: any) => {
-        const cleaned = String(text ?? '')
-          .trim()
-          .replace(/^```(?:json)?/i, '')
-          .replace(/```$/, '');
-        try {
-          JSON.parse(cleaned);
-          return cleaned;
-        } catch {
-          return null;
-        }
-      },
-    } as any);
-
-    // Record user messages to history (parity with other methods)
-    const chatCompletions: ChatCompletionMessageParam[] = messages.map((m) =>
-      typeof m === 'string' ? ({ role: 'user', content: m } as ChatCompletionMessageParam) : m
-    );
-    this.addMessagesToHistory(chatCompletions);
-
-    // Optionally persist the final JSON in history
-    if (recordInHistory) {
-      try {
-        const toRecord = typeof result?.object === 'object' ? JSON.stringify(result.object) : '';
-        if (toRecord) {
-          this.addAssistantMessagesToHistory([toRecord]);
-        }
-      } catch {
-        /* ignore */
-      }
+    if (!parameters || typeof parameters !== 'object') {
+      return emptySchema;
     }
 
-    const usageData = this.processUsageData({
-      result,
-      model,
+    // If type is missing, not a string, or not a valid JSON Schema type, default to object
+    const validTypes = ['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'];
+    if (
+      !parameters.type ||
+      typeof parameters.type !== 'string' ||
+      !validTypes.includes(parameters.type.toLowerCase())
+    ) {
+      return { ...emptySchema, ...parameters, type: 'object' };
+    }
+
+    return parameters;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Provider options
+  // ────────────────────────────────────────────────────────────
+
+  private buildProviderOptions(
+    provider: string,
+    params: { reasoningEffort?: ReasoningEffort; webSearch?: boolean; serviceTier?: OpenAiServiceTier },
+    modelString?: string
+  ): Record<string, any> {
+    const options: Record<string, any> = {};
+    const effort = params.reasoningEffort;
+
+    if (provider === 'openai') {
+      const openaiOpts: Record<string, any> = {};
+      if (effort) {
+        // OpenAI accepts: none | low | medium | high | xhigh
+        // 'max' → 'xhigh' (OpenAI's highest)
+        openaiOpts.reasoningEffort = effort === 'max' ? 'xhigh' : effort;
+      }
+      if (params.serviceTier) {
+        openaiOpts.serviceTier = params.serviceTier;
+      }
+      options.openai = openaiOpts;
+    }
+
+    if (provider === 'anthropic') {
+      const anthropicOpts: Record<string, any> = {};
+      if (effort && effort !== 'none') {
+        // Use adaptive thinking (Sonnet 4.6+, Opus 4.6+) with effort level.
+        // Anthropic accepts effort: low | medium | high | max
+        // 'xhigh' has no Anthropic equivalent → map to 'max'
+        anthropicOpts.thinking = { type: 'adaptive' };
+        anthropicOpts.effort = effort === 'xhigh' ? 'max' : effort;
+      }
+      options.anthropic = anthropicOpts;
+    }
+
+    if (provider === 'google') {
+      const googleOpts: Record<string, any> = {};
+      if (effort && effort !== 'none') {
+        // Google accepts thinkingLevel: minimal | low | medium | high
+        // Our 'max'/'xhigh' have no Google equivalent → map to 'high'
+        const levelMap: Record<string, string> = {
+          low: 'low',
+          medium: 'medium',
+          high: 'high',
+          xhigh: 'high',
+          max: 'high',
+        };
+        googleOpts.thinkingConfig = {
+          thinkingLevel: levelMap[effort] ?? 'medium',
+        };
+      }
+      options.google = googleOpts;
+    }
+
+    if (provider === 'xai') {
+      const xaiOpts: Record<string, any> = {};
+      // Only models with reasoning support accept the reasoningEffort parameter.
+      // Models like grok-4 (no "-fast" suffix) reject it with a 400 error.
+      const xaiSupportsReasoning = modelString ? /fast/i.test(modelString) : false;
+      if (effort && effort !== 'none' && xaiSupportsReasoning) {
+        // xAI accepts: low | high
+        // Map everything to the closest valid value
+        const xaiEffort = effort === 'low' ? 'low' : 'high';
+        xaiOpts.reasoningEffort = xaiEffort;
+      }
+      options.xai = xaiOpts;
+    }
+
+    return options;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Background/polling escape hatch (OpenAI-specific)
+  // ────────────────────────────────────────────────────────────
+
+  private shouldUseBackgroundMode(
+    modelString: string,
+    params: { backgroundMode?: boolean; reasoningEffort?: ReasoningEffort }
+  ): boolean {
+    if (typeof params.backgroundMode === 'boolean') {
+      return params.backgroundMode;
+    }
+    if (this.isProModel(modelString)) {
+      return true;
+    }
+    if (this.isHighReasoningEffort(params.reasoningEffort)) {
+      return true;
+    }
+    return false;
+  }
+
+  private isProModel(model: string): boolean {
+    return /(^|[-_.])pro($|[-_.])/.test(String(model ?? '').toLowerCase());
+  }
+
+  private isHighReasoningEffort(effort?: ReasoningEffort): boolean {
+    return effort === 'high' || effort === 'xhigh' || effort === 'max';
+  }
+
+  /**
+   * Map our ReasoningEffort to OpenAI's accepted values.
+   * OpenAI accepts: none | low | medium | high | xhigh
+   * 'max' → 'xhigh' (OpenAI's highest).
+   */
+  private mapReasoningEffortForOpenAi(
+    effort?: ReasoningEffort
+  ): 'none' | 'low' | 'medium' | 'high' | 'xhigh' | undefined {
+    if (!effort) {
+      return undefined;
+    }
+    if (effort === 'max') {
+      return 'xhigh';
+    }
+    return effort as 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+  }
+
+  /**
+   * Fall back to OpenAiResponses for background/polling mode.
+   * Returns a StreamResult where the text arrives as a single chunk after polling completes.
+   */
+  private async generateStreamViaPolling(params: GenerateStreamParams, modelString: string): Promise<StreamResult> {
+    const responses = this.createOpenAiResponses(params);
+
+    // Convert messages to the format OpenAiResponses expects
+    const messages = this.convertToOpenAiMessages(params.messages);
+
+    const result = await responses.generateText({
+      messages,
+      model: modelString as TiktokenModel,
+      abortSignal: params.abortSignal,
+      onToolInvocation: params.onToolInvocation,
+      onUsageData: params.onUsageData,
+      reasoningEffort: this.mapReasoningEffortForOpenAi(params.reasoningEffort),
+      maxToolCalls: params.maxToolCalls,
+      backgroundMode: params.backgroundMode,
+      maxBackgroundWaitMs: params.maxBackgroundWaitMs,
+      serviceTier: params.serviceTier,
     });
 
-    if (onUsageData) {
-      await onUsageData(usageData);
-    }
+    // Wrap the polling result as a StreamResult
+    const text = result.message;
+    const usage = result.usagedata;
+    const toolInvocations = result.toolInvocations;
 
     return {
-      object: (result?.object ?? ({} as any)) as T,
-      usageData,
+      textStream: (async function* () {
+        yield text;
+      })(),
+      reasoningStream: (async function* () {
+        // Reasoning not available via polling mode
+      })(),
+      fullStream: (async function* () {
+        yield { type: 'text-delta' as const, textDelta: text };
+      })(),
+      text: Promise.resolve(text),
+      reasoning: Promise.resolve(''),
+      sources: Promise.resolve([]),
+      usage: Promise.resolve(usage),
+      toolInvocations: Promise.resolve(toolInvocations),
     };
   }
 
-  /** Convert (string | ChatCompletionMessageParam)[] -> AI SDK ModelMessage[] */
-  private toModelMessages(input: (string | ChatCompletionMessageParam)[]): ModelMessage[] {
-    return input.map((m) => {
-      if (typeof m === 'string') {
-        return { role: 'user', content: m };
-      }
-      const text = Array.isArray(m.content)
-        ? m.content.map((p: any) => (typeof p === 'string' ? p : p?.text ?? '')).join('\n')
-        : (m.content as string | undefined) ?? '';
-      const role = m.role === 'system' || m.role === 'user' || m.role === 'assistant' ? m.role : 'user';
-      return { role, content: text };
+  /**
+   * Fall back to OpenAiResponses for generateObject with background/polling.
+   */
+  private async generateObjectViaPolling<T>(
+    params: GenerateObjectParams<T>,
+    modelString: string
+  ): Promise<GenerateObjectResult<T>> {
+    const responses = this.createOpenAiResponses(params);
+
+    const messages = this.convertToOpenAiMessages(params.messages);
+
+    const result = await responses.generateObject<T>({
+      messages,
+      model: modelString as TiktokenModel,
+      schema: params.schema,
+      abortSignal: params.abortSignal,
+      onUsageData: params.onUsageData,
+      reasoningEffort: this.mapReasoningEffortForOpenAi(params.reasoningEffort),
+      temperature: params.temperature,
+      topP: params.topP,
+      maxTokens: params.maxTokens,
+      backgroundMode: params.backgroundMode,
+      maxBackgroundWaitMs: params.maxBackgroundWaitMs,
+      serviceTier: params.serviceTier,
+    });
+
+    return {
+      object: result.object,
+      usage: result.usageData,
+      reasoning: undefined,
+      toolInvocations: [],
+    };
+  }
+
+  private createOpenAiResponses(params: {
+    serviceTier?: OpenAiServiceTier;
+    maxBackgroundWaitMs?: number;
+  }): OpenAiResponses {
+    // Lazy require to avoid circular dependency and keep OpenAiResponses optional
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { OpenAiResponses: OAIResponses } = require('./OpenAiResponses');
+    return new OAIResponses({
+      modules: this.params.modules,
+      logLevel: this.params.logLevel,
+      defaultModel: this.getModelString(this.params.defaultModel) as TiktokenModel,
     });
   }
 
+  private convertToOpenAiMessages(messages: ConversationMessage[]): Array<string | ChatCompletionMessageParam> {
+    const result: Array<string | ChatCompletionMessageParam> = [];
+
+    // Include history
+    for (const msg of this.history.getMessages()) {
+      const m = msg as any;
+      result.push({
+        role: m.role as 'system' | 'user' | 'assistant',
+        content: typeof m.content === 'string' ? m.content : this.extractTextFromContent(m.content),
+      });
+    }
+
+    // Include call messages
+    for (const msg of messages) {
+      if (typeof msg === 'string') {
+        result.push(msg);
+      } else {
+        result.push({
+          role: msg.role as 'system' | 'user' | 'assistant',
+          content: msg.content as string,
+        });
+      }
+    }
+
+    return result;
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Model resolution
+  // ────────────────────────────────────────────────────────────
+
+  private resolveModelInstance(model?: LanguageModel | string): LanguageModel {
+    const m = model ?? this.params.defaultModel ?? DEFAULT_MODEL;
+    return resolveModel(m);
+  }
+
+  private getModelString(model?: LanguageModel | string): string {
+    if (!model) {
+      const def = this.params.defaultModel;
+      if (!def) {
+        return DEFAULT_MODEL;
+      }
+      if (typeof def === 'string') {
+        return def;
+      }
+      return (def as any).modelId ?? DEFAULT_MODEL;
+    }
+    if (typeof model === 'string') {
+      return model;
+    }
+    return (model as any).modelId ?? 'unknown';
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Usage processing
+  // ────────────────────────────────────────────────────────────
+
   /**
-   * Strictifies a plain JSON Schema for OpenAI Structured Outputs (strict mode):
-   *  - Ensures every object has `additionalProperties: false`
-   *  - Ensures every object has a `required` array that includes **all** keys in `properties`
-   *  - Adds missing `type: "object"` / `type: "array"` where implied by keywords
+   * Build a usage promise from a streaming result.
+   * Uses `totalUsage` (accumulated across all steps in a tool-call loop)
+   * and populates tool call stats from the steps.
+   */
+  private async buildUsagePromise(
+    result: {
+      totalUsage: PromiseLike<LanguageModelUsage>;
+      steps: PromiseLike<Array<{ toolCalls?: Array<{ toolName?: string }> }>>;
+    },
+    modelString: string,
+    params: GenerateStreamParams
+  ): Promise<UsageData> {
+    const [sdkUsage, steps] = await Promise.all([result.totalUsage, result.steps]);
+    const usage = this.mapSdkUsage(sdkUsage, modelString, steps);
+
+    if (params.onUsageData) {
+      await params.onUsageData(usage);
+    }
+
+    return usage;
+  }
+
+  private async buildToolInvocationsPromise(result: {
+    steps: PromiseLike<
+      Array<{
+        toolCalls?: Array<{ toolCallId?: string; toolName?: string; args?: unknown }>;
+        toolResults?: Array<{ toolCallId?: string; result?: unknown }>;
+      }>
+    >;
+  }): Promise<ToolInvocationResult[]> {
+    const steps = await result.steps;
+    const invocations: ToolInvocationResult[] = [];
+
+    for (const step of steps ?? []) {
+      for (const toolCall of step.toolCalls ?? []) {
+        invocations.push({
+          id: toolCall.toolCallId ?? '',
+          name: toolCall.toolName ?? '',
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          input: toolCall.args,
+          ok: true,
+          data: (step.toolResults ?? []).find((r) => r.toolCallId === toolCall.toolCallId)?.result,
+        });
+      }
+    }
+
+    return invocations;
+  }
+
+  /**
+   * Map AI SDK's `LanguageModelUsage` to our `UsageData`.
+   *
+   * The AI SDK v6 provides cached/reasoning token breakdowns directly in
+   * `LanguageModelUsage.inputTokenDetails` and `outputTokenDetails`, so we
+   * use those first and only fall back to provider metadata for older providers.
+   */
+  private mapSdkUsage(
+    sdkUsage: LanguageModelUsage,
+    modelString: string,
+    steps?: Array<{ toolCalls?: Array<{ toolName?: string }> }>
+  ): UsageData {
+    const inputTokens = sdkUsage?.inputTokens ?? 0;
+    const outputTokens = sdkUsage?.outputTokens ?? 0;
+    const totalTokens = sdkUsage?.totalTokens ?? inputTokens + outputTokens;
+
+    // AI SDK v6 provides structured token details
+    const cachedInputTokens = sdkUsage?.inputTokenDetails?.cacheReadTokens ?? 0;
+    const reasoningTokens = sdkUsage?.outputTokenDetails?.reasoningTokens ?? 0;
+
+    const tokenUsage: TokenUsage = {
+      inputTokens,
+      cachedInputTokens,
+      reasoningTokens,
+      outputTokens,
+      totalTokens,
+    };
+
+    // Count steps as individual requests to the assistant
+    const stepCount = steps?.length ?? 1;
+    const acc = new UsageDataAccumulator({ model: modelString as TiktokenModel });
+    acc.addTokenUsage(tokenUsage);
+
+    // Populate tool call stats from steps
+    const callsPerTool: Record<string, number> = {};
+    let totalToolCalls = 0;
+    for (const step of steps ?? []) {
+      for (const toolCall of step.toolCalls ?? []) {
+        const name = toolCall.toolName ?? 'unknown';
+        callsPerTool[name] = (callsPerTool[name] ?? 0) + 1;
+        totalToolCalls++;
+      }
+    }
+
+    return {
+      ...acc.usageData,
+      totalRequestsToAssistant: stepCount,
+      callsPerTool,
+      totalToolCalls,
+    };
+  }
+
+  /**
+   * Process usage from a generateObject result (single-step, no tool calls).
+   */
+  private processAiSdkUsage(result: { usage: LanguageModelUsage }, modelString: string): UsageData {
+    return this.mapSdkUsage(result.usage, modelString);
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Full stream mapping
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * Maps the AI SDK's `fullStream` (which emits all event types) into our
+   * `StreamPart` union. This is the primary way to consume streaming output
+   * in real-time, since it yields text, reasoning, and source events in the
+   * order the model produces them.
+   */
+  private mapFullStream(aiSdkFullStream: AsyncIterable<any>): AsyncIterable<StreamPart> {
+    return {
+      async *[Symbol.asyncIterator]() {
+        for await (const part of aiSdkFullStream) {
+          if (part.type === 'text-delta' && part.textDelta) {
+            yield { type: 'text-delta' as const, textDelta: part.textDelta };
+          } else if (part.type === 'reasoning' && part.textDelta) {
+            yield { type: 'reasoning-delta' as const, textDelta: part.textDelta };
+          } else if (part.type === 'source') {
+            yield {
+              type: 'source' as const,
+              source: {
+                url: part.sourceType === 'url' ? part.url : undefined,
+                title: part.sourceType === 'url' ? part.title : undefined,
+              },
+            };
+          }
+        }
+      },
+    };
+  }
+
+  private extractReasoningFromResult(result: any): string {
+    try {
+      // Try to get reasoning from provider metadata or response
+      const reasoning = result?.reasoning;
+      if (typeof reasoning === 'string') {
+        return reasoning;
+      }
+      if (Array.isArray(reasoning)) {
+        return reasoning
+          .filter((r: any) => r.type === 'reasoning')
+          .map((r: any) => r.text)
+          .join('');
+      }
+    } catch {
+      // ignore
+    }
+    return '';
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Schema utilities
+  // ────────────────────────────────────────────────────────────
+
+  private isZodSchema(schema: unknown): boolean {
+    if (!schema || (typeof schema !== 'object' && typeof schema !== 'function')) {
+      return false;
+    }
+    return (
+      typeof (schema as any).safeParse === 'function' ||
+      (!!(schema as any)._def && typeof (schema as any)._def.typeName === 'string')
+    );
+  }
+
+  /**
+   * Strictifies a JSON Schema for OpenAI Structured Outputs (strict mode).
    */
   private strictifyJsonSchema(schema: any): any {
-    const root = JSON.parse(JSON.stringify(schema));
+    const root = JSON.parse(JSON.stringify(schema ?? {}));
 
     const visit = (node: any) => {
       if (!node || typeof node !== 'object') {
         return;
       }
 
-      // If keywords imply a type but it's missing, add it (helps downstream validators)
       if (!node.type) {
         if (node.properties || node.additionalProperties || node.patternProperties) {
           node.type = 'object';
@@ -456,34 +1090,23 @@ export class Conversation {
 
       const types = Array.isArray(node.type) ? node.type : node.type ? [node.type] : [];
 
-      // Objects: enforce strict requirements
       if (types.includes('object')) {
-        // 1) additionalProperties: false
         if (node.additionalProperties !== false) {
           node.additionalProperties = false;
         }
-
-        // 2) required must exist and include every key in properties
         if (node.properties && typeof node.properties === 'object') {
           const propKeys = Object.keys(node.properties);
           const currentReq: string[] = Array.isArray(node.required) ? node.required.slice() : [];
-          const union = Array.from(new Set([...currentReq, ...propKeys]));
-          node.required = union;
-
-          // Recurse into each property schema
+          node.required = Array.from(new Set([...currentReq, ...propKeys]));
           for (const k of propKeys) {
             visit(node.properties[k]);
           }
         }
-
-        // Recurse into patternProperties
         if (node.patternProperties && typeof node.patternProperties === 'object') {
           for (const k of Object.keys(node.patternProperties)) {
             visit(node.patternProperties[k]);
           }
         }
-
-        // Recurse into $defs / definitions
         for (const defsKey of ['$defs', 'definitions']) {
           if (node[defsKey] && typeof node[defsKey] === 'object') {
             for (const key of Object.keys(node[defsKey])) {
@@ -493,7 +1116,6 @@ export class Conversation {
         }
       }
 
-      // Arrays: recurse into items/prefixItems
       if (types.includes('array')) {
         if (node.items) {
           if (Array.isArray(node.items)) {
@@ -507,14 +1129,11 @@ export class Conversation {
         }
       }
 
-      // Combinators
       for (const k of ['oneOf', 'anyOf', 'allOf']) {
         if (Array.isArray(node[k])) {
           node[k].forEach(visit);
         }
       }
-
-      // Negation
       if (node.not) {
         visit(node.not);
       }
@@ -523,181 +1142,4 @@ export class Conversation {
     visit(root);
     return root;
   }
-
-  // ---- Usage + provider metadata normalization ----
-
-  private processUsageData(args: {
-    result: GenerateObjectResult<JSONValue>;
-    model?: LanguageModel;
-    toolCounts?: Map<string, number>;
-    toolLedgerLen?: number;
-  }): UsageData {
-    const { result, model, toolCounts, toolLedgerLen } = args;
-
-    const u = result?.usage;
-
-    // Provider-specific extras (OpenAI Responses variants)
-    const { cachedInputTokens, reasoningTokens } = this.extractOpenAiUsageDetails?.(result) ?? {};
-
-    const input = Number.isFinite(u?.inputTokens) ? Number(u.inputTokens) : 0;
-    const reasoning = Number.isFinite(reasoningTokens) ? Number(reasoningTokens) : 0;
-    const output = Number.isFinite(u?.outputTokens) ? Number(u.outputTokens) : 0;
-    const total = Number.isFinite(u?.totalTokens) ? Number(u.totalTokens) : input + output;
-    const cached = Number.isFinite(cachedInputTokens) ? Number(cachedInputTokens) : 0;
-
-    // Resolve model id for pricing/telemetry
-    const modelId: any = model?.toString();
-
-    const resolvedModel = typeof modelId === 'string' && modelId.trim().length > 0 ? modelId : 'unknown';
-
-    const tokenUsage = {
-      inputTokens: input,
-      reasoningTokens: reasoning,
-      cachedInputTokens: cached,
-      outputTokens: output,
-      totalTokens: total,
-    };
-
-    const uda = new UsageDataAccumulator({ model: modelId });
-    uda.addTokenUsage(tokenUsage);
-
-    const callsPerTool = toolCounts ? Object.fromEntries(toolCounts) : {};
-    const totalToolCalls =
-      typeof toolLedgerLen === 'number' ? toolLedgerLen : Object.values(callsPerTool).reduce((a, b) => a + (b || 0), 0);
-
-    return {
-      ...uda.usageData,
-      totalRequestsToAssistant: 1,
-      totalToolCalls,
-      callsPerTool,
-    };
-  }
-
-  // Pull OpenAI-specific cached/extra usage from provider metadata or raw usage.
-  // Safe across providers; returns undefined if not available.
-  private extractOpenAiUsageDetails(result: any): {
-    cachedInputTokens?: number;
-    reasoningTokens?: number;
-  } {
-    try {
-      const md = result?.providerMetadata?.openai ?? result?.response?.providerMetadata?.openai;
-      const usage = md?.usage ?? result?.response?.usage ?? result?.usage;
-
-      // OpenAI Responses API has used different shapes over time; try both:
-      const cachedInputTokens =
-        usage?.input_tokens_details?.cached_tokens ??
-        usage?.prompt_tokens_details?.cached_tokens ??
-        usage?.cached_input_tokens;
-
-      // Reasoning tokens (when available on reasoning models)
-      const reasoningTokens =
-        usage?.output_tokens_details?.reasoning_tokens ??
-        usage?.completion_tokens_details?.reasoning_tokens ??
-        usage?.reasoning_tokens;
-
-      return {
-        cachedInputTokens: typeof cachedInputTokens === 'number' ? cachedInputTokens : undefined,
-        reasoningTokens: typeof reasoningTokens === 'number' ? reasoningTokens : undefined,
-      };
-    } catch {
-      return {};
-    }
-  }
-
-  async generateCode({ description, model }: { description: string[]; model?: TiktokenModel }) {
-    this.logger.debug({ message: `Generating code`, obj: { description } });
-    await this.ensureModulesProcessed();
-    const code = await new OpenAi({
-      history: this.history,
-      functions: this.functions,
-      messageModerators: this.messageModerators,
-      logLevel: this.params.logLevel,
-    }).generateCode({
-      messages: description,
-      model,
-      includeSystemMessages: !this.generatedCode,
-    });
-    this.logger.debug({ message: `Generated code`, obj: { code } });
-    this.generatedCode = true;
-    return code;
-  }
-
-  async updateCodeFromFile({
-    codeToUpdateFilePath,
-    dependencyCodeFilePaths,
-    description,
-    model,
-  }: {
-    codeToUpdateFilePath: string;
-    dependencyCodeFilePaths: string[];
-    description: string;
-    model?: TiktokenModel;
-  }) {
-    await this.ensureModulesProcessed();
-    const codeToUpdate = await Fs.readFile(codeToUpdateFilePath);
-    let dependencyDescription = `Assume the following exists:\n`;
-    for (const dependencyCodeFilePath of dependencyCodeFilePaths) {
-      const dependencCode = await Fs.readFile(dependencyCodeFilePath);
-      dependencyDescription += dependencCode + '\n\n';
-    }
-
-    this.logger.debug({ message: `Updating code from file`, obj: { codeToUpdateFilePath } });
-    return await this.updateCode({ code: codeToUpdate, description: dependencyDescription + description, model });
-  }
-
-  async updateCode({ code, description, model }: { code: string; description: string; model?: TiktokenModel }) {
-    this.logger.debug({ message: `Updating code`, obj: { description, code } });
-    await this.ensureModulesProcessed();
-    const updatedCode = await new OpenAi({
-      history: this.history,
-      functions: this.functions,
-      messageModerators: this.messageModerators,
-      logLevel: this.params.logLevel,
-    }).updateCode({
-      code,
-      description,
-      model,
-      includeSystemMessages: !this.generatedCode,
-    });
-    this.logger.debug({ message: `Updated code`, obj: { updatedCode } });
-    this.generatedCode = true;
-    return updatedCode;
-  }
-
-  async generateList({ description, model }: { description: string[]; model?: TiktokenModel }) {
-    await this.ensureModulesProcessed();
-    const list = await new OpenAi({
-      history: this.history,
-      functions: this.functions,
-      messageModerators: this.messageModerators,
-      logLevel: this.params.logLevel,
-    }).generateList({
-      messages: description,
-      model,
-      includeSystemMessages: !this.generatedList,
-    });
-    this.generatedList = true;
-    return list;
-  }
 }
-
-export const summarizeConversationHistoryFunctionName = 'summarizeConversationHistory';
-export const summarizeConversationHistoryFunction = (conversation: Conversation) => {
-  return {
-    definition: {
-      name: summarizeConversationHistoryFunctionName,
-      description: 'Clear the conversation history and summarize what was in it',
-      parameters: {
-        type: 'object',
-        properties: {
-          summary: {
-            type: 'string',
-            description: 'A 1-3 sentence summary of the current chat history',
-          },
-        },
-        required: ['summary'],
-      },
-    },
-    call: async (params: { summary: string }) => conversation.summarizeConversationHistory(params.summary),
-  };
-};
