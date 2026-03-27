@@ -66,7 +66,9 @@ export type GenerateStreamParams = {
 /** A single part emitted by the interleaved full stream. */
 export type StreamPart =
   | { type: 'text-delta'; textDelta: string }
+  | { type: 'reasoning-start' }
   | { type: 'reasoning-delta'; textDelta: string }
+  | { type: 'reasoning-end' }
   | { type: 'source'; source: StreamSource }
   | { type: 'tool-call'; toolName: string };
 
@@ -215,8 +217,11 @@ export class Conversation {
     // Build provider options
     const providerOptions = this.buildProviderOptions(provider, params, modelString);
 
-    // Add provider-specific web search tools when requested
-    const webSearchTools = params.webSearch ? this.getWebSearchTools(provider) : {};
+    // Include web search tools. For providers with true tool-use search
+    // (Anthropic, OpenAI), always include so the model can autonomously
+    // decide when to search.  For grounding-based providers (Google), only
+    // include when the user explicitly requests search via the toggle.
+    const webSearchTools = this.getWebSearchTools(provider, params.webSearch);
 
     const allTools = { ...tools, ...webSearchTools };
 
@@ -678,11 +683,19 @@ export class Conversation {
     if (provider === 'anthropic') {
       const anthropicOpts: Record<string, any> = {};
       if (effort && effort !== 'none') {
-        // Use adaptive thinking (Sonnet 4.6+, Opus 4.6+) with effort level.
-        // Anthropic accepts effort: low | medium | high | max
-        // 'xhigh' has no Anthropic equivalent → map to 'max'
-        anthropicOpts.thinking = { type: 'adaptive' };
-        anthropicOpts.effort = effort === 'xhigh' ? 'max' : effort;
+        const isHaiku = modelString ? /haiku/i.test(modelString) : false;
+        if (isHaiku) {
+          // Haiku 4.5 supports extended thinking (budget-based) but NOT adaptive.
+          // Map effort levels to budget_tokens: low → 5k, medium → 10k, high → 50k
+          const budgetMap: Record<string, number> = { low: 5000, medium: 10000, high: 50000 };
+          anthropicOpts.thinking = { type: 'enabled', budgetTokens: budgetMap[effort] ?? 10000 };
+        } else {
+          // Opus 4.6 + Sonnet 4.6 (and 4.5) support adaptive thinking with effort.
+          // Anthropic accepts effort: low | medium | high | max
+          // 'xhigh' has no Anthropic equivalent → map to 'max'
+          anthropicOpts.thinking = { type: 'adaptive' };
+          anthropicOpts.effort = effort === 'xhigh' ? 'max' : effort;
+        }
       }
       options.anthropic = anthropicOpts;
     }
@@ -730,9 +743,10 @@ export class Conversation {
    * provider-executed tool (the model calls it server-side; we just pass
    * the tool definition into `streamText`).
    */
-  private getWebSearchTools(provider: string): ToolSet {
+  private getWebSearchTools(provider: string, _webSearchRequested?: boolean): ToolSet {
     try {
       switch (provider) {
+        // Tool-use search: always included so the model can decide when to search
         case 'openai': {
           const { openai } = require('@ai-sdk/openai');
           return { web_search: openai.tools.webSearch() };
@@ -741,14 +755,10 @@ export class Conversation {
           const { anthropic } = require('@ai-sdk/anthropic');
           return { web_search: anthropic.tools.webSearch_20260209() };
         }
-        case 'google': {
-          const { google } = require('@ai-sdk/google');
-          return { google_search: google.tools.googleSearch() };
-        }
-        case 'xai': {
-          const { xai } = require('@ai-sdk/xai');
-          return { web_search: xai.tools.webSearch() };
-        }
+        // Google: grounding-based search is currently broken in @ai-sdk/google@3.0.43.
+        // Re-enable when the SDK is updated. When working, it should be gated on
+        // webSearchRequested since it grounds *every* response when present.
+        // case 'google': { ... }
         default:
           return {};
       }
@@ -1090,12 +1100,16 @@ export class Conversation {
               if (textContent) {
                 yield { type: 'text-delta' as const, textDelta: textContent };
               }
+            } else if (part.type === 'reasoning-start') {
+              yield { type: 'reasoning-start' as const };
             } else if (part.type === 'reasoning-delta') {
               // AI SDK v6 emits reasoning-delta with `delta` or `text` property
               const reasoningText = part.delta ?? part.text ?? part.textDelta;
               if (reasoningText) {
                 yield { type: 'reasoning-delta' as const, textDelta: reasoningText };
               }
+            } else if (part.type === 'reasoning-end') {
+              yield { type: 'reasoning-end' as const };
             } else if (part.type === 'tool-call') {
               yield { type: 'tool-call' as const, toolName: part.toolName ?? 'unknown' };
             } else if (part.type === 'source') {

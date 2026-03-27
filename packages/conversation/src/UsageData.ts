@@ -190,6 +190,9 @@ export function aggregateUsageData(list: UsageData[]): UsageData | undefined {
  * Standard tier costs (USD per 1M tokens) based on the pricing on OpenAI's website.
  */
 export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiCost> = {
+  'gpt-5.4': { inputUsdPer1M: 2.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 8.0 },
+  'gpt-5.4-mini': { inputUsdPer1M: 0.4, cachedInputUsdPer1M: 0.1, outputUsdPer1M: 1.6 },
+  'gpt-5.4-nano': { inputUsdPer1M: 0.1, cachedInputUsdPer1M: 0.025, outputUsdPer1M: 0.4 },
   'gpt-5.2': { inputUsdPer1M: 1.75, cachedInputUsdPer1M: 0.175, outputUsdPer1M: 14.0 },
   'gpt-5.1': { inputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 10.0 },
   'gpt-5': { inputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 10.0 },
@@ -248,17 +251,23 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   'codex-mini-latest': { inputUsdPer1M: 1.5, cachedInputUsdPer1M: 0.375, outputUsdPer1M: 6.0 },
 
   // ── Anthropic Claude models ──
+  'claude-opus-4-6': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
   'claude-opus-4.5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
   'claude-opus-4-20250514': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, outputUsdPer1M: 75.0 },
   'claude-opus-4.1': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, outputUsdPer1M: 75.0 },
+  'claude-sonnet-4-6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
   'claude-sonnet-4.6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
+  'claude-sonnet-4-5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
   'claude-sonnet-4.5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
   'claude-sonnet-4-20250514': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
+  'claude-haiku-4-5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, outputUsdPer1M: 5.0 },
   'claude-haiku-4.5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, outputUsdPer1M: 5.0 },
   'claude-3-haiku-20240307': { inputUsdPer1M: 0.25, cachedInputUsdPer1M: 0.03, outputUsdPer1M: 1.25 },
 
   // ── Google Gemini models ──
+  'gemini-3.1-pro-preview': { inputUsdPer1M: 2.0, outputUsdPer1M: 12.0 },
   'gemini-3-pro-preview': { inputUsdPer1M: 2.0, outputUsdPer1M: 12.0 },
+  'gemini-3-flash-preview': { inputUsdPer1M: 0.5, outputUsdPer1M: 3.0 },
   'gemini-3-flash': { inputUsdPer1M: 0.5, outputUsdPer1M: 3.0 },
   'gemini-2.5-pro': { inputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 10.0 },
   'gemini-2.5-flash': { inputUsdPer1M: 0.3, cachedInputUsdPer1M: 0.03, outputUsdPer1M: 2.5 },
@@ -266,6 +275,7 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   'gemini-2.0-flash-lite': { inputUsdPer1M: 0.1, outputUsdPer1M: 0.4 },
 
   // ── xAI Grok models ──
+  'grok-4.20': { inputUsdPer1M: 3.0, outputUsdPer1M: 15.0 },
   'grok-4': { inputUsdPer1M: 3.0, outputUsdPer1M: 15.0 },
   'grok-4-fast': { inputUsdPer1M: 0.2, outputUsdPer1M: 0.5 },
   'grok-4.1-fast': { inputUsdPer1M: 0.2, outputUsdPer1M: 0.5 },
