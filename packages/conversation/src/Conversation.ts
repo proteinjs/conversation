@@ -67,7 +67,8 @@ export type GenerateStreamParams = {
 export type StreamPart =
   | { type: 'text-delta'; textDelta: string }
   | { type: 'reasoning-delta'; textDelta: string }
-  | { type: 'source'; source: StreamSource };
+  | { type: 'source'; source: StreamSource }
+  | { type: 'tool-call'; toolName: string };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
 export type StreamResult = {
@@ -214,44 +215,58 @@ export class Conversation {
     // Build provider options
     const providerOptions = this.buildProviderOptions(provider, params, modelString);
 
+    // Add provider-specific web search tools when requested
+    const webSearchTools = params.webSearch ? this.getWebSearchTools(provider) : {};
+
+    const allTools = { ...tools, ...webSearchTools };
+
     const result = streamText({
       model,
       messages,
-      tools: Object.keys(tools).length > 0 ? tools : undefined,
+      tools: Object.keys(allTools).length > 0 ? allTools : undefined,
       stopWhen: stepCountIs(params.maxToolCalls ?? 50),
       abortSignal: params.abortSignal,
       providerOptions,
-      ...(params.webSearch && provider === 'openai' ? { toolChoice: 'auto' as const } : {}),
     });
 
     // Build the StreamResult
     const usagePromise = this.buildUsagePromise(result, modelString, params);
     const toolInvocationsPromise = this.buildToolInvocationsPromise(result);
 
-    // Wrap ALL AI SDK promises with catch handlers to prevent unhandled rejections
-    // when the stream is aborted mid-generation. The AI SDK's internal transform
-    // stream throws NoOutputGeneratedError on flush if aborted before any output,
-    // rejecting finishReason, totalUsage, steps, text, etc. Any uncaught rejection
-    // crashes the Node process.
-    const safeText = Promise.resolve(result.text).catch(() => '');
-    const safeReasoning = Promise.resolve(result.reasoning)
-      .then((parts: ReasoningOutput[]) =>
-        parts
-          ? parts
-              .filter((part) => part.type === 'reasoning')
-              .map((part) => part.text)
-              .join('')
-          : ''
-      )
-      .catch(() => '');
-    const safeSources = Promise.resolve(result.sources)
-      .then((s: LanguageModelV3Source[]) =>
-        (s ?? []).map((source) => ({
-          url: source.sourceType === 'url' ? source.url : undefined,
-          title: source.sourceType === 'url' ? source.title : undefined,
-        }))
-      )
-      .catch(() => [] as StreamSource[]);
+    // IMPORTANT: We must NOT eagerly evaluate result.text, result.reasoning,
+    // or result.sources here. In AI SDK v6, these getters trigger internal
+    // stream consumers that compete with result.fullStream for the same
+    // underlying data. Eager evaluation causes text/reasoning from later
+    // tool-call steps to be consumed by the promise path instead of
+    // fullStream, resulting in missing content on the streaming path.
+    //
+    // Instead, we use lazy helpers that only start consuming when the
+    // promise is actually awaited (i.e. in generateResponse). The catch
+    // handlers still prevent unhandled rejections on abort.
+
+    // Lazy promise factories — only trigger AI SDK stream consumption on access
+    const lazySafeText = () => Promise.resolve(result.text).catch(() => '');
+    const lazySafeReasoning = () =>
+      Promise.resolve(result.reasoning)
+        .then((parts: ReasoningOutput[]) =>
+          parts
+            ? parts
+                .filter((part) => part.type === 'reasoning')
+                .map((part) => part.text)
+                .join('')
+            : ''
+        )
+        .catch(() => '');
+    const lazySafeSources = () =>
+      Promise.resolve(result.sources)
+        .then((s: LanguageModelV3Source[]) =>
+          (s ?? []).map((source) => ({
+            url: source.sourceType === 'url' ? source.url : undefined,
+            title: source.sourceType === 'url' ? source.title : undefined,
+          }))
+        )
+        .catch(() => [] as StreamSource[]);
+
     const safeUsage = usagePromise.catch(
       () =>
         ({
@@ -279,11 +294,13 @@ export class Conversation {
     );
     const safeToolInvocations = toolInvocationsPromise.catch(() => [] as ToolInvocationResult[]);
 
-    // Catch remaining AI SDK promises that are rejected by NoOutputGeneratedError
-    // on flush when the stream is aborted before any output. The AI SDK's internal
-    // flush rejects _finishReason, _rawFinishReason, _totalUsage, and _steps.
-    // We already catch totalUsage and steps above; these catch the rest so the
-    // unhandled rejections don't crash the Node process.
+    // Cache for lazy promises — ensures each getter returns the same promise
+    let _textPromise: Promise<string> | undefined;
+    let _reasoningPromise: Promise<string> | undefined;
+    let _sourcesPromise: Promise<StreamSource[]> | undefined;
+
+    // We still need to catch finishReason etc. to prevent unhandled rejections,
+    // but these don't compete with fullStream.
     Promise.resolve(result.finishReason).catch(() => {});
     Promise.resolve((result as any).rawFinishReason).catch(() => {});
     Promise.resolve(result.response).catch(() => {});
@@ -295,9 +312,17 @@ export class Conversation {
         // For real-time streaming, use fullStream instead.
       })(),
       fullStream: this.mapFullStream(result.fullStream),
-      text: safeText,
-      reasoning: safeReasoning,
-      sources: safeSources,
+      // Lazy getters: only start consuming the AI SDK stream when accessed.
+      // This prevents dual-consumption when the caller uses fullStream instead.
+      get text() {
+        return (_textPromise ??= lazySafeText());
+      },
+      get reasoning() {
+        return (_reasoningPromise ??= lazySafeReasoning());
+      },
+      get sources() {
+        return (_sourcesPromise ??= lazySafeSources());
+      },
       usage: safeUsage,
       toolInvocations: safeToolInvocations,
     };
@@ -698,6 +723,41 @@ export class Conversation {
     return options;
   }
 
+  /**
+   * Returns provider-specific web search tools.
+   *
+   * Each provider SDK exposes a web search tool factory that creates a
+   * provider-executed tool (the model calls it server-side; we just pass
+   * the tool definition into `streamText`).
+   */
+  private getWebSearchTools(provider: string): ToolSet {
+    try {
+      switch (provider) {
+        case 'openai': {
+          const { openai } = require('@ai-sdk/openai');
+          return { web_search: openai.tools.webSearch() };
+        }
+        case 'anthropic': {
+          const { anthropic } = require('@ai-sdk/anthropic');
+          return { web_search: anthropic.tools.webSearch_20260209() };
+        }
+        case 'google': {
+          const { google } = require('@ai-sdk/google');
+          return { google_search: google.tools.googleSearch() };
+        }
+        case 'xai': {
+          const { xai } = require('@ai-sdk/xai');
+          return { web_search: xai.tools.webSearch() };
+        }
+        default:
+          return {};
+      }
+    } catch (error) {
+      this.logger.error({ message: `Web search tool not available for provider: ${provider}`, error });
+      return {};
+    }
+  }
+
   // ────────────────────────────────────────────────────────────
   // Background/polling escape hatch (OpenAI-specific)
   // ────────────────────────────────────────────────────────────
@@ -1015,22 +1075,41 @@ export class Conversation {
    * order the model produces them.
    */
   private mapFullStream(aiSdkFullStream: AsyncIterable<any>): AsyncIterable<StreamPart> {
+    const logger = this.logger;
     return {
       async *[Symbol.asyncIterator]() {
-        for await (const part of aiSdkFullStream) {
-          if (part.type === 'text-delta' && part.textDelta) {
-            yield { type: 'text-delta' as const, textDelta: part.textDelta };
-          } else if (part.type === 'reasoning' && part.textDelta) {
-            yield { type: 'reasoning-delta' as const, textDelta: part.textDelta };
-          } else if (part.type === 'source') {
-            yield {
-              type: 'source' as const,
-              source: {
-                url: part.sourceType === 'url' ? part.url : undefined,
-                title: part.sourceType === 'url' ? part.title : undefined,
-              },
-            };
+        let partCounts: Record<string, number> = {};
+        try {
+          for await (const part of aiSdkFullStream) {
+            const partType = part.type ?? 'unknown';
+            partCounts[partType] = (partCounts[partType] ?? 0) + 1;
+
+            if (part.type === 'text-delta') {
+              // AI SDK v6 emits text-delta with `delta` or `text` property (not `textDelta`)
+              const textContent = part.textDelta ?? part.delta ?? part.text;
+              if (textContent) {
+                yield { type: 'text-delta' as const, textDelta: textContent };
+              }
+            } else if (part.type === 'reasoning-delta') {
+              // AI SDK v6 emits reasoning-delta with `delta` or `text` property
+              const reasoningText = part.delta ?? part.text ?? part.textDelta;
+              if (reasoningText) {
+                yield { type: 'reasoning-delta' as const, textDelta: reasoningText };
+              }
+            } else if (part.type === 'tool-call') {
+              yield { type: 'tool-call' as const, toolName: part.toolName ?? 'unknown' };
+            } else if (part.type === 'source') {
+              yield {
+                type: 'source' as const,
+                source: {
+                  url: part.sourceType === 'url' ? part.url : undefined,
+                  title: part.sourceType === 'url' ? part.title : undefined,
+                },
+              };
+            }
           }
+        } finally {
+          logger.info({ message: 'mapFullStream completed', obj: { partCounts } });
         }
       },
     };
