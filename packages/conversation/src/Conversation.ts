@@ -1093,7 +1093,7 @@ export class Conversation {
     const logger = this.logger;
     return {
       async *[Symbol.asyncIterator]() {
-        let partCounts: Record<string, number> = {};
+        const partCounts: Record<string, number> = {};
         try {
           for await (const part of aiSdkFullStream) {
             const partType = part.type ?? 'unknown';
