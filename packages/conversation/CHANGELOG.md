@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [3.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.0.0...@proteinjs/conversation@3.1.0) (2026-03-28)
+
+
+### Bug Fixes
+
+* skip web search tools for nano-class models ([963ebc2](https://github.com/proteinjs/conversation/commit/963ebc2d1e5d587ab70a2ab6ccd786f6ef9e9d95))
+
+
+### Features
+
+* auto web search, Haiku extended thinking, model pricing updates ([752314f](https://github.com/proteinjs/conversation/commit/752314fc0eaf87122a6e1f78cc455db633da7ad2))
+* web search tools, interleaved fullStream, and lazy promise getters ([18e8c4d](https://github.com/proteinjs/conversation/commit/18e8c4d674d90559e0f3d90ed4929f711e3ac8e1))
+
+
+
+
+
 # [3.0.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@2.7.3...@proteinjs/conversation@3.0.0) (2026-03-25)
 
 
