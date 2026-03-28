@@ -221,7 +221,7 @@ export class Conversation {
     // (Anthropic, OpenAI), always include so the model can autonomously
     // decide when to search.  For grounding-based providers (Google), only
     // include when the user explicitly requests search via the toggle.
-    const webSearchTools = this.getWebSearchTools(provider, params.webSearch);
+    const webSearchTools = this.getWebSearchTools(provider, modelString, params.webSearch);
 
     const allTools = { ...tools, ...webSearchTools };
 
@@ -743,8 +743,13 @@ export class Conversation {
    * provider-executed tool (the model calls it server-side; we just pass
    * the tool definition into `streamText`).
    */
-  private getWebSearchTools(provider: string, _webSearchRequested?: boolean): ToolSet {
+  private getWebSearchTools(provider: string, modelString: string, _webSearchRequested?: boolean): ToolSet {
     try {
+      // Nano-class models don't support web search tools
+      if (/nano/i.test(modelString)) {
+        return {};
+      }
+
       switch (provider) {
         // Tool-use search: always included so the model can decide when to search
         case 'openai': {
