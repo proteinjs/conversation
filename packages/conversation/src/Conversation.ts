@@ -44,7 +44,7 @@ export type ConversationMessage =
 /** @deprecated Use `GenerateObjectResult` instead. */
 export type GenerateObjectOutcome<T> = GenerateObjectResult<T>;
 
-export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max' | 'xhigh';
+export type ReasoningEffort = 'auto' | 'none' | 'low' | 'medium' | 'high' | 'max' | 'xhigh';
 
 export type GenerateStreamParams = {
   messages: ConversationMessage[];
@@ -669,11 +669,12 @@ export class Conversation {
 
     if (provider === 'openai') {
       const openaiOpts: Record<string, any> = {};
-      if (effort) {
+      if (effort && effort !== 'auto') {
         // OpenAI accepts: none | low | medium | high | xhigh
         // 'max' → 'xhigh' (OpenAI's highest)
         openaiOpts.reasoningEffort = effort === 'max' ? 'xhigh' : effort;
       }
+      // 'auto': omit reasoningEffort — let OpenAI use its default reasoning behavior
       if (params.serviceTier) {
         openaiOpts.serviceTier = params.serviceTier;
       }
@@ -682,7 +683,10 @@ export class Conversation {
 
     if (provider === 'anthropic') {
       const anthropicOpts: Record<string, any> = {};
-      if (effort && effort !== 'none') {
+      if (effort === 'auto') {
+        // Auto: enable adaptive thinking without specifying effort — model decides
+        anthropicOpts.thinking = { type: 'adaptive' };
+      } else if (effort && effort !== 'none') {
         const isHaiku = modelString ? /haiku/i.test(modelString) : false;
         if (isHaiku) {
           // Haiku 4.5 supports extended thinking (budget-based) but NOT adaptive.
@@ -702,7 +706,10 @@ export class Conversation {
 
     if (provider === 'google') {
       const googleOpts: Record<string, any> = {};
-      if (effort && effort !== 'none') {
+      if (effort === 'auto') {
+        // Auto: enable thinking without specifying level — model decides
+        googleOpts.thinkingConfig = {};
+      } else if (effort && effort !== 'none') {
         // Google accepts thinkingLevel: minimal | low | medium | high
         // Our 'max'/'xhigh' have no Google equivalent → map to 'high'
         const levelMap: Record<string, string> = {
@@ -724,12 +731,13 @@ export class Conversation {
       // Only models with reasoning support accept the reasoningEffort parameter.
       // Models like grok-4 (no "-fast" suffix) reject it with a 400 error.
       const xaiSupportsReasoning = modelString ? /fast/i.test(modelString) : false;
-      if (effort && effort !== 'none' && xaiSupportsReasoning) {
+      if (effort && effort !== 'none' && effort !== 'auto' && xaiSupportsReasoning) {
         // xAI accepts: low | high
         // Map everything to the closest valid value
         const xaiEffort = effort === 'low' ? 'low' : 'high';
         xaiOpts.reasoningEffort = xaiEffort;
       }
+      // 'auto': omit reasoningEffort — let xAI use its default reasoning behavior
       options.xai = xaiOpts;
     }
 
@@ -809,7 +817,7 @@ export class Conversation {
   private mapReasoningEffortForOpenAi(
     effort?: ReasoningEffort
   ): 'none' | 'low' | 'medium' | 'high' | 'xhigh' | undefined {
-    if (!effort) {
+    if (!effort || effort === 'auto') {
       return undefined;
     }
     if (effort === 'max') {
