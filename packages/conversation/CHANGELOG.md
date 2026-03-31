@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [3.1.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.0...@proteinjs/conversation@3.1.1) (2026-03-31)
+
+
+### Bug Fixes
+
+* More reliable expectations from `generateList.test`. ([5124b92](https://github.com/proteinjs/conversation/commit/5124b92a5a44a3b57be669e0b405d65c1033d528))
+
+
+
+
+
 # [3.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.0.0...@proteinjs/conversation@3.1.0) (2026-03-28)
 
 
