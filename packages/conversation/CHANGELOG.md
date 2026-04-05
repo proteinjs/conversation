@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [3.1.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.1...@proteinjs/conversation@3.1.2) (2026-04-05)
+
+
+### Bug Fixes
+
+* resolve provider-specific model issues ([ade5478](https://github.com/proteinjs/conversation/commit/ade547855905c87684f5923b271dbae8675e0662))
+
+
+
+
+
 ## [3.1.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.0...@proteinjs/conversation@3.1.1) (2026-03-31)
 
 
