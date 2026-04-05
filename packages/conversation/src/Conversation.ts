@@ -201,10 +201,10 @@ export class Conversation {
     // Build messages for the AI SDK
     let messages = this.buildAiSdkMessages(params.messages);
 
-    // Google requires all system messages at the beginning of the conversation.
-    // Reorder so system messages come first, preserving relative order within
-    // each group.
-    if (provider === 'google') {
+    // Many providers (Anthropic, Google) require all system messages at the
+    // beginning of the conversation. Reorder so system messages come first,
+    // preserving relative order within each group.
+    if (provider === 'google' || provider === 'anthropic') {
       const system = messages.filter((m) => m.role === 'system');
       const nonSystem = messages.filter((m) => m.role !== 'system');
       messages = [...system, ...nonSystem];
