@@ -26,6 +26,10 @@ const PROVIDER_FACTORIES: Record<string, (modelId: string) => LanguageModel> = {
   xai: (modelId) => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { xai } = require('@ai-sdk/xai');
+    // Multi-agent models require the Responses API, not Chat Completions.
+    if (/multi-agent/i.test(modelId)) {
+      return xai.responses(modelId);
+    }
     return xai(modelId);
   },
 };

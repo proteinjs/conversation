@@ -250,7 +250,11 @@ export class Conversation {
     // handlers still prevent unhandled rejections on abort.
 
     // Lazy promise factories — only trigger AI SDK stream consumption on access
-    const lazySafeText = () => Promise.resolve(result.text).catch(() => '');
+    const lazySafeText = () =>
+      Promise.resolve(result.text).catch((err) => {
+        this.logger.error({ message: 'Error resolving text from stream', obj: { error: err?.message ?? err } });
+        return '';
+      });
     const lazySafeReasoning = () =>
       Promise.resolve(result.reasoning)
         .then((parts: ReasoningOutput[]) =>
@@ -683,11 +687,17 @@ export class Conversation {
 
     if (provider === 'anthropic') {
       const anthropicOpts: Record<string, any> = {};
+      const isHaiku = modelString ? /haiku/i.test(modelString) : false;
       if (effort === 'auto') {
-        // Auto: enable adaptive thinking without specifying effort — model decides
-        anthropicOpts.thinking = { type: 'adaptive' };
+        if (isHaiku) {
+          // Haiku 4.5 supports extended thinking (budget-based) but NOT adaptive.
+          // Auto → enable with a moderate budget and let the model decide how much to use.
+          anthropicOpts.thinking = { type: 'enabled', budgetTokens: 10000 };
+        } else {
+          // Opus 4.6 + Sonnet 4.6 support adaptive thinking — model decides effort.
+          anthropicOpts.thinking = { type: 'adaptive' };
+        }
       } else if (effort && effort !== 'none') {
-        const isHaiku = modelString ? /haiku/i.test(modelString) : false;
         if (isHaiku) {
           // Haiku 4.5 supports extended thinking (budget-based) but NOT adaptive.
           // Map effort levels to budget_tokens: low → 5k, medium → 10k, high → 50k
@@ -753,8 +763,9 @@ export class Conversation {
    */
   private getWebSearchTools(provider: string, modelString: string, _webSearchRequested?: boolean): ToolSet {
     try {
-      // Nano-class models don't support web search tools
-      if (/nano/i.test(modelString)) {
+      // Models that don't support programmatic tool calling can't use web search tools.
+      // Haiku 4.5 and nano-class models are excluded.
+      if (/nano/i.test(modelString) || /haiku/i.test(modelString)) {
         return {};
       }
 
