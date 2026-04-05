@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [3.1.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.2...@proteinjs/conversation@3.1.3) (2026-04-05)
+
+
+### Bug Fixes
+
+* reorder system messages for Anthropic provider too ([c5a4f03](https://github.com/proteinjs/conversation/commit/c5a4f0374c0be7a0fb5cb7ebf08c91e29d65721a))
+
+
+
+
+
 ## [3.1.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.1...@proteinjs/conversation@3.1.2) (2026-04-05)
 
 
