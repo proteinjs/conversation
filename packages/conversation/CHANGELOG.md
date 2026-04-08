@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [3.1.4](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.3...@proteinjs/conversation@3.1.4) (2026-04-08)
+
+
+### Bug Fixes
+
+* add --passWithNoTests to jest test script ([6ec6d0b](https://github.com/proteinjs/conversation/commit/6ec6d0b58727aacaad0542d88af4ba10d2f2f6ea))
+
+
+
+
+
 ## [3.1.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.2...@proteinjs/conversation@3.1.3) (2026-04-05)
 
 
