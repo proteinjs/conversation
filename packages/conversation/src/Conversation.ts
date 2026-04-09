@@ -70,9 +70,7 @@ export type StreamPart =
   | { type: 'reasoning-delta'; textDelta: string }
   | { type: 'reasoning-end' }
   | { type: 'source'; source: StreamSource }
-  | { type: 'tool-call'; toolName: string }
-  | { type: 'tool-result' }
-  | { type: 'step-start' };
+  | { type: 'tool-call'; toolName: string };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
 export type StreamResult = {
@@ -1138,10 +1136,6 @@ export class Conversation {
               yield { type: 'reasoning-end' as const };
             } else if (part.type === 'tool-call') {
               yield { type: 'tool-call' as const, toolName: part.toolName ?? 'unknown' };
-            } else if (part.type === 'tool-result') {
-              yield { type: 'tool-result' as const };
-            } else if (part.type === 'step-start') {
-              yield { type: 'step-start' as const };
             } else if (part.type === 'source') {
               yield {
                 type: 'source' as const,
