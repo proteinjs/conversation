@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [3.1.6](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.5...@proteinjs/conversation@3.1.6) (2026-04-09)
+
+
+### Bug Fixes
+
+* yield tool-result and step-start parts from mapFullStream ([1a91edd](https://github.com/proteinjs/conversation/commit/1a91edd47e91e4400914e9fcdb31bf276fcf9541))
+
+
+
+
+
 ## [3.1.4](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.3...@proteinjs/conversation@3.1.4) (2026-04-08)
 
 
