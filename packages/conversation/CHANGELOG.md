@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [3.1.7](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.6...@proteinjs/conversation@3.1.7) (2026-04-09)
+
+
+### Reverts
+
+* remove tool-result and step-start from StreamPart ([f2b894c](https://github.com/proteinjs/conversation/commit/f2b894c073a8bba6b580e908d451973cbd5b09ab))
+
+
+
+
+
 ## [3.1.6](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.5...@proteinjs/conversation@3.1.6) (2026-04-09)
 
 
