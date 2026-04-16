@@ -694,7 +694,7 @@ export class Conversation {
           // Auto → enable with a moderate budget and let the model decide how much to use.
           anthropicOpts.thinking = { type: 'enabled', budgetTokens: 10000 };
         } else {
-          // Opus 4.6 + Sonnet 4.6 support adaptive thinking — model decides effort.
+          // Opus 4.7 + Sonnet 4.6 support adaptive thinking — model decides effort.
           anthropicOpts.thinking = { type: 'adaptive' };
         }
       } else if (effort && effort !== 'none') {
@@ -704,11 +704,11 @@ export class Conversation {
           const budgetMap: Record<string, number> = { low: 5000, medium: 10000, high: 50000 };
           anthropicOpts.thinking = { type: 'enabled', budgetTokens: budgetMap[effort] ?? 10000 };
         } else {
-          // Opus 4.6 + Sonnet 4.6 (and 4.5) support adaptive thinking with effort.
-          // Anthropic accepts effort: low | medium | high | max
-          // 'xhigh' has no Anthropic equivalent → map to 'max'
+          // Opus 4.7 + Sonnet 4.6 (and 4.5) support adaptive thinking with effort.
+          // Anthropic accepts effort: low | medium | high | xhigh | max
+          // ('xhigh' was added in Opus 4.7 — sits between high and max.)
           anthropicOpts.thinking = { type: 'adaptive' };
-          anthropicOpts.effort = effort === 'xhigh' ? 'max' : effort;
+          anthropicOpts.effort = effort;
         }
       }
       options.anthropic = anthropicOpts;
