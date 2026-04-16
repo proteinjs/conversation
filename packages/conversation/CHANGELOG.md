@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [3.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.9...@proteinjs/conversation@3.2.0) (2026-04-16)
+
+
+### Features
+
+* **anthropic:** add Opus 4.7 pricing and xhigh effort support ([de3ca31](https://github.com/proteinjs/conversation/commit/de3ca31b4b3424048c556d228a8dc7cfdd50edfb))
+
+
+
+
+
 ## [3.1.7](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.6...@proteinjs/conversation@3.1.7) (2026-04-09)
 
 
