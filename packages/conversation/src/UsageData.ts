@@ -190,7 +190,11 @@ export function aggregateUsageData(list: UsageData[]): UsageData | undefined {
  * Standard tier costs (USD per 1M tokens) based on the pricing on OpenAI's website.
  */
 export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiCost> = {
-  'gpt-5.4': { inputUsdPer1M: 2.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 8.0 },
+  // Short-context pricing from developers.openai.com/api/docs/pricing.
+  // Long-context rates (>~272k input) are ~2x these; tracked here as the
+  // default because chats below the threshold hit this tier.
+  'gpt-5.5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 30.0 },
+  'gpt-5.4': { inputUsdPer1M: 2.5, cachedInputUsdPer1M: 0.25, outputUsdPer1M: 15.0 },
   'gpt-5.4-mini': { inputUsdPer1M: 0.4, cachedInputUsdPer1M: 0.1, outputUsdPer1M: 1.6 },
   'gpt-5.4-nano': { inputUsdPer1M: 0.1, cachedInputUsdPer1M: 0.025, outputUsdPer1M: 0.4 },
   'gpt-5.2': { inputUsdPer1M: 1.75, cachedInputUsdPer1M: 0.175, outputUsdPer1M: 14.0 },
