@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [3.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.2.0...@proteinjs/conversation@3.3.0) (2026-04-24)
+
+
+### Features
+
+* **conversation:** end-to-end file/image input across providers ([3faf1e2](https://github.com/proteinjs/conversation/commit/3faf1e22da046aad73b599add05b49c21827bf77))
+
+
+
+
+
 # [3.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.1.9...@proteinjs/conversation@3.2.0) (2026-04-16)
 
 
