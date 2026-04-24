@@ -11,6 +11,7 @@ export * from './src/Function';
 export * from './src/history/MessageModerator';
 export * from './src/history/MessageHistory';
 export * from './src/ChatCompletionMessageParamFactory';
+export * from './src/sdkContentParts';
 /** @deprecated — Use `StreamResult.textStream` from `Conversation.generateStream` instead. */
 export { AssistantResponseStreamChunk } from './src/OpenAiStreamProcessor';
 export * from './src/UsageData';

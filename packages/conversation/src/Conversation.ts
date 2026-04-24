@@ -1,6 +1,8 @@
-import type { LanguageModel, ToolSet, LanguageModelUsage, ReasoningOutput } from 'ai';
+import type { LanguageModel, ToolSet, LanguageModelUsage, ReasoningOutput, ModelMessage } from 'ai';
+import type { ImagePart, TextPart, FilePart } from '@ai-sdk/provider-utils';
 import type { LanguageModelV3Source } from '@ai-sdk/provider';
 import { streamText, generateObject as aiGenerateObject, jsonSchema, stepCountIs } from 'ai';
+import { SdkContentParts } from './sdkContentParts';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
 import { ConversationModule } from './ConversationModule';
@@ -210,9 +212,18 @@ export class Conversation {
       messages = [...system, ...nonSystem];
     }
 
-    // Build tools from module functions + any extra tools
+    // Build tools from module functions + any extra tools. For providers
+    // whose tool-result adapter strips image content (xAI — see
+    // `buildAiSdkTools`' imageRedirect comment), pass a shared map that
+    // lets `execute` stash images by toolCallId and `prepareStep` splice
+    // them into a follow-up user message. Other providers skip this
+    // machinery entirely.
+    const needsUserMessageImageInjection = provider === 'xai';
+    const pendingImageInjections = needsUserMessageImageInjection
+      ? new Map<string, Array<TextPart | ImagePart | FilePart>>()
+      : undefined;
     const allFunctions = [...this.functions, ...(params.tools ?? [])];
-    const tools = this.buildAiSdkTools(allFunctions);
+    const tools = this.buildAiSdkTools(allFunctions, { pendingImageInjections });
 
     // Build provider options
     const providerOptions = this.buildProviderOptions(provider, params, modelString);
@@ -232,6 +243,10 @@ export class Conversation {
       stopWhen: stepCountIs(params.maxToolCalls ?? 50),
       abortSignal: params.abortSignal,
       providerOptions,
+      prepareStep: pendingImageInjections
+        ? ({ messages: stepMessages }) =>
+            this.injectPendingImageUserMessages(stepMessages, pendingImageInjections)
+        : undefined,
     });
 
     // Build the StreamResult
@@ -548,55 +563,82 @@ export class Conversation {
   // AI SDK message building
   // ────────────────────────────────────────────────────────────
 
-  private buildAiSdkMessages(
-    callMessages: ConversationMessage[]
-  ): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
-    const result: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+  private buildAiSdkMessages(callMessages: ConversationMessage[]): ModelMessage[] {
+    const result: ModelMessage[] = [];
 
     // Add history messages
     for (const msg of this.history.getMessages()) {
-      const m = msg as any;
-      const rawRole = String(m.role ?? 'user');
-      // Map non-standard roles to the closest AI SDK role
-      const role = (rawRole === 'system' ? 'system' : rawRole === 'assistant' ? 'assistant' : 'user') as
-        | 'system'
-        | 'user'
-        | 'assistant';
-      const content = typeof m.content === 'string' ? m.content : this.extractTextFromContent(m.content);
-      if (content.trim()) {
-        result.push({ role, content });
+      const built = this.toModelMessage(msg as unknown as Record<string, unknown>);
+      if (built) {
+        result.push(built);
       }
     }
 
     // Add call messages
     for (const msg of callMessages) {
       if (typeof msg === 'string') {
-        result.push({ role: 'user', content: msg });
-      } else {
-        const rawRole = String(msg.role ?? 'user');
-        const role = (rawRole === 'system' ? 'system' : rawRole === 'assistant' ? 'assistant' : 'user') as
-          | 'system'
-          | 'user'
-          | 'assistant';
-        result.push({ role, content: typeof msg.content === 'string' ? msg.content : '' });
+        if (msg.trim()) {
+          result.push({ role: 'user', content: msg });
+        }
+        continue;
+      }
+      const built = this.toModelMessage(msg as unknown as Record<string, unknown>);
+      if (built) {
+        result.push(built);
       }
     }
 
     return result;
   }
 
-  private extractTextFromContent(content: any): string {
+  /**
+   * Map a loose ConversationMessage-shape to a Vercel AI SDK ModelMessage,
+   * preserving structured content (text + image + file parts) for user/assistant
+   * roles. System messages are flattened to string since the SDK only accepts
+   * string content there.
+   *
+   * Returns `undefined` for empty messages — callers skip those to avoid sending
+   * empty content to providers that reject it.
+   */
+  private toModelMessage(msg: Record<string, unknown>): ModelMessage | undefined {
+    const rawRole = String(msg.role ?? 'user');
+    const role = (rawRole === 'system' ? 'system' : rawRole === 'assistant' ? 'assistant' : 'user') as
+      | 'system'
+      | 'user'
+      | 'assistant';
+    const rawContent = msg.content;
+
+    // System messages: the SDK only accepts string content here.
+    if (role === 'system') {
+      const text = this.flattenContentToText(rawContent);
+      return text.trim() ? ({ role, content: text } as ModelMessage) : undefined;
+    }
+
+    // Structured content: keep image / file parts alongside text.
+    if (Array.isArray(rawContent)) {
+      const parts = SdkContentParts.toUserContentParts(rawContent);
+      if (parts.length > 0) {
+        return { role, content: parts } as ModelMessage;
+      }
+      // Array produced no mappable parts — fall through to string handling.
+    }
+
+    const text = this.flattenContentToText(rawContent);
+    return text.trim() ? ({ role, content: text } as ModelMessage) : undefined;
+  }
+
+  private flattenContentToText(content: unknown): string {
     if (typeof content === 'string') {
       return content;
     }
     if (Array.isArray(content)) {
       return content
-        .map((p: any) => {
+        .map((p: unknown) => {
           if (typeof p === 'string') {
             return p;
           }
-          if (p?.type === 'text') {
-            return p.text;
+          if (p && typeof p === 'object' && (p as { type?: unknown }).type === 'text') {
+            return String((p as { text?: unknown }).text ?? '');
           }
           return '';
         })
@@ -609,29 +651,174 @@ export class Conversation {
   // AI SDK tool building
   // ────────────────────────────────────────────────────────────
 
-  private buildAiSdkTools(functions: Function[]): ToolSet {
+  /**
+   * Build the AI SDK tool set from our `Function` array, wiring in the
+   * multimodal tool-result plumbing and (optionally) an xAI-style image
+   * redirect: when a tool returns image parts and the provider's adapter can't
+   * carry images inside a `role:'tool'` message, the images are stashed in
+   * `pendingImageInjections` keyed by toolCallId and a text-only tool result
+   * is sent back. A `prepareStep` callback on `streamText` then splices those
+   * images into a synthetic `role:'user'` message right after the tool
+   * message, so the model sees them via the well-tested user-content path.
+   */
+  private buildAiSdkTools(
+    functions: Function[],
+    options?: {
+      pendingImageInjections?: Map<string, Array<TextPart | ImagePart | FilePart>>;
+    }
+  ): ToolSet {
     const tools: ToolSet = {};
+    const pendingImageInjections = options?.pendingImageInjections;
+    const imageRedirectEnabled = !!pendingImageInjections;
+
+    // Sentinel for tool returns that produced multimodal content parts.
+    // The execute() function must return a "bare" result (the SDK treats
+    // non-string returns as JSON payloads), and the structured
+    // `ToolResultOutput` shape is only respected when it comes out of the
+    // `toModelOutput` hook (see ai/dist/index.js `createToolModelOutput`:
+    // when `toModelOutput` is absent, the SDK wraps output as
+    // `{type: 'json', value: toJSONValue(output)}` — i.e. our careful
+    // `{type:'content', value: [...image-data...]}` would get re-wrapped
+    // inside a json payload and the model would see only metadata).
+    // Solution: resolve content parts eagerly inside execute(), stash them
+    // on a sentinel, and let toModelOutput project them into the SDK's
+    // ToolResultOutput shape for the provider adapter.
+    const MULTIMODAL_SENTINEL = Symbol.for('conversation.tool.multimodal');
+    const debugToolResults = !!process.env.CONVERSATION_DEBUG_TOOL_RESULTS;
+    const logger = this.logger;
 
     for (const f of functions) {
       const def = f.definition;
       if (!def?.name) {
         continue;
       }
-
       tools[def.name] = {
         description: def.description,
         inputSchema: jsonSchema(this.normalizeToolParameters(def.parameters)),
-        execute: async (args: any) => {
+        execute: async (args: any, executionOptions: { toolCallId: string }) => {
           const result = await f.call(args);
           if (typeof result === 'undefined') {
             return { result: 'Function executed successfully' };
           }
-          return result;
+          // If the tool returned OpenAI-shape content parts (directly or via a
+          // `ChatCompletionMessageParamFactory` like `getFiles`), stash them
+          // on a sentinel object that `toModelOutput` will unwrap. Tools
+          // returning primitives / plain JSON objects are unaffected.
+          const contentParts = await SdkContentParts.extractContentPartsFromToolReturn(result);
+          if (!contentParts || contentParts.length === 0) {
+            return result;
+          }
+          const toolResultParts = SdkContentParts.toToolResultContentParts(contentParts);
+
+          // xAI-style redirect: when the provider adapter can't transport
+          // image content inside a tool result (xAI collapses `type: 'content'`
+          // to JSON.stringify in its chat-completions adapter — see
+          // node_modules/@ai-sdk/xai/dist/index.js ~line 134), peel the image
+          // parts off into `pendingImageInjections`. A `prepareStep` hook on
+          // `streamText` splices them into a synthetic user message right
+          // after this tool's result, so the model sees the image through the
+          // user-content path (which xAI handles correctly). Non-image parts
+          // stay in the tool result so the tool-call/result pairing is intact.
+          if (imageRedirectEnabled) {
+            const textOnlyParts = toolResultParts.filter((p) => p.type === 'text');
+            const hasImages = textOnlyParts.length !== toolResultParts.length;
+            if (hasImages) {
+              pendingImageInjections!.set(
+                executionOptions.toolCallId,
+                SdkContentParts.toUserContentParts(contentParts)
+              );
+              const placeholderParts = [
+                ...textOnlyParts,
+                {
+                  type: 'text' as const,
+                  text:
+                    'The file content has been attached as a user message immediately following this tool result. Read the image(s) there to answer.',
+                },
+              ];
+              return { [MULTIMODAL_SENTINEL]: placeholderParts };
+            }
+          }
+
+          return { [MULTIMODAL_SENTINEL]: toolResultParts };
+        },
+        toModelOutput: ({ output }: { output: unknown }) => {
+          // Sentinel path: execute() resolved content parts; project them
+          // into a structured multimodal ToolResultOutput.
+          if (output && typeof output === 'object' && MULTIMODAL_SENTINEL in (output as object)) {
+            const sdkParts = (output as Record<symbol, unknown>)[MULTIMODAL_SENTINEL] as ReturnType<
+              typeof SdkContentParts.toToolResultContentParts
+            >;
+            if (debugToolResults) {
+              logger.info({
+                message: `tool-result multimodal payload`,
+                obj: {
+                  toolName: def.name,
+                  parts: sdkParts.map((p) => {
+                    if (p.type === 'image-data') {
+                      return { type: p.type, mediaType: p.mediaType, bytes: p.data.length };
+                    }
+                    if (p.type === 'image-url') {
+                      return { type: p.type, url: p.url };
+                    }
+                    return { type: p.type, textLength: p.text?.length ?? 0 };
+                  }),
+                },
+              });
+            }
+            return { type: 'content', value: sdkParts };
+          }
+          // Default path: preserve the SDK's historical behavior — string →
+          // text, everything else → json (stringified).
+          return typeof output === 'string'
+            ? { type: 'text', value: output }
+            : { type: 'json', value: (output ?? null) as unknown as any };
         },
       } as any;
     }
 
     return tools;
+  }
+
+  /**
+   * `prepareStep` callback used only for providers whose tool-result adapter
+   * strips image content (xAI today). Walks the outgoing messages, finds any
+   * tool-result parts whose `toolCallId` has stashed image parts pending in
+   * `pendingImageInjections`, and inserts a `role: 'user'` message carrying
+   * those image parts directly after the tool message. The map entry is
+   * cleared once the injection is emitted so the same images aren't
+   * re-injected on subsequent steps.
+   */
+  private injectPendingImageUserMessages(
+    messages: ModelMessage[],
+    pendingImageInjections: Map<string, Array<TextPart | ImagePart | FilePart>>
+  ): { messages: ModelMessage[] } {
+    if (pendingImageInjections.size === 0) {
+      return { messages };
+    }
+
+    const out: ModelMessage[] = [];
+    for (const msg of messages) {
+      out.push(msg);
+      if (msg.role !== 'tool' || !Array.isArray(msg.content)) {
+        continue;
+      }
+      const injected: Array<TextPart | ImagePart | FilePart> = [];
+      for (const part of msg.content) {
+        const toolCallId = (part as { toolCallId?: string }).toolCallId;
+        if (
+          (part as { type?: string }).type === 'tool-result' &&
+          toolCallId &&
+          pendingImageInjections.has(toolCallId)
+        ) {
+          injected.push(...pendingImageInjections.get(toolCallId)!);
+          pendingImageInjections.delete(toolCallId);
+        }
+      }
+      if (injected.length > 0) {
+        out.push({ role: 'user', content: injected } as ModelMessage);
+      }
+    }
+    return { messages: out };
   }
 
   /**
@@ -939,7 +1126,7 @@ export class Conversation {
       const m = msg as any;
       result.push({
         role: m.role as 'system' | 'user' | 'assistant',
-        content: typeof m.content === 'string' ? m.content : this.extractTextFromContent(m.content),
+        content: typeof m.content === 'string' ? m.content : this.flattenContentToText(m.content),
       });
     }
 

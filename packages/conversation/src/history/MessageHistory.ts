@@ -2,6 +2,14 @@ import { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { Logger } from '@proteinjs/logger';
 
 export interface MessageHistoryParams {
+  /**
+   * When true, `prune()` drops non-system messages beyond `maxMessages` (FIFO).
+   * Defaults to `false`: the in-memory `MessageHistory` is a pass-through cache;
+   * callers that need pruning (older tests, OpenAI legacy code path) opt in
+   * explicitly. Production thought flow persists messages separately and feeds
+   * them in via `generateStream({ messages })` — it should never silently lose
+   * history here.
+   */
   enforceMessageLimit?: boolean;
   maxMessages: number; // max number of non-system messages to retain, fifo
 }
@@ -12,7 +20,7 @@ export class MessageHistory {
   private params: MessageHistoryParams;
 
   constructor(params?: Partial<MessageHistoryParams>) {
-    this.params = Object.assign({ maxMessages: 20 }, params);
+    this.params = Object.assign({ maxMessages: 20, enforceMessageLimit: false }, params);
   }
 
   getMessages() {
@@ -36,7 +44,7 @@ export class MessageHistory {
   }
 
   prune() {
-    if (this.params.enforceMessageLimit === false) {
+    if (!this.params.enforceMessageLimit) {
       return;
     }
 
