@@ -58,9 +58,7 @@ export class SdkContentParts {
    * Drops parts it can't interpret. Empty input → empty output (the caller
    * decides whether to coerce back to a string for empty messages).
    */
-  static toUserContentParts(
-    parts: ReadonlyArray<ChatCompletionContentPart>
-  ): Array<TextPart | ImagePart | FilePart> {
+  static toUserContentParts(parts: ReadonlyArray<ChatCompletionContentPart>): Array<TextPart | ImagePart | FilePart> {
     const out: Array<TextPart | ImagePart | FilePart> = [];
     for (const part of parts) {
       const mapped = SdkContentParts.mapPart(part, 'user');
@@ -75,9 +73,7 @@ export class SdkContentParts {
    * Convert OpenAI-shape content parts into the value array for a
    * `ToolResultOutput.type: 'content'` payload.
    */
-  static toToolResultContentParts(
-    parts: ReadonlyArray<ChatCompletionContentPart>
-  ): SdkToolResultContentPart[] {
+  static toToolResultContentParts(parts: ReadonlyArray<ChatCompletionContentPart>): SdkToolResultContentPart[] {
     const out: SdkToolResultContentPart[] = [];
     for (const part of parts) {
       const mapped = SdkContentParts.mapPart(part, 'tool-result');
@@ -97,9 +93,7 @@ export class SdkContentParts {
    * plain JSON objects, etc. — those flow through unchanged to preserve
    * backward-compat for tools that return strings/objects today).
    */
-  static async extractContentPartsFromToolReturn(
-    result: unknown
-  ): Promise<ChatCompletionContentPart[] | undefined> {
+  static async extractContentPartsFromToolReturn(result: unknown): Promise<ChatCompletionContentPart[] | undefined> {
     if (result == null) {
       return undefined;
     }

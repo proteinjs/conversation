@@ -244,8 +244,7 @@ export class Conversation {
       abortSignal: params.abortSignal,
       providerOptions,
       prepareStep: pendingImageInjections
-        ? ({ messages: stepMessages }) =>
-            this.injectPendingImageUserMessages(stepMessages, pendingImageInjections)
+        ? ({ messages: stepMessages }) => this.injectPendingImageUserMessages(stepMessages, pendingImageInjections)
         : undefined,
     });
 
@@ -731,8 +730,7 @@ export class Conversation {
                 ...textOnlyParts,
                 {
                   type: 'text' as const,
-                  text:
-                    'The file content has been attached as a user message immediately following this tool result. Read the image(s) there to answer.',
+                  text: 'The file content has been attached as a user message immediately following this tool result. Read the image(s) there to answer.',
                 },
               ];
               return { [MULTIMODAL_SENTINEL]: placeholderParts };
