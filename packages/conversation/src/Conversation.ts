@@ -223,7 +223,10 @@ export class Conversation {
       ? new Map<string, Array<TextPart | ImagePart | FilePart>>()
       : undefined;
     const allFunctions = [...this.functions, ...(params.tools ?? [])];
-    const tools = this.buildAiSdkTools(allFunctions, { pendingImageInjections });
+    const tools = this.buildAiSdkTools(allFunctions, {
+      pendingImageInjections,
+      onToolInvocation: params.onToolInvocation,
+    });
 
     // Build provider options
     const providerOptions = this.buildProviderOptions(provider, params, modelString);
@@ -664,10 +667,12 @@ export class Conversation {
     functions: Function[],
     options?: {
       pendingImageInjections?: Map<string, Array<TextPart | ImagePart | FilePart>>;
+      onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
     }
   ): ToolSet {
     const tools: ToolSet = {};
     const pendingImageInjections = options?.pendingImageInjections;
+    const onToolInvocation = options?.onToolInvocation;
     const imageRedirectEnabled = !!pendingImageInjections;
 
     // Sentinel for tool returns that produced multimodal content parts.
@@ -695,7 +700,47 @@ export class Conversation {
         description: def.description,
         inputSchema: jsonSchema(this.normalizeToolParameters(def.parameters)),
         execute: async (args: any, executionOptions: { toolCallId: string }) => {
-          const result = await f.call(args);
+          const toolStartedAt = new Date();
+          onToolInvocation?.({
+            type: 'started',
+            id: executionOptions.toolCallId,
+            name: def.name,
+            startedAt: toolStartedAt,
+            input: args,
+          });
+          let result: unknown;
+          try {
+            result = await f.call(args);
+          } catch (toolError) {
+            onToolInvocation?.({
+              type: 'finished',
+              result: {
+                id: executionOptions.toolCallId,
+                name: def.name,
+                startedAt: toolStartedAt,
+                finishedAt: new Date(),
+                input: args,
+                ok: false,
+                error: {
+                  message: toolError instanceof Error ? toolError.message : String(toolError),
+                  stack: toolError instanceof Error ? toolError.stack : undefined,
+                },
+              },
+            });
+            throw toolError;
+          }
+          onToolInvocation?.({
+            type: 'finished',
+            result: {
+              id: executionOptions.toolCallId,
+              name: def.name,
+              startedAt: toolStartedAt,
+              finishedAt: new Date(),
+              input: args,
+              ok: true,
+              data: result,
+            },
+          });
           if (typeof result === 'undefined') {
             return { result: 'Function executed successfully' };
           }
