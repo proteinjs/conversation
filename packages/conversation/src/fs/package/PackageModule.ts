@@ -1,5 +1,5 @@
 import { Fs } from '@proteinjs/util-node';
-import { ConversationModule, ConversationModuleFactory } from '../../ConversationModule';
+import { ConversationSkill, ConversationSkillFactory } from '../../ConversationSkill';
 import { Function } from '../../Function';
 import {
   packageFunctions,
@@ -23,7 +23,7 @@ export type LibraryImport = {
   typescriptDeclaration: string;
 };
 
-export class PackageModule implements ConversationModule {
+export class PackageModule implements ConversationSkill {
   private repoPath: string;
 
   constructor(repoPath: string) {
@@ -111,8 +111,8 @@ export class PackageModule implements ConversationModule {
   }
 }
 
-export class PackageModuleFactory implements ConversationModuleFactory {
-  async createModule(repoPath: string): Promise<PackageModule> {
+export class PackageModuleFactory implements ConversationSkillFactory {
+  async createSkill(repoPath: string): Promise<PackageModule> {
     return new PackageModule(repoPath);
   }
 }

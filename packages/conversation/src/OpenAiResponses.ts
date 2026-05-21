@@ -1,7 +1,7 @@
 import { OpenAI as OpenAIApi } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { Logger, LogLevel } from '@proteinjs/logger';
-import type { ConversationModule } from './ConversationModule';
+import type { ConversationSkill } from './ConversationSkill';
 import type { Function } from './Function';
 import { UsageData, UsageDataAccumulator } from './UsageData';
 import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
@@ -24,7 +24,7 @@ const DEFAULT_CANCEL_TIMEOUT_MS = 10_000;
 export type OpenAiServiceTier = 'auto' | 'default' | 'flex' | 'priority' | (string & {});
 
 export type OpenAiResponsesParams = {
-  modules?: ConversationModule[];
+  skills?: ConversationSkill[];
   /** If provided, only these functions will be exposed to the model. */
   allowedFunctionNames?: string[];
   logLevel?: LogLevel;
@@ -109,26 +109,26 @@ export type ResponsesGenerateObjectParams<S> = {
 };
 
 /**
- * OpenAI Responses API wrapper (tool-loop + usage tracking + ConversationModules).
+ * OpenAI Responses API wrapper (tool-loop + usage tracking + ConversationSkills).
  * - Uses Responses API directly
  * - Supports custom function tools (tool calling loop)
  * - Supports structured outputs (JSON schema / Zod)
  * - Tracks usage + tool calls using existing types
  * - Supports background mode (polling)
- * - Supports ConversationModules (system messages + tool registration)
+ * - Supports ConversationSkills (system messages + tool registration)
  */
 export class OpenAiResponses {
   private readonly client: OpenAIApi;
   private readonly logger: Logger;
 
-  private readonly modules: ConversationModule[];
+  private readonly skills: ConversationSkill[];
   private readonly allowedFunctionNames?: string[];
   private readonly defaultModel: TiktokenModel;
   private readonly defaultMaxToolCalls: number;
   private readonly defaultMaxBackgroundWaitMs: number;
 
-  private modulesProcessed = false;
-  private processingModulesPromise: Promise<void> | null = null;
+  private skillsProcessed = false;
+  private processingSkillsPromise: Promise<void> | null = null;
 
   private systemMessages: string[] = [];
   private functions: Function[] = [];
@@ -137,7 +137,7 @@ export class OpenAiResponses {
     this.client = new OpenAIApi();
     this.logger = new Logger({ name: 'OpenAiResponses', logLevel: opts.logLevel });
 
-    this.modules = opts.modules ?? [];
+    this.skills = opts.skills ?? [];
     this.allowedFunctionNames = opts.allowedFunctionNames;
 
     this.defaultModel = opts.defaultModel ?? DEFAULT_RESPONSES_MODEL;
@@ -153,7 +153,7 @@ export class OpenAiResponses {
 
   /** Plain text generation (supports tool calling). */
   async generateText(args: GenerateTextParams): Promise<GenerateResponseReturn> {
-    await this.ensureModulesProcessed();
+    await this.ensureSkillsProcessed();
 
     const model = this.resolveModel(args.model);
     const backgroundMode = this.resolveBackgroundMode({
@@ -195,7 +195,7 @@ export class OpenAiResponses {
 
   /** Structured object generation (supports tool calling). */
   async generateObject<T>(args: ResponsesGenerateObjectParams<unknown>): Promise<{ object: T; usageData: UsageData }> {
-    await this.ensureModulesProcessed();
+    await this.ensureSkillsProcessed();
 
     const model = this.resolveModel(args.model);
     const backgroundMode = this.resolveBackgroundMode({
@@ -1481,46 +1481,46 @@ export class OpenAiResponses {
     return '';
   }
 
-  private async ensureModulesProcessed(): Promise<void> {
-    if (this.modulesProcessed) {
+  private async ensureSkillsProcessed(): Promise<void> {
+    if (this.skillsProcessed) {
       return;
     }
-    if (this.processingModulesPromise) {
-      return this.processingModulesPromise;
+    if (this.processingSkillsPromise) {
+      return this.processingSkillsPromise;
     }
 
-    this.processingModulesPromise = this.processModules();
+    this.processingSkillsPromise = this.processSkills();
     try {
-      await this.processingModulesPromise;
-      this.modulesProcessed = true;
+      await this.processingSkillsPromise;
+      this.skillsProcessed = true;
     } catch (error: unknown) {
-      this.processingModulesPromise = null;
+      this.processingSkillsPromise = null;
       throw error;
     }
   }
 
-  private async processModules(): Promise<void> {
-    if (!this.modules || this.modules.length < 1) {
+  private async processSkills(): Promise<void> {
+    if (!this.skills || this.skills.length < 1) {
       return;
     }
 
-    for (const module of this.modules) {
-      const moduleName = module.getName();
+    for (const skill of this.skills) {
+      const skillName = skill.getName();
 
-      const rawSystem = await Promise.resolve(module.getSystemMessages());
+      const rawSystem = await Promise.resolve(skill.getSystemMessages());
       const sysArr = Array.isArray(rawSystem) ? rawSystem : rawSystem ? [rawSystem] : [];
       const trimmed = sysArr.map((s) => String(s ?? '').trim()).filter(Boolean);
 
       if (trimmed.length > 0) {
         const formatted = trimmed.join('. ');
-        this.systemMessages.push(`The following are instructions from the ${moduleName} module:\n${formatted}`);
+        this.systemMessages.push(`The following are instructions from the ${skillName} skill:\n${formatted}`);
       }
 
-      const moduleFunctions = module.getFunctions();
-      const filtered = this.filterFunctions(moduleFunctions);
+      const skillFunctions = skill.getFunctions();
+      const filtered = this.filterFunctions(skillFunctions);
       this.functions.push(...filtered);
 
-      const fnInstructions = this.buildFunctionInstructionsMessage(moduleName, filtered);
+      const fnInstructions = this.buildFunctionInstructionsMessage(skillName, filtered);
       if (fnInstructions) {
         this.systemMessages.push(fnInstructions);
       }
@@ -1543,8 +1543,8 @@ export class OpenAiResponses {
     });
   }
 
-  private buildFunctionInstructionsMessage(moduleName: string, functions: Function[]): string | null {
-    let msg = `The following are instructions from functions in the ${moduleName} module:`;
+  private buildFunctionInstructionsMessage(skillName: string, functions: Function[]): string | null {
+    let msg = `The following are instructions from functions in the ${skillName} skill:`;
     let added = false;
 
     for (const f of functions) {

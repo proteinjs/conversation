@@ -1,8 +1,8 @@
-import { ConversationModule } from '../ConversationModule';
+import { ConversationSkill } from '../ConversationSkill';
 import { Function } from '../Function';
 import { MessageModerator } from '../history/MessageModerator';
 
-export class CodeTemplateModule implements ConversationModule {
+export class CodeTemplateModule implements ConversationSkill {
   private static CODE_RESPONSE = 'Code with user input:';
 
   getName(): string {

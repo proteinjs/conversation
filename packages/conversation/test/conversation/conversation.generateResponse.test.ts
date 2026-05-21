@@ -1,5 +1,5 @@
 import { Conversation } from '../../src/Conversation';
-import { ConversationModule } from '../../src/ConversationModule';
+import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
 
@@ -15,9 +15,9 @@ const describeIfKey = hasApiKey ? describe : describe.skip;
 const TEST_MODEL = 'gpt-4.1-nano';
 const TIMEOUT = 60_000;
 
-function createTestModule(systemMessage: string, functions: Function[]): ConversationModule {
+function createTestSkill(systemMessage: string, functions: Function[]): ConversationSkill {
   return {
-    getName: () => 'TestModule',
+    getName: () => 'TestSkill',
     getSystemMessages: () => [systemMessage],
     getFunctions: () => functions,
     getMessageModerators: () => [] as MessageModerator[],
@@ -72,8 +72,8 @@ describeIfKey('Conversation.generateResponse', () => {
 
       const conversation = new Conversation({
         name: 'test-multi-tool',
-        modules: [
-          createTestModule(
+        skills: [
+          createTestSkill(
             'You are a geography assistant. Use lookupCapital for each country the user asks about. Make a separate call for each country.',
             [lookupTool]
           ),
@@ -108,11 +108,11 @@ describeIfKey('Conversation.generateResponse', () => {
   );
 
   test(
-    'handles conversation modules with system messages',
+    'handles conversation skills with system messages',
     async () => {
       const conversation = new Conversation({
         name: 'test-system-msg',
-        modules: [createTestModule('You are a pirate. Always respond in pirate speak.', [])],
+        skills: [createTestSkill('You are a pirate. Always respond in pirate speak.', [])],
       });
 
       const result = await conversation.generateResponse({

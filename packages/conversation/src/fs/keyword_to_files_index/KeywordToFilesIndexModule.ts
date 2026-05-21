@@ -1,6 +1,6 @@
 import { Logger } from '@proteinjs/logger';
 import { Fs } from '@proteinjs/util-node';
-import { ConversationModule, ConversationModuleFactory } from '../../ConversationModule';
+import { ConversationSkill, ConversationSkillFactory } from '../../ConversationSkill';
 import { Function } from '../../Function';
 import path from 'path';
 import { searchFilesFunction, searchFilesFunctionName } from './KeywordToFilesIndexFunctions';
@@ -11,7 +11,7 @@ export type KeywordToFilesIndexModuleParams = {
   keywordFilesIndex: { [keyword: string]: string[] };
 };
 
-export class KeywordToFilesIndexModule implements ConversationModule {
+export class KeywordToFilesIndexModule implements ConversationSkill {
   private logger = new Logger({ name: this.constructor.name });
   params: KeywordToFilesIndexModuleParams;
 
@@ -48,10 +48,10 @@ export class KeywordToFilesIndexModule implements ConversationModule {
   }
 }
 
-export class KeywordToFilesIndexModuleFactory implements ConversationModuleFactory {
+export class KeywordToFilesIndexModuleFactory implements ConversationSkillFactory {
   private logger = new Logger({ name: this.constructor.name });
 
-  async createModule(repoPath: string): Promise<KeywordToFilesIndexModule> {
+  async createSkill(repoPath: string): Promise<KeywordToFilesIndexModule> {
     this.logger.debug({ message: `Creating module for repo: ${repoPath}` });
     const repoParams: KeywordToFilesIndexModuleParams = { keywordFilesIndex: {}, dir: repoPath };
     repoParams.keywordFilesIndex = await this.createKeywordFilesIndex(repoPath, ['**/node-typescript-parser/**']);

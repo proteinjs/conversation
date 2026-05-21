@@ -1,7 +1,7 @@
 import { Logger } from '@proteinjs/logger';
 import { ConversationTemplate } from './ConversationTemplate';
 import { createPackageConversationTemplate } from './createPackage/CreatePackageConversationTemplate';
-import { ConversationModule, ConversationModuleFactory } from '../ConversationModule';
+import { ConversationSkill, ConversationSkillFactory } from '../ConversationSkill';
 import {
   getConversationTemplateFunction,
   getConversationTemplateFunctionName,
@@ -22,7 +22,7 @@ export type ConversationTemplateModuleParams = {
   conversationTemplateKeywordIndex: { [keyword: string]: string[] /** conversationTemplateNames */ };
 };
 
-export class ConversationTemplateModule implements ConversationModule {
+export class ConversationTemplateModule implements ConversationSkill {
   private logger: Logger;
   params: ConversationTemplateModuleParams;
 
@@ -71,8 +71,8 @@ export class ConversationTemplateModule implements ConversationModule {
   }
 }
 
-export class ConversationTemplateModuleFactory implements ConversationModuleFactory {
-  async createModule(repoPath: string) {
+export class ConversationTemplateModuleFactory implements ConversationSkillFactory {
+  async createSkill(repoPath: string) {
     const params: ConversationTemplateModuleParams = {
       conversationTemplates: {},
       conversationTemplateKeywordIndex: {},

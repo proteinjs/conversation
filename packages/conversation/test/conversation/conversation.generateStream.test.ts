@@ -1,5 +1,5 @@
 import { Conversation } from '../../src/Conversation';
-import { ConversationModule } from '../../src/ConversationModule';
+import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
 
@@ -58,9 +58,9 @@ function createNoParamTool(): { fn: Function; callCount: number[] } {
 }
 
 /** A simple module that provides a system message and a tool. */
-function createTestModule(systemMessage: string, functions: Function[]): ConversationModule {
+function createTestSkill(systemMessage: string, functions: Function[]): ConversationSkill {
   return {
-    getName: () => 'TestModule',
+    getName: () => 'TestSkill',
     getSystemMessages: () => [systemMessage],
     getFunctions: () => functions,
     getMessageModerators: () => [] as MessageModerator[],
@@ -108,7 +108,7 @@ describeIfKey('Conversation.generateStream', () => {
 
       const conversation = new Conversation({
         name: 'test-tool-call',
-        modules: [createTestModule('You are a calculator. Use the addNumbers tool to compute sums.', [addTool])],
+        skills: [createTestSkill('You are a calculator. Use the addNumbers tool to compute sums.', [addTool])],
       });
 
       const result = await conversation.generateStream({
@@ -147,8 +147,8 @@ describeIfKey('Conversation.generateStream', () => {
 
       const conversation = new Conversation({
         name: 'test-no-param-tool',
-        modules: [
-          createTestModule('You have access to a getServerTime tool. When the user asks for the time, call it.', [
+        skills: [
+          createTestSkill('You have access to a getServerTime tool. When the user asks for the time, call it.', [
             noParamTool,
           ]),
         ],

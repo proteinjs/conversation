@@ -1,4 +1,4 @@
-import { ConversationModule, ConversationModuleFactory } from '../../ConversationModule';
+import { ConversationSkill, ConversationSkillFactory } from '../../ConversationSkill';
 import { Function } from '../../Function';
 import { searchFilesFunctionName } from '../keyword_to_files_index/KeywordToFilesIndexFunctions';
 import { searchLibrariesFunctionName, searchPackagesFunctionName } from '../package/PackageFunctions';
@@ -15,7 +15,7 @@ import {
   writeFilesFunctionName,
 } from './FsFunctions';
 
-export class ConversationFsModule implements ConversationModule {
+export class ConversationFsModule implements ConversationSkill {
   private repoPath: string;
   private recentlyAccessedFilePaths: string[] = [];
 
@@ -72,8 +72,8 @@ export class ConversationFsModule implements ConversationModule {
   }
 }
 
-export class ConversationFsModuleFactory implements ConversationModuleFactory {
-  async createModule(repoPath: string): Promise<ConversationFsModule> {
+export class ConversationFsModuleFactory implements ConversationSkillFactory {
+  async createSkill(repoPath: string): Promise<ConversationFsModule> {
     return new ConversationFsModule(repoPath);
   }
 }

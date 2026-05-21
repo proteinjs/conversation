@@ -4,7 +4,7 @@ import { KeywordToFilesIndexModuleFactory } from './fs/keyword_to_files_index/Ke
 import { ConversationTemplateModuleFactory } from './template/ConversationTemplateModule';
 import { ConversationFsModuleFactory } from './fs/conversation_fs/ConversationFsModule';
 import { PackageModuleFactory } from './fs/package/PackageModule';
-import { ConversationModule, ConversationModuleFactory } from './ConversationModule';
+import { ConversationSkill, ConversationSkillFactory } from './ConversationSkill';
 import { Reset, textColorMap } from '@proteinjs/util';
 import { GitModuleFactory } from './fs/git/GitModule';
 import { TiktokenModel } from 'tiktoken';
@@ -40,27 +40,27 @@ export class CodegenConversation {
   private async createConversation() {
     const conversation = new Conversation({
       name: this.constructor.name,
-      modules: await this.getModules(),
+      skills: await this.getSkills(),
       logLevel: 'info',
     });
     conversation.addSystemMessagesToHistory(this.getSystemMessages());
     return conversation;
   }
 
-  private async getModules(): Promise<ConversationModule[]> {
-    const moduleFactories: ConversationModuleFactory[] = [
+  private async getSkills(): Promise<ConversationSkill[]> {
+    const skillFactories: ConversationSkillFactory[] = [
       new ConversationFsModuleFactory(),
       new KeywordToFilesIndexModuleFactory(),
       new PackageModuleFactory(),
       new ConversationTemplateModuleFactory(),
       new GitModuleFactory(),
     ];
-    const modules: ConversationModule[] = [];
-    for (const moduleFactory of moduleFactories) {
-      modules.push(await moduleFactory.createModule(this.repoPath));
+    const skills: ConversationSkill[] = [];
+    for (const skillFactory of skillFactories) {
+      skills.push(await skillFactory.createSkill(this.repoPath));
     }
 
-    return modules;
+    return skills;
   }
 
   private getSystemMessages() {

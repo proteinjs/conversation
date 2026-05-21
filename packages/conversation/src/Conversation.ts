@@ -5,7 +5,7 @@ import { streamText, generateObject as aiGenerateObject, jsonSchema, stepCountIs
 import { SdkContentParts } from './sdkContentParts';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
-import { ConversationModule } from './ConversationModule';
+import { ConversationSkill } from './ConversationSkill';
 import { Function } from './Function';
 import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
@@ -25,7 +25,7 @@ export type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi
 
 export type ConversationParams = {
   name: string;
-  modules?: ConversationModule[];
+  skills?: ConversationSkill[];
   logLevel?: LogLevel;
   defaultModel?: LanguageModel | string;
   limits?: {
@@ -156,8 +156,8 @@ export class Conversation {
   private messageModerators: MessageModerator[] = [];
   private logger: Logger;
   private params: ConversationParams;
-  private modulesProcessed = false;
-  private processingModulesPromise: Promise<void> | null = null;
+  private skillsProcessed = false;
+  private processingSkillsPromise: Promise<void> | null = null;
 
   constructor(params: ConversationParams) {
     this.params = params;
@@ -184,7 +184,7 @@ export class Conversation {
    * the full result as a single-chunk stream.
    */
   async generateStream(params: GenerateStreamParams): Promise<StreamResult> {
-    await this.ensureModulesProcessed();
+    await this.ensureSkillsProcessed();
 
     const model = this.resolveModelInstance(params.model);
     const modelString = this.getModelString(params.model);
@@ -212,7 +212,7 @@ export class Conversation {
       messages = [...system, ...nonSystem];
     }
 
-    // Build tools from module functions + any extra tools. For providers
+    // Build tools from skill functions + any extra tools. For providers
     // whose tool-result adapter strips image content (xAI — see
     // `buildAiSdkTools`' imageRedirect comment), pass a shared map that
     // lets `execute` stash images by toolCallId and `prepareStep` splice
@@ -364,7 +364,7 @@ export class Conversation {
    * `OpenAiResponses` with background/polling mode.
    */
   async generateObject<T>(params: GenerateObjectParams<T>): Promise<GenerateObjectResult<T>> {
-    await this.ensureModulesProcessed();
+    await this.ensureSkillsProcessed();
 
     const model = this.resolveModelInstance(params.model);
     const modelString = this.getModelString(params.model);
@@ -496,56 +496,56 @@ export class Conversation {
   }
 
   // ────────────────────────────────────────────────────────────
-  // Module system
+  // Skill system
   // ────────────────────────────────────────────────────────────
 
-  private async ensureModulesProcessed(): Promise<void> {
-    if (this.modulesProcessed) {
+  private async ensureSkillsProcessed(): Promise<void> {
+    if (this.skillsProcessed) {
       return;
     }
-    if (this.processingModulesPromise) {
-      return this.processingModulesPromise;
+    if (this.processingSkillsPromise) {
+      return this.processingSkillsPromise;
     }
 
-    this.processingModulesPromise = this.processModules();
+    this.processingSkillsPromise = this.processSkills();
     try {
-      await this.processingModulesPromise;
-      this.modulesProcessed = true;
+      await this.processingSkillsPromise;
+      this.skillsProcessed = true;
     } catch (error) {
-      this.logger.error({ message: 'Error processing modules', obj: { error } });
-      this.processingModulesPromise = null;
+      this.logger.error({ message: 'Error processing skills', obj: { error } });
+      this.processingSkillsPromise = null;
       throw error;
     }
   }
 
-  private async processModules(): Promise<void> {
-    if (!this.params.modules || this.params.modules.length === 0) {
+  private async processSkills(): Promise<void> {
+    if (!this.params.skills || this.params.skills.length === 0) {
       return;
     }
 
-    for (const module of this.params.modules) {
-      const moduleName = module.getName();
+    for (const skill of this.params.skills) {
+      const skillName = skill.getName();
 
       // System messages
-      const rawSystem = await Promise.resolve(module.getSystemMessages());
+      const rawSystem = await Promise.resolve(skill.getSystemMessages());
       const sysArr = Array.isArray(rawSystem) ? rawSystem : rawSystem ? [rawSystem] : [];
       const trimmed = sysArr.map((s) => String(s ?? '').trim()).filter(Boolean);
 
       if (trimmed.length > 0) {
         const formatted = trimmed.join('. ');
         this.addSystemMessagesToHistory([
-          `The following are instructions from the ${moduleName} module:\n${formatted}`,
+          `The following are instructions from the ${skillName} skill:\n${formatted}`,
         ]);
       }
 
       // Functions
-      const moduleFunctions = module.getFunctions();
-      this.functions.push(...moduleFunctions);
+      const skillFunctions = skill.getFunctions();
+      this.functions.push(...skillFunctions);
 
       // Function instructions
-      let functionInstructions = `The following are instructions from functions in the ${moduleName} module:`;
+      let functionInstructions = `The following are instructions from functions in the ${skillName} skill:`;
       let hasInstructions = false;
-      for (const f of moduleFunctions) {
+      for (const f of skillFunctions) {
         if (f.instructions && f.instructions.length > 0) {
           hasInstructions = true;
           const paragraph = f.instructions.join('. ');
@@ -557,7 +557,7 @@ export class Conversation {
       }
 
       // Message moderators
-      this.messageModerators.push(...module.getMessageModerators());
+      this.messageModerators.push(...skill.getMessageModerators());
     }
   }
 
@@ -1155,7 +1155,7 @@ export class Conversation {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { OpenAiResponses: OAIResponses } = require('./OpenAiResponses');
     return new OAIResponses({
-      modules: this.params.modules,
+      skills: this.params.skills,
       logLevel: this.params.logLevel,
       defaultModel: this.getModelString(this.params.defaultModel) as TiktokenModel,
     });

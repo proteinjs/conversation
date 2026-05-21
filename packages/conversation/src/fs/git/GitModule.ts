@@ -1,8 +1,8 @@
 import { gitFunctions } from '@proteinjs/util-node';
-import { ConversationModule, ConversationModuleFactory } from '../../ConversationModule';
+import { ConversationSkill, ConversationSkillFactory } from '../../ConversationSkill';
 import { Function } from '../../Function';
 
-export class GitModule implements ConversationModule {
+export class GitModule implements ConversationSkill {
   private repoPath: string;
 
   constructor(repoPath: string) {
@@ -30,8 +30,8 @@ export class GitModule implements ConversationModule {
   }
 }
 
-export class GitModuleFactory implements ConversationModuleFactory {
-  async createModule(repoPath: string): Promise<GitModule> {
+export class GitModuleFactory implements ConversationSkillFactory {
+  async createSkill(repoPath: string): Promise<GitModule> {
     return new GitModule(repoPath);
   }
 }
