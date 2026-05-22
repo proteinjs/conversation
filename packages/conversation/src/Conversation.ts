@@ -72,7 +72,16 @@ export type StreamPart =
   | { type: 'reasoning-delta'; textDelta: string }
   | { type: 'reasoning-end' }
   | { type: 'source'; source: StreamSource }
-  | { type: 'tool-call'; toolName: string };
+  | {
+      type: 'tool-call';
+      toolName: string;
+      /**
+       * A short, human-meaningful subject for the call when one can be derived
+       * from the tool input (e.g. a web-search query, a created space/thought
+       * title) — used to personalize the call's node in the thinking timeline.
+       */
+      detail?: string;
+    };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
 export type StreamResult = {
@@ -1301,8 +1310,13 @@ export class Conversation {
    * in real-time, since it yields text, reasoning, and source events in the
    * order the model produces them.
    */
+  // ────────────────────────────────────────────────────────────
+  // Full-stream mapping
+  // ────────────────────────────────────────────────────────────
+
   private mapFullStream(aiSdkFullStream: AsyncIterable<any>): AsyncIterable<StreamPart> {
     const logger = this.logger;
+    const functions = this.functions;
     return {
       async *[Symbol.asyncIterator]() {
         const partCounts: Record<string, number> = {};
@@ -1328,7 +1342,23 @@ export class Conversation {
             } else if (part.type === 'reasoning-end') {
               yield { type: 'reasoning-end' as const };
             } else if (part.type === 'tool-call') {
-              yield { type: 'tool-call' as const, toolName: part.toolName ?? 'unknown' };
+              const toolName = part.toolName ?? 'unknown';
+              // Prefer the tool's own detail resolver (it can name an entity by
+              // id); fall back to a generic detail derived from the input.
+              let detail: string | undefined;
+              try {
+                const fn = functions.find((f) => f.definition.name === toolName);
+                if (fn?.getTimelineDetail) {
+                  detail = (await fn.getTimelineDetail(part.input)) || undefined;
+                }
+              } catch {
+                // detail is best-effort — never let it break the stream
+              }
+              yield {
+                type: 'tool-call' as const,
+                toolName,
+                detail: detail ?? deriveToolCallDetail(part.input),
+              };
             } else if (part.type === 'source') {
               yield {
                 type: 'source' as const,
@@ -1452,4 +1482,36 @@ export class Conversation {
     visit(root);
     return root;
   }
+}
+
+/**
+ * Best-effort extraction of a short, human-meaningful subject from a tool
+ * call's input — used to personalize the call's node in the thinking timeline
+ * (e.g. "Searched the web · 'best SaaS billing practices'").
+ *
+ * Kept generic (matches common input field names rather than specific tool
+ * names) so the framework stays app-agnostic. Tools whose subject is only an
+ * id, not a name, resolve their detail elsewhere; this just returns undefined.
+ */
+function deriveToolCallDetail(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+  const obj = input as Record<string, unknown>;
+  // A search-style query.
+  if (typeof obj.query === 'string' && obj.query.trim()) {
+    return obj.query.trim();
+  }
+  // A created entity's title.
+  if (typeof obj.title === 'string' && obj.title.trim()) {
+    return obj.title.trim();
+  }
+  // A markdown document — use its first heading as the title.
+  if (typeof obj.markdown === 'string') {
+    const heading = /^#{1,6}\s+(.+)$/m.exec(obj.markdown);
+    if (heading?.[1]?.trim()) {
+      return heading[1].trim();
+    }
+  }
+  return undefined;
 }
