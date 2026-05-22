@@ -962,7 +962,15 @@ export class Conversation {
         }
         case 'anthropic': {
           const { anthropic } = require('@ai-sdk/anthropic');
-          return { web_search: anthropic.tools.webSearch_20260209() };
+          // Deliberately the 2025 web search, not the agentic `webSearch_20260209`.
+          // `@ai-sdk/anthropic`'s replay converter (`convertToAnthropicMessagesPrompt`)
+          // only knows `webSearch_20250305OutputSchema` — it was never taught to
+          // round-trip 2026 server-tool results. With `webSearch_20260209` the model
+          // also gets a server-side `code_execution` tool; on step 2+ of a multi-step
+          // turn the converter drops those result blocks, orphaning the `server_tool_use`
+          // and 400-ing the turn. The 2025 tool keeps send/parse/replay on the one
+          // version the SDK fully supports. Revisit once the SDK round-trips 20260209.
+          return { web_search: anthropic.tools.webSearch_20250305() };
         }
         // Google: grounding-based search is currently broken in @ai-sdk/google@3.0.43.
         // Re-enable when the SDK is updated. When working, it should be gated on
