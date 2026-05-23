@@ -74,6 +74,31 @@ describe('Conversation.getWebSearchTools', () => {
     });
   });
 
+  describe('xai', () => {
+    // xAI Live Search behaves like Google's grounding — attaching the tool
+    // changes how the model produces its answer, not whether it calls a
+    // separate "search this" tool. Gate on webSearchRequested for parity.
+
+    test('omits search when webSearchRequested is false', () => {
+      expect(callGetWebSearchTools('xai', 'grok-4.3', false)).toEqual({});
+    });
+
+    test('omits search when webSearchRequested is undefined', () => {
+      expect(callGetWebSearchTools('xai', 'grok-4.3')).toEqual({});
+    });
+
+    test('attaches web_search for Grok 4.3 when webSearchRequested is true', () => {
+      const tools = callGetWebSearchTools('xai', 'grok-4.3', true);
+      expect(tools).toHaveProperty('web_search');
+      expect(tools.web_search).toBeDefined();
+    });
+
+    test('also attaches for Grok 4.1 Fast', () => {
+      const tools = callGetWebSearchTools('xai', 'grok-4-1-fast-reasoning', true);
+      expect(tools).toHaveProperty('web_search');
+    });
+  });
+
   describe('unknown providers', () => {
     test('returns no tools for unrecognized provider', () => {
       const tools = callGetWebSearchTools('made-up', 'whatever-model');

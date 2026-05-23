@@ -1012,6 +1012,17 @@ export class Conversation {
           // grounding behavior with no extra filters (no time range, etc.).
           return { google_search: google.tools.googleSearch({}) };
         }
+        case 'xai': {
+          // xAI Live Search is grounding-style — when the `webSearch` tool
+          // is attached, the model consults web/news sources to ground its
+          // response. Gate on the user's webSearch toggle for parity with
+          // Google (force-on semantics rather than always-available).
+          if (!webSearchRequested) {
+            return {};
+          }
+          const { xai } = require('@ai-sdk/xai');
+          return { web_search: xai.tools.webSearch() };
+        }
         default:
           return {};
       }
