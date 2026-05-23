@@ -245,10 +245,17 @@ export class Conversation {
 
     const allTools = { ...tools, ...webSearchTools };
 
+    // When the user toggles search on, force the search tool on the first
+    // step so the toggle has a consistent "guarantee a search this turn"
+    // meaning across providers. After step 1 the model returns to default
+    // (auto) tool choice for subsequent steps.
+    const webSearchToolChoice = this.getWebSearchToolChoice(provider, webSearchTools, params.webSearch);
+
     const result = streamText({
       model,
       messages,
       tools: Object.keys(allTools).length > 0 ? allTools : undefined,
+      toolChoice: webSearchToolChoice,
       stopWhen: stepCountIs(params.maxToolCalls ?? 50),
       abortSignal: params.abortSignal,
       providerOptions,
@@ -1032,6 +1039,42 @@ export class Conversation {
       this.logger.error({ message: `Web search tool not available for provider: ${provider}`, error });
       return {};
     }
+  }
+
+  /**
+   * Returns the `toolChoice` value to use when the user has toggled web
+   * search on. The toggle's contract: "guarantee a search this turn." We
+   * deliver that by forcing the search tool as the first step's tool call,
+   * after which the model returns to default (auto) tool selection.
+   *
+   * Provider notes:
+   * - OpenAI / Anthropic / xAI: search is a model-called tool. Set
+   *   `toolChoice: { type: 'tool', toolName: 'web_search' }` to force.
+   * - Google: search is grounding-based — attaching `googleSearch` already
+   *   forces it on every response (no model choice involved). So
+   *   toolChoice is irrelevant; we omit it.
+   * - Toggle off, or tool unavailable (e.g. Haiku/nano excluded models):
+   *   return `undefined` so the SDK falls back to its default (auto).
+   */
+  private getWebSearchToolChoice(
+    provider: string,
+    webSearchTools: ToolSet,
+    webSearchRequested?: boolean
+  ): { type: 'tool'; toolName: string } | undefined {
+    if (!webSearchRequested) {
+      return undefined;
+    }
+    if (provider === 'google') {
+      // googleSearch is auto-invoked by the API once attached; toolChoice is
+      // a no-op for it.
+      return undefined;
+    }
+    const toolName = Object.keys(webSearchTools)[0];
+    if (!toolName) {
+      // Model class doesn't have a search tool wired (e.g. nano/haiku).
+      return undefined;
+    }
+    return { type: 'tool', toolName };
   }
 
   // ────────────────────────────────────────────────────────────
