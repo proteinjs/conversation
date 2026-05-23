@@ -889,7 +889,10 @@ export class Conversation {
           anthropicOpts.thinking = { type: 'enabled', budgetTokens: 10000 };
         } else {
           // Opus 4.7 + Sonnet 4.6 support adaptive thinking — model decides effort.
-          anthropicOpts.thinking = { type: 'adaptive' };
+          // display: 'summarized' is required for Opus 4.7+ to stream reasoning text;
+          // its default is 'omitted'. Sonnet 4.6 also defaults to omitted on adaptive
+          // — passing 'summarized' makes the behavior explicit across the family.
+          anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
         }
       } else if (effort && effort !== 'none') {
         if (isHaiku) {
@@ -901,7 +904,7 @@ export class Conversation {
           // Opus 4.7 + Sonnet 4.6 (and 4.5) support adaptive thinking with effort.
           // Anthropic accepts effort: low | medium | high | xhigh | max
           // ('xhigh' was added in Opus 4.7 — sits between high and max.)
-          anthropicOpts.thinking = { type: 'adaptive' };
+          anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
           anthropicOpts.effort = effort;
         }
       }
