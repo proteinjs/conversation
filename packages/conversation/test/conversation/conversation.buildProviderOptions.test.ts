@@ -193,24 +193,30 @@ describe('Conversation.buildProviderOptions (xai)', () => {
   describe('searchParameters (Chat Completions Live Search)', () => {
     // Chat Completions models (grok-4.3, grok-4-1-fast-reasoning) enable
     // search via this field. The webSearch tool is silently ignored on
-    // this endpoint — see the regression that prompted this fix.
+    // this endpoint — see the regression that prompted the previous fix.
+    //
+    // Behavior:
+    //   - webSearch toggle OFF (default): mode 'auto' — model decides per
+    //     prompt, mirroring how OpenAI/Anthropic's always-attached tool
+    //     works. Asking "search the web for X" in plain text triggers it.
+    //   - webSearch toggle ON: mode 'on' — force-search every turn.
 
-    test('omits searchParameters when webSearch is false', () => {
+    test('mode "auto" when webSearch is false (model decides; text requests can still trigger search)', () => {
       const xai = buildXai('auto', 'grok-4.3', false);
-      expect(xai.searchParameters).toBeUndefined();
+      expect(xai.searchParameters).toEqual({ mode: 'auto', returnCitations: true });
     });
 
-    test('omits searchParameters when webSearch is undefined', () => {
+    test('mode "auto" when webSearch is undefined (default state)', () => {
       const xai = buildXai('auto', 'grok-4.3');
-      expect(xai.searchParameters).toBeUndefined();
+      expect(xai.searchParameters).toEqual({ mode: 'auto', returnCitations: true });
     });
 
-    test('sets searchParameters: { mode: "on", returnCitations: true } when webSearch is true (Grok 4.3)', () => {
+    test('mode "on" when webSearch is true (force-search for Grok 4.3)', () => {
       const xai = buildXai('auto', 'grok-4.3', true);
       expect(xai.searchParameters).toEqual({ mode: 'on', returnCitations: true });
     });
 
-    test('also sets searchParameters for Grok 4.1 Fast', () => {
+    test('mode "on" also for Grok 4.1 Fast when webSearch is true', () => {
       const xai = buildXai('low', 'grok-4-1-fast-reasoning', true);
       expect(xai.searchParameters).toEqual({ mode: 'on', returnCitations: true });
     });
@@ -218,8 +224,8 @@ describe('Conversation.buildProviderOptions (xai)', () => {
     test('omits searchParameters for multi-agent models (they use the tool path instead)', () => {
       // If a multi-agent model is ever added back, search is enabled via the
       // webSearch tool factory in getWebSearchTools, not via this field.
-      const xai = buildXai('auto', 'grok-4.20-multi-agent', true);
-      expect(xai.searchParameters).toBeUndefined();
+      expect(buildXai('auto', 'grok-4.20-multi-agent', true).searchParameters).toBeUndefined();
+      expect(buildXai('auto', 'grok-4.20-multi-agent', false).searchParameters).toBeUndefined();
     });
   });
 

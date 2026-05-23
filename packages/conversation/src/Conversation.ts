@@ -960,13 +960,26 @@ export class Conversation {
       // Live Search for Chat Completions models is enabled via the request
       // body's `search_parameters` field, NOT via the `xai.tools.webSearch()`
       // tool (which is only honored by the Responses endpoint — see
-      // getWebSearchTools). `mode: 'on'` forces grounding on every response,
-      // matching the "force search" semantics of the chat's webSearch toggle.
+      // getWebSearchTools).
+      //
+      // Two modes:
+      //   - `on`: force grounding on every response, regardless of the
+      //     prompt. Matches the "force search" semantics of the chat's
+      //     webSearch toggle when it's ON.
+      //   - `auto`: model decides per-turn (mirrors OpenAI/Anthropic, where
+      //     the tool is always available and the model invokes it when the
+      //     prompt warrants — e.g. you say "look this up" in plain text).
+      //     Default state, so the user doesn't have to toggle just to ask
+      //     for a search in text.
+      //
       // Models routed through Responses (only `*-multi-agent` per
       // resolveModel) ignore this field; they use the tool path instead.
       const isMultiAgent = modelString ? /multi-agent/i.test(modelString) : false;
-      if (params.webSearch && !isMultiAgent) {
-        xaiOpts.searchParameters = { mode: 'on', returnCitations: true };
+      if (!isMultiAgent) {
+        xaiOpts.searchParameters = {
+          mode: params.webSearch ? 'on' : 'auto',
+          returnCitations: true,
+        };
       }
 
       options.xai = xaiOpts;
