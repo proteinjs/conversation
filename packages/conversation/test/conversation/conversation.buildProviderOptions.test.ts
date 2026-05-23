@@ -7,11 +7,17 @@ import { Conversation, ReasoningEffort } from '../../src/Conversation';
  * `(provider, reasoningEffort, modelString)` to the providerOptions object
  * passed to the AI SDK.
  *
- * The Anthropic branch is what these tests primarily protect: Opus 4.7
- * changed `thinking.display`'s default to `'omitted'`, so adaptive thinking
- * now requires `display: 'summarized'` on the request to get reasoning
- * text back on the stream. A regression here silently hides reasoning in
- * the UI without throwing.
+ * These tests primarily protect each provider's "show reasoning text in
+ * the UI" path, which is provider-specific and easy to break silently:
+ *
+ * - Anthropic: Opus 4.7 changed `thinking.display`'s default to 'omitted',
+ *   so adaptive thinking now requires `display: 'summarized'` on the
+ *   request to get reasoning text back on the stream.
+ * - OpenAI: the Responses API only emits `reasoning-delta` chunks when
+ *   `reasoningSummary` is set (default is no summary).
+ *
+ * A regression in either silently hides reasoning in the UI without
+ * throwing.
  */
 
 type AnthropicProviderOptions = {
@@ -19,12 +25,24 @@ type AnthropicProviderOptions = {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
+type OpenAIProviderOptions = {
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningSummary?: 'auto' | 'concise' | 'detailed' | 'none';
+  serviceTier?: string;
+};
+
+const conv = new Conversation({ name: 'test-providerOptions' });
+
 const buildAnthropic = (effort: ReasoningEffort | undefined, modelString: string): AnthropicProviderOptions => {
-  const conv = new Conversation({ name: 'test-providerOptions' });
   // buildProviderOptions is private — testing it directly via cast keeps the
   // production API surface narrow.
   const opts = (conv as any).buildProviderOptions('anthropic', { reasoningEffort: effort }, modelString);
   return opts.anthropic as AnthropicProviderOptions;
+};
+
+const buildOpenAI = (effort: ReasoningEffort | undefined, modelString: string): OpenAIProviderOptions => {
+  const opts = (conv as any).buildProviderOptions('openai', { reasoningEffort: effort }, modelString);
+  return opts.openai as OpenAIProviderOptions;
 };
 
 describe('Conversation.buildProviderOptions (anthropic)', () => {
@@ -78,5 +96,41 @@ describe('Conversation.buildProviderOptions (anthropic)', () => {
       const anthropic = buildAnthropic('none', 'claude-haiku-4-5');
       expect(anthropic.thinking).toBeUndefined();
     });
+  });
+});
+
+describe('Conversation.buildProviderOptions (openai)', () => {
+  test.each([
+    ['gpt-5.5', 'auto'],
+    ['gpt-5.5', 'none'],
+    ['gpt-5.5', 'low'],
+    ['gpt-5.5', 'medium'],
+    ['gpt-5.5', 'high'],
+    ['gpt-5.5', 'xhigh'],
+    ['gpt-5.4-mini', 'auto'],
+  ] as Array<[string, ReasoningEffort]>)(
+    'always sets reasoningSummary: auto for model=%s effort=%s',
+    (model, effort) => {
+      const openai = buildOpenAI(effort, model);
+      expect(openai.reasoningSummary).toBe('auto');
+    }
+  );
+
+  test.each([
+    ['none', 'none'],
+    ['low', 'low'],
+    ['medium', 'medium'],
+    ['high', 'high'],
+    ['xhigh', 'xhigh'],
+    ['max', 'xhigh'], // 'max' maps to 'xhigh' (OpenAI's highest)
+  ] as Array<[ReasoningEffort, string]>)('forwards reasoningEffort %s → %s', (input, expected) => {
+    const openai = buildOpenAI(input, 'gpt-5.5');
+    expect(openai.reasoningEffort).toBe(expected);
+  });
+
+  test('omits reasoningEffort on "auto" but keeps reasoningSummary', () => {
+    const openai = buildOpenAI('auto', 'gpt-5.5');
+    expect(openai.reasoningEffort).toBeUndefined();
+    expect(openai.reasoningSummary).toBe('auto');
   });
 });

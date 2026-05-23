@@ -873,6 +873,11 @@ export class Conversation {
         openaiOpts.reasoningEffort = effort === 'max' ? 'xhigh' : effort;
       }
       // 'auto': omit reasoningEffort — let OpenAI use its default reasoning behavior
+      // Always request reasoning summary text. The Responses API (used by
+      // resolveModel for OpenAI) only emits `reasoning-delta` stream chunks
+      // when `reasoningSummary` is set; default is no summary. Honored on
+      // reasoning models; harmlessly ignored on non-reasoning models.
+      openaiOpts.reasoningSummary = 'auto';
       if (params.serviceTier) {
         openaiOpts.serviceTier = params.serviceTier;
       }

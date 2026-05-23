@@ -11,7 +11,15 @@ const PROVIDER_FACTORIES: Record<string, (modelId: string) => LanguageModel> = {
   openai: (modelId) => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { openai } = require('@ai-sdk/openai');
-    return openai(modelId);
+    // Use OpenAI's Responses API rather than Chat Completions:
+    // - It's the path that streams `reasoning-delta` chunks for reasoning
+    //   models (Chat Completions only returns reasoning_tokens counts), so
+    //   the UI gets reasoning text on par with Anthropic.
+    // - The `reasoningSummary` provider option is honored only on the
+    //   Responses model.
+    // - Works for non-reasoning models as well — same `LanguageModelV3`
+    //   interface downstream, no change to streamText consumers.
+    return openai.responses(modelId);
   },
   anthropic: (modelId) => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
