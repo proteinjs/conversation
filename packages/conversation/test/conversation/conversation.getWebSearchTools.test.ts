@@ -75,27 +75,30 @@ describe('Conversation.getWebSearchTools', () => {
   });
 
   describe('xai', () => {
-    // xAI Live Search behaves like Google's grounding — attaching the tool
-    // changes how the model produces its answer, not whether it calls a
-    // separate "search this" tool. Gate on webSearchRequested for parity.
+    // xAI has two Live Search paths and they're endpoint-specific:
+    //   - Chat Completions models (grok-4.3, grok-4-1-fast-reasoning):
+    //     search is enabled via the `searchParameters` request body field,
+    //     set in buildProviderOptions. The webSearch tool is silently
+    //     ignored on this endpoint.
+    //   - Responses models (only `*-multi-agent` per resolveModel): search
+    //     is enabled via the webSearch tool factory.
+    // So this function only attaches the tool for multi-agent models.
 
-    test('omits search when webSearchRequested is false', () => {
-      expect(callGetWebSearchTools('xai', 'grok-4.3', false)).toEqual({});
+    test('omits the tool for Chat Completions models even when webSearchRequested is true', () => {
+      // Tool would be a no-op on Chat Completions; buildProviderOptions
+      // handles search for these models instead.
+      expect(callGetWebSearchTools('xai', 'grok-4.3', true)).toEqual({});
+      expect(callGetWebSearchTools('xai', 'grok-4-1-fast-reasoning', true)).toEqual({});
     });
 
-    test('omits search when webSearchRequested is undefined', () => {
-      expect(callGetWebSearchTools('xai', 'grok-4.3')).toEqual({});
+    test('omits search for multi-agent models when webSearchRequested is false', () => {
+      expect(callGetWebSearchTools('xai', 'grok-4.20-multi-agent', false)).toEqual({});
     });
 
-    test('attaches web_search for Grok 4.3 when webSearchRequested is true', () => {
-      const tools = callGetWebSearchTools('xai', 'grok-4.3', true);
+    test('attaches web_search for multi-agent models when webSearchRequested is true', () => {
+      const tools = callGetWebSearchTools('xai', 'grok-4.20-multi-agent', true);
       expect(tools).toHaveProperty('web_search');
       expect(tools.web_search).toBeDefined();
-    });
-
-    test('also attaches for Grok 4.1 Fast', () => {
-      const tools = callGetWebSearchTools('xai', 'grok-4-1-fast-reasoning', true);
-      expect(tools).toHaveProperty('web_search');
     });
   });
 

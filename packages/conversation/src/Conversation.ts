@@ -956,6 +956,19 @@ export class Conversation {
         xaiOpts.reasoningEffort = xaiEffort;
       }
       // 'auto': omit reasoningEffort — let xAI use its default reasoning behavior
+
+      // Live Search for Chat Completions models is enabled via the request
+      // body's `search_parameters` field, NOT via the `xai.tools.webSearch()`
+      // tool (which is only honored by the Responses endpoint — see
+      // getWebSearchTools). `mode: 'on'` forces grounding on every response,
+      // matching the "force search" semantics of the chat's webSearch toggle.
+      // Models routed through Responses (only `*-multi-agent` per
+      // resolveModel) ignore this field; they use the tool path instead.
+      const isMultiAgent = modelString ? /multi-agent/i.test(modelString) : false;
+      if (params.webSearch && !isMultiAgent) {
+        xaiOpts.searchParameters = { mode: 'on', returnCitations: true };
+      }
+
       options.xai = xaiOpts;
     }
 
@@ -1013,11 +1026,17 @@ export class Conversation {
           return { google_search: google.tools.googleSearch({}) };
         }
         case 'xai': {
-          // xAI Live Search is grounding-style — when the `webSearch` tool
-          // is attached, the model consults web/news sources to ground its
-          // response. Gate on the user's webSearch toggle for parity with
-          // Google (force-on semantics rather than always-available).
-          if (!webSearchRequested) {
+          // xAI Live Search has TWO paths:
+          //   1) Chat Completions: enabled via the `searchParameters` request
+          //      body field (set in buildProviderOptions). The `webSearch`
+          //      tool is silently ignored on this endpoint.
+          //   2) Responses (only `*-multi-agent` per resolveModel): enabled
+          //      via this tool factory.
+          // So we only attach the tool here for multi-agent models. The
+          // current catalog has none — kept conditional for any future
+          // multi-agent addition.
+          const isMultiAgent = /multi-agent/i.test(modelString);
+          if (!webSearchRequested || !isMultiAgent) {
             return {};
           }
           const { xai } = require('@ai-sdk/xai');

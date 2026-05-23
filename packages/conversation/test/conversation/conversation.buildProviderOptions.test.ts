@@ -170,3 +170,74 @@ describe('Conversation.buildProviderOptions (google)', () => {
     expect(google.thinkingConfig).toBeUndefined();
   });
 });
+
+type XaiProviderOptions = {
+  reasoningEffort?: 'low' | 'high';
+  searchParameters?: { mode: 'on' | 'auto' | 'off'; returnCitations?: boolean };
+};
+
+const buildXai = (
+  effort: ReasoningEffort | undefined,
+  modelString: string,
+  webSearch?: boolean
+): XaiProviderOptions => {
+  const opts = (conv as any).buildProviderOptions(
+    'xai',
+    { reasoningEffort: effort, webSearch },
+    modelString
+  );
+  return opts.xai as XaiProviderOptions;
+};
+
+describe('Conversation.buildProviderOptions (xai)', () => {
+  describe('searchParameters (Chat Completions Live Search)', () => {
+    // Chat Completions models (grok-4.3, grok-4-1-fast-reasoning) enable
+    // search via this field. The webSearch tool is silently ignored on
+    // this endpoint — see the regression that prompted this fix.
+
+    test('omits searchParameters when webSearch is false', () => {
+      const xai = buildXai('auto', 'grok-4.3', false);
+      expect(xai.searchParameters).toBeUndefined();
+    });
+
+    test('omits searchParameters when webSearch is undefined', () => {
+      const xai = buildXai('auto', 'grok-4.3');
+      expect(xai.searchParameters).toBeUndefined();
+    });
+
+    test('sets searchParameters: { mode: "on", returnCitations: true } when webSearch is true (Grok 4.3)', () => {
+      const xai = buildXai('auto', 'grok-4.3', true);
+      expect(xai.searchParameters).toEqual({ mode: 'on', returnCitations: true });
+    });
+
+    test('also sets searchParameters for Grok 4.1 Fast', () => {
+      const xai = buildXai('low', 'grok-4-1-fast-reasoning', true);
+      expect(xai.searchParameters).toEqual({ mode: 'on', returnCitations: true });
+    });
+
+    test('omits searchParameters for multi-agent models (they use the tool path instead)', () => {
+      // If a multi-agent model is ever added back, search is enabled via the
+      // webSearch tool factory in getWebSearchTools, not via this field.
+      const xai = buildXai('auto', 'grok-4.20-multi-agent', true);
+      expect(xai.searchParameters).toBeUndefined();
+    });
+  });
+
+  describe('reasoningEffort gate', () => {
+    test('Fast models accept low/high mapped values', () => {
+      expect(buildXai('low', 'grok-4-1-fast-reasoning').reasoningEffort).toBe('low');
+      expect(buildXai('high', 'grok-4-1-fast-reasoning').reasoningEffort).toBe('high');
+      expect(buildXai('medium', 'grok-4-1-fast-reasoning').reasoningEffort).toBe('high');
+    });
+
+    test('Flagship models do not accept reasoningEffort (model decides internally)', () => {
+      expect(buildXai('high', 'grok-4.3').reasoningEffort).toBeUndefined();
+      expect(buildXai('low', 'grok-4').reasoningEffort).toBeUndefined();
+    });
+
+    test('auto omits reasoningEffort everywhere', () => {
+      expect(buildXai('auto', 'grok-4-1-fast-reasoning').reasoningEffort).toBeUndefined();
+      expect(buildXai('auto', 'grok-4.3').reasoningEffort).toBeUndefined();
+    });
+  });
+});
