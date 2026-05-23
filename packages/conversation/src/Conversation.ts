@@ -947,41 +947,19 @@ export class Conversation {
     if (provider === 'xai') {
       const xaiOpts: Record<string, any> = {};
       // Only models with reasoning support accept the reasoningEffort parameter.
-      // Models like grok-4 (no "-fast" suffix) reject it with a 400 error.
+      // Models like grok-4 (no "-fast" suffix) reject it with a 400 error;
+      // the model decides effort internally.
       const xaiSupportsReasoning = modelString ? /fast/i.test(modelString) : false;
       if (effort && effort !== 'none' && effort !== 'auto' && xaiSupportsReasoning) {
-        // xAI accepts: low | high
-        // Map everything to the closest valid value
+        // xAI accepts: low | high (Responses also accepts 'medium')
+        // Map everything to the closest valid value.
         const xaiEffort = effort === 'low' ? 'low' : 'high';
         xaiOpts.reasoningEffort = xaiEffort;
       }
-      // 'auto': omit reasoningEffort — let xAI use its default reasoning behavior
-
-      // Live Search for Chat Completions models is enabled via the request
-      // body's `search_parameters` field, NOT via the `xai.tools.webSearch()`
-      // tool (which is only honored by the Responses endpoint — see
-      // getWebSearchTools).
-      //
-      // Two modes:
-      //   - `on`: force grounding on every response, regardless of the
-      //     prompt. Matches the "force search" semantics of the chat's
-      //     webSearch toggle when it's ON.
-      //   - `auto`: model decides per-turn (mirrors OpenAI/Anthropic, where
-      //     the tool is always available and the model invokes it when the
-      //     prompt warrants — e.g. you say "look this up" in plain text).
-      //     Default state, so the user doesn't have to toggle just to ask
-      //     for a search in text.
-      //
-      // Models routed through Responses (only `*-multi-agent` per
-      // resolveModel) ignore this field; they use the tool path instead.
-      const isMultiAgent = modelString ? /multi-agent/i.test(modelString) : false;
-      if (!isMultiAgent) {
-        xaiOpts.searchParameters = {
-          mode: params.webSearch ? 'on' : 'auto',
-          returnCitations: true,
-        };
-      }
-
+      // Live Search is enabled via the `webSearch` tool factory on the
+      // Responses endpoint (handled in getWebSearchTools). The old
+      // Chat Completions `searchParameters` API was deprecated by xAI
+      // — it now returns 410 with "switch to the Agent Tools API".
       options.xai = xaiOpts;
     }
 
@@ -1039,19 +1017,11 @@ export class Conversation {
           return { google_search: google.tools.googleSearch({}) };
         }
         case 'xai': {
-          // xAI Live Search has TWO paths:
-          //   1) Chat Completions: enabled via the `searchParameters` request
-          //      body field (set in buildProviderOptions). The `webSearch`
-          //      tool is silently ignored on this endpoint.
-          //   2) Responses (only `*-multi-agent` per resolveModel): enabled
-          //      via this tool factory.
-          // So we only attach the tool here for multi-agent models. The
-          // current catalog has none — kept conditional for any future
-          // multi-agent addition.
-          const isMultiAgent = /multi-agent/i.test(modelString);
-          if (!webSearchRequested || !isMultiAgent) {
-            return {};
-          }
+          // All xAI models now route through Responses (see resolveModel),
+          // so the `webSearch` tool factory works uniformly. Always attach
+          // it so the model can search when the prompt warrants — same
+          // pattern as OpenAI/Anthropic. The webSearch toggle is a no-op
+          // for xAI just like it is for those providers.
           const { xai } = require('@ai-sdk/xai');
           return { web_search: xai.tools.webSearch() };
         }

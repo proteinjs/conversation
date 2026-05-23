@@ -109,14 +109,16 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
   );
 
   test(
-    'webSearch: true grounds the response with sources',
+    'webSearch tool is available to the model — explicit search request grounds',
     async () => {
-      const conversation = new Conversation({ name: 'test-grok-search' });
+      // With xAI on Responses, the webSearch tool is always attached (like
+      // OpenAI/Anthropic). An explicit "search the web for X" prompt should
+      // make Grok invoke it and return sources.
+      const conversation = new Conversation({ name: 'test-grok-text-asks-search' });
 
       const result = await conversation.generateStream({
-        messages: ['What is the latest news headline today? One sentence, name the publisher.'],
-        model: FLAGSHIP_MODEL,
-        webSearch: true,
+        messages: ['Please search the web and tell me the latest news headline today. One sentence, name the publisher.'],
+        model: FAST_MODEL,
       });
 
       for await (const _ of result.fullStream) {
@@ -124,26 +126,23 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
       }
 
       const sources = await result.sources;
-      // Live Search should surface at least one source on a recency
-      // question. If flaky, soften to `expect(sources).toBeDefined()`.
+      // Soft expectation: usually 1+ source. If this becomes flaky with
+      // certain Grok versions, downgrade to `>= 0` and rely on the unit
+      // tests pinning the tool attachment.
       expect(sources.length).toBeGreaterThan(0);
     },
     TIMEOUT
   );
 
   test(
-    'webSearch: false with a non-search prompt leaves the model un-grounded (mode=auto)',
+    'a non-search prompt does NOT trigger search (the tool is opt-in for the model)',
     async () => {
-      // With webSearch off, we send `mode: 'auto'` so Grok can decide. On a
-      // pure-knowledge question that doesn't need fresh web data, it should
-      // not search — letting us pin that the 'auto' default isn't forcing
-      // grounding on every turn.
+      // Pure-knowledge question — model shouldn't pay the search latency.
       const conversation = new Conversation({ name: 'test-grok-no-search' });
 
       const result = await conversation.generateStream({
         messages: ['What is the capital of France? One word.'],
         model: FAST_MODEL,
-        webSearch: false,
       });
 
       for await (const _ of result.fullStream) {
@@ -155,32 +154,6 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
 
       expect(sources.length).toBe(0);
       expect(text).toMatch(/Paris/i);
-    },
-    TIMEOUT
-  );
-
-  test(
-    'webSearch: false with an explicit search request still grounds (mode=auto)',
-    async () => {
-      // The point of `mode: 'auto'` (default) is letting the model search
-      // when the user asks for it in plain text — without having to toggle.
-      const conversation = new Conversation({ name: 'test-grok-text-asks-search' });
-
-      const result = await conversation.generateStream({
-        messages: ['Please search the web and tell me the latest news headline today. One sentence, name the publisher.'],
-        model: FAST_MODEL,
-        webSearch: false,
-      });
-
-      for await (const _ of result.fullStream) {
-        // drain
-      }
-
-      const sources = await result.sources;
-      // Soft expectation: usually 1+ source. If this becomes flaky with
-      // certain Grok versions, downgrade to `>= 0` and rely on the unit
-      // test for the mode wiring.
-      expect(sources.length).toBeGreaterThan(0);
     },
     TIMEOUT
   );
