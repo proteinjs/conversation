@@ -48,6 +48,32 @@ describe('Conversation.getWebSearchTools', () => {
     });
   });
 
+  describe('google', () => {
+    // Unlike OpenAI/Anthropic tool-call search, Google's googleSearch is
+    // grounding-based — attaching it forces grounding on every response in
+    // the turn. So we only attach when the user explicitly toggles search on
+    // (Gated on params.webSearch via the third arg).
+
+    test('omits search when webSearchRequested is false', () => {
+      expect(callGetWebSearchTools('google', 'gemini-3.5-flash', false)).toEqual({});
+    });
+
+    test('omits search when webSearchRequested is undefined', () => {
+      expect(callGetWebSearchTools('google', 'gemini-3.5-flash')).toEqual({});
+    });
+
+    test('attaches google_search when webSearchRequested is true', () => {
+      const tools = callGetWebSearchTools('google', 'gemini-3.5-flash', true);
+      expect(tools).toHaveProperty('google_search');
+      expect(tools.google_search).toBeDefined();
+    });
+
+    test('also attaches for Gemini Pro', () => {
+      const tools = callGetWebSearchTools('google', 'gemini-3.1-pro-preview', true);
+      expect(tools).toHaveProperty('google_search');
+    });
+  });
+
   describe('unknown providers', () => {
     test('returns no tools for unrecognized provider', () => {
       const tools = callGetWebSearchTools('made-up', 'whatever-model');

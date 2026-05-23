@@ -31,6 +31,10 @@ type OpenAIProviderOptions = {
   serviceTier?: string;
 };
 
+type GoogleProviderOptions = {
+  thinkingConfig?: { includeThoughts?: boolean; thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high' };
+};
+
 const conv = new Conversation({ name: 'test-providerOptions' });
 
 const buildAnthropic = (effort: ReasoningEffort | undefined, modelString: string): AnthropicProviderOptions => {
@@ -43,6 +47,11 @@ const buildAnthropic = (effort: ReasoningEffort | undefined, modelString: string
 const buildOpenAI = (effort: ReasoningEffort | undefined, modelString: string): OpenAIProviderOptions => {
   const opts = (conv as any).buildProviderOptions('openai', { reasoningEffort: effort }, modelString);
   return opts.openai as OpenAIProviderOptions;
+};
+
+const buildGoogle = (effort: ReasoningEffort | undefined, modelString: string): GoogleProviderOptions => {
+  const opts = (conv as any).buildProviderOptions('google', { reasoningEffort: effort }, modelString);
+  return opts.google as GoogleProviderOptions;
 };
 
 describe('Conversation.buildProviderOptions (anthropic)', () => {
@@ -132,5 +141,32 @@ describe('Conversation.buildProviderOptions (openai)', () => {
     const openai = buildOpenAI('auto', 'gpt-5.5');
     expect(openai.reasoningEffort).toBeUndefined();
     expect(openai.reasoningSummary).toBe('auto');
+  });
+});
+
+describe('Conversation.buildProviderOptions (google)', () => {
+  test.each([['gemini-3.1-pro-preview'], ['gemini-3.5-flash']])(
+    'auto effort sets thinkingConfig.includeThoughts: true (model=%s)',
+    (model) => {
+      const google = buildGoogle('auto', model);
+      expect(google.thinkingConfig).toEqual({ includeThoughts: true });
+    }
+  );
+
+  test.each([
+    ['low', 'low'],
+    ['medium', 'medium'],
+    ['high', 'high'],
+    ['xhigh', 'high'], // Gemini caps at 'high'
+    ['max', 'high'],
+  ] as Array<[ReasoningEffort, string]>)('effort %s → thinkingLevel %s, always includes thoughts', (input, expected) => {
+    const google = buildGoogle(input, 'gemini-3.5-flash');
+    expect(google.thinkingConfig?.includeThoughts).toBe(true);
+    expect(google.thinkingConfig?.thinkingLevel).toBe(expected);
+  });
+
+  test('omits thinkingConfig entirely when effort is "none"', () => {
+    const google = buildGoogle('none', 'gemini-3.5-flash');
+    expect(google.thinkingConfig).toBeUndefined();
   });
 });

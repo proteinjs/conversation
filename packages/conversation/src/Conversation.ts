@@ -918,9 +918,14 @@ export class Conversation {
 
     if (provider === 'google') {
       const googleOpts: Record<string, any> = {};
+      // includeThoughts is required for Gemini to stream `thought_summary`
+      // events back; without it the model computes reasoning internally but
+      // doesn't surface any text. Equivalent to Anthropic's
+      // `display: 'summarized'` and OpenAI's `reasoningSummary: 'auto'`.
+      // Always-on, except when effort is explicitly 'none'.
       if (effort === 'auto') {
-        // Auto: enable thinking without specifying level — model decides
-        googleOpts.thinkingConfig = {};
+        // Auto: enable thinking with summaries; let Gemini choose the level.
+        googleOpts.thinkingConfig = { includeThoughts: true };
       } else if (effort && effort !== 'none') {
         // Google accepts thinkingLevel: minimal | low | medium | high
         // Our 'max'/'xhigh' have no Google equivalent → map to 'high'
@@ -932,6 +937,7 @@ export class Conversation {
           max: 'high',
         };
         googleOpts.thinkingConfig = {
+          includeThoughts: true,
           thinkingLevel: levelMap[effort] ?? 'medium',
         };
       }
@@ -963,7 +969,7 @@ export class Conversation {
    * provider-executed tool (the model calls it server-side; we just pass
    * the tool definition into `streamText`).
    */
-  private getWebSearchTools(provider: string, modelString: string, _webSearchRequested?: boolean): ToolSet {
+  private getWebSearchTools(provider: string, modelString: string, webSearchRequested?: boolean): ToolSet {
     try {
       // Models that don't support programmatic tool calling can't use web search tools.
       // Haiku 4.5 and nano-class models are excluded.
@@ -989,10 +995,23 @@ export class Conversation {
           // version the SDK fully supports. Revisit once the SDK round-trips 20260209.
           return { web_search: anthropic.tools.webSearch_20250305() };
         }
-        // Google: grounding-based search is currently broken in @ai-sdk/google@3.0.43.
-        // Re-enable when the SDK is updated. When working, it should be gated on
-        // webSearchRequested since it grounds *every* response when present.
-        // case 'google': { ... }
+        case 'google': {
+          // Google's search is *grounding-based*, not a model-called tool:
+          // attaching `google_search` forces grounding on every response in
+          // the turn. So we only attach it when the user explicitly toggled
+          // search on. For Gemini 3.0+ this composes cleanly with custom
+          // function tools (`@ai-sdk/google` builds a combined toolConfig
+          // with `functionCallingConfig: VALIDATED`); earlier Geminis would
+          // drop function tools, but we only ship Gemini 3.x.
+          if (!webSearchRequested) {
+            return {};
+          }
+          const { google } = require('@ai-sdk/google');
+          // The `{}` is required — `googleSearch`'s factory destructures
+          // its arg, so passing `undefined` throws. Empty object = default
+          // grounding behavior with no extra filters (no time range, etc.).
+          return { google_search: google.tools.googleSearch({}) };
+        }
         default:
           return {};
       }
