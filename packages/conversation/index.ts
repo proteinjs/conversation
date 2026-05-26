@@ -19,12 +19,12 @@ export * from './src/OpenAiResponses';
 export * from './src/resolveModel';
 
 // Conversation modules
-export * from './src/fs/conversation_fs/ConversationFsModule';
+export * from './src/fs/conversation_fs/ConversationFsSkill';
 export * from './src/fs/conversation_fs/FsFunctions';
-export * from './src/fs/git/GitModule';
-export * from './src/fs/keyword_to_files_index/KeywordToFilesIndexModule';
+export * from './src/fs/git/GitSkill';
+export * from './src/fs/keyword_to_files_index/KeywordToFilesIndexSkill';
 export * from './src/fs/keyword_to_files_index/KeywordToFilesIndexFunctions';
-export * from './src/fs/package/PackageModule';
+export * from './src/fs/package/PackageSkill';
 export * from './src/fs/package/PackageFunctions';
 
 // bump

@@ -15,7 +15,7 @@ import {
   writeFilesFunctionName,
 } from './FsFunctions';
 
-export class ConversationFsModule implements ConversationSkill {
+export class ConversationFsSkill implements ConversationSkill {
   private repoPath: string;
   private recentlyAccessedFilePaths: string[] = [];
 
@@ -72,8 +72,8 @@ export class ConversationFsModule implements ConversationSkill {
   }
 }
 
-export class ConversationFsModuleFactory implements ConversationSkillFactory {
-  async createSkill(repoPath: string): Promise<ConversationFsModule> {
-    return new ConversationFsModule(repoPath);
+export class ConversationFsSkillFactory implements ConversationSkillFactory {
+  async createSkill(repoPath: string): Promise<ConversationFsSkill> {
+    return new ConversationFsSkill(repoPath);
   }
 }

@@ -1,12 +1,12 @@
 import * as readline from 'readline-sync';
 import { Conversation } from './Conversation';
-import { KeywordToFilesIndexModuleFactory } from './fs/keyword_to_files_index/KeywordToFilesIndexModule';
-import { ConversationTemplateModuleFactory } from './template/ConversationTemplateModule';
-import { ConversationFsModuleFactory } from './fs/conversation_fs/ConversationFsModule';
-import { PackageModuleFactory } from './fs/package/PackageModule';
+import { KeywordToFilesIndexSkillFactory } from './fs/keyword_to_files_index/KeywordToFilesIndexSkill';
+import { ConversationTemplateSkillFactory } from './template/ConversationTemplateSkill';
+import { ConversationFsSkillFactory } from './fs/conversation_fs/ConversationFsSkill';
+import { PackageSkillFactory } from './fs/package/PackageSkill';
 import { ConversationSkill, ConversationSkillFactory } from './ConversationSkill';
 import { Reset, textColorMap } from '@proteinjs/util';
-import { GitModuleFactory } from './fs/git/GitModule';
+import { GitSkillFactory } from './fs/git/GitSkill';
 import { TiktokenModel } from 'tiktoken';
 import { searchLibrariesFunctionName, searchPackagesFunctionName } from './fs/package/PackageFunctions';
 import { getRecentlyAccessedFilePathsFunctionName, readFilesFunctionName } from './fs/conversation_fs/FsFunctions';
@@ -49,11 +49,11 @@ export class CodegenConversation {
 
   private async getSkills(): Promise<ConversationSkill[]> {
     const skillFactories: ConversationSkillFactory[] = [
-      new ConversationFsModuleFactory(),
-      new KeywordToFilesIndexModuleFactory(),
-      new PackageModuleFactory(),
-      new ConversationTemplateModuleFactory(),
-      new GitModuleFactory(),
+      new ConversationFsSkillFactory(),
+      new KeywordToFilesIndexSkillFactory(),
+      new PackageSkillFactory(),
+      new ConversationTemplateSkillFactory(),
+      new GitSkillFactory(),
     ];
     const skills: ConversationSkill[] = [];
     for (const skillFactory of skillFactories) {

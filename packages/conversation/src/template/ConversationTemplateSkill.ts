@@ -17,16 +17,16 @@ const conversationTemplates: ConversationTemplate[] = [
   createAppTemplate,
 ];
 
-export type ConversationTemplateModuleParams = {
+export type ConversationTemplateSkillParams = {
   conversationTemplates: { [conversationTemplateName: string]: ConversationTemplate };
   conversationTemplateKeywordIndex: { [keyword: string]: string[] /** conversationTemplateNames */ };
 };
 
-export class ConversationTemplateModule implements ConversationSkill {
+export class ConversationTemplateSkill implements ConversationSkill {
   private logger: Logger;
-  params: ConversationTemplateModuleParams;
+  params: ConversationTemplateSkillParams;
 
-  constructor(params: ConversationTemplateModuleParams) {
+  constructor(params: ConversationTemplateSkillParams) {
     this.logger = new Logger({ name: this.constructor.name });
     this.params = params;
   }
@@ -71,9 +71,9 @@ export class ConversationTemplateModule implements ConversationSkill {
   }
 }
 
-export class ConversationTemplateModuleFactory implements ConversationSkillFactory {
+export class ConversationTemplateSkillFactory implements ConversationSkillFactory {
   async createSkill(repoPath: string) {
-    const params: ConversationTemplateModuleParams = {
+    const params: ConversationTemplateSkillParams = {
       conversationTemplates: {},
       conversationTemplateKeywordIndex: {},
     };
@@ -88,6 +88,6 @@ export class ConversationTemplateModuleFactory implements ConversationSkillFacto
       }
     }
 
-    return new ConversationTemplateModule(params);
+    return new ConversationTemplateSkill(params);
   }
 }

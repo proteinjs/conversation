@@ -1,7 +1,7 @@
-import { KeywordToFilesIndexModule } from './KeywordToFilesIndexModule';
+import { KeywordToFilesIndexSkill } from './KeywordToFilesIndexSkill';
 
 export const searchFilesFunctionName = 'searchFiles';
-export const searchFilesFunction = (module: KeywordToFilesIndexModule) => {
+export const searchFilesFunction = (module: KeywordToFilesIndexSkill) => {
   return {
     definition: {
       name: searchFilesFunctionName,

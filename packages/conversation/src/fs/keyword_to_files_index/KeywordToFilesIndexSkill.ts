@@ -5,17 +5,17 @@ import { Function } from '../../Function';
 import path from 'path';
 import { searchFilesFunction, searchFilesFunctionName } from './KeywordToFilesIndexFunctions';
 
-export type KeywordToFilesIndexModuleParams = {
+export type KeywordToFilesIndexSkillParams = {
   dir: string;
   // Map from lowercase filename *stem* (no extension) → file paths
   keywordFilesIndex: { [keyword: string]: string[] };
 };
 
-export class KeywordToFilesIndexModule implements ConversationSkill {
+export class KeywordToFilesIndexSkill implements ConversationSkill {
   private logger = new Logger({ name: this.constructor.name });
-  params: KeywordToFilesIndexModuleParams;
+  params: KeywordToFilesIndexSkillParams;
 
-  constructor(params: KeywordToFilesIndexModuleParams) {
+  constructor(params: KeywordToFilesIndexSkillParams) {
     this.params = params;
   }
 
@@ -48,15 +48,15 @@ export class KeywordToFilesIndexModule implements ConversationSkill {
   }
 }
 
-export class KeywordToFilesIndexModuleFactory implements ConversationSkillFactory {
+export class KeywordToFilesIndexSkillFactory implements ConversationSkillFactory {
   private logger = new Logger({ name: this.constructor.name });
 
-  async createSkill(repoPath: string): Promise<KeywordToFilesIndexModule> {
+  async createSkill(repoPath: string): Promise<KeywordToFilesIndexSkill> {
     this.logger.debug({ message: `Creating module for repo: ${repoPath}` });
-    const repoParams: KeywordToFilesIndexModuleParams = { keywordFilesIndex: {}, dir: repoPath };
+    const repoParams: KeywordToFilesIndexSkillParams = { keywordFilesIndex: {}, dir: repoPath };
     repoParams.keywordFilesIndex = await this.createKeywordFilesIndex(repoPath, ['**/node-typescript-parser/**']);
     this.logger.debug({ message: `Created module for repo: ${repoPath}` });
-    return new KeywordToFilesIndexModule(repoParams);
+    return new KeywordToFilesIndexSkill(repoParams);
   }
 
   /**

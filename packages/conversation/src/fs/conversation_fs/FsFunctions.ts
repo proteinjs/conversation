@@ -1,12 +1,12 @@
 import { File, Fs } from '@proteinjs/util-node';
 import { Function } from '../../Function';
-import { ConversationFsModule } from './ConversationFsModule';
+import { ConversationFsSkill } from './ConversationFsSkill';
 import path from 'path';
 
-const toRepoAbs = (mod: ConversationFsModule, p: string) => (path.isAbsolute(p) ? p : path.join(mod.getRepoPath(), p));
+const toRepoAbs = (mod: ConversationFsSkill, p: string) => (path.isAbsolute(p) ? p : path.join(mod.getRepoPath(), p));
 
 // If path doesn’t exist, try to resolve "<repo>/<basename>" to the actual file under repo
-async function canonicalizePaths(mod: ConversationFsModule, paths: string[]): Promise<string[]> {
+async function canonicalizePaths(mod: ConversationFsSkill, paths: string[]): Promise<string[]> {
   const repo = mod.getRepoPath();
   const ignore = ['**/node_modules/**', '**/dist/**', '**/.git/**'];
 
@@ -47,7 +47,7 @@ async function canonicalizePaths(mod: ConversationFsModule, paths: string[]): Pr
 }
 
 export const readFilesFunctionName = 'readFiles';
-export function readFilesFunction(fsModule: ConversationFsModule) {
+export function readFilesFunction(fsModule: ConversationFsSkill) {
   return {
     definition: {
       name: readFilesFunctionName,
@@ -78,7 +78,7 @@ export function readFilesFunction(fsModule: ConversationFsModule) {
 }
 
 export const writeFilesFunctionName = 'writeFiles';
-export function writeFilesFunction(fsModule: ConversationFsModule) {
+export function writeFilesFunction(fsModule: ConversationFsSkill) {
   return {
     definition: {
       name: writeFilesFunctionName,
@@ -116,7 +116,7 @@ export function writeFilesFunction(fsModule: ConversationFsModule) {
 }
 
 export const deleteFilesFunctionName = 'deleteFiles';
-export function deleteFilesFunction(fsModule: ConversationFsModule) {
+export function deleteFilesFunction(fsModule: ConversationFsSkill) {
   return {
     definition: {
       name: deleteFilesFunctionName,
@@ -146,7 +146,7 @@ export function deleteFilesFunction(fsModule: ConversationFsModule) {
 }
 
 export const getRecentlyAccessedFilePathsFunctionName = 'getRecentlyAccessedFilePaths';
-export function getRecentlyAccessedFilePathsFunction(fsModule: ConversationFsModule) {
+export function getRecentlyAccessedFilePathsFunction(fsModule: ConversationFsSkill) {
   return {
     definition: {
       name: getRecentlyAccessedFilePathsFunctionName,
@@ -343,7 +343,7 @@ const moveFunction: Function = {
 };
 
 export const grepFunctionName = 'grep';
-export function grepFunction(fsModule: ConversationFsModule) {
+export function grepFunction(fsModule: ConversationFsSkill) {
   return {
     definition: {
       name: grepFunctionName,

@@ -1,6 +1,6 @@
 import { Package, PackageUtil } from '@proteinjs/util-node';
 import { Function } from '../../Function';
-import { PackageModule } from './PackageModule';
+import { PackageSkill } from './PackageSkill';
 
 export const installPackagesFunctionName = 'installPackages';
 export const installPackagesFunction: Function = {
@@ -77,7 +77,7 @@ const runPackageScriptFunction: Function = {
 };
 
 export const searchPackagesFunctionName = 'searchPackages';
-export function searchPackagesFunction(packageModule: PackageModule) {
+export function searchPackagesFunction(packageModule: PackageSkill) {
   return {
     definition: {
       name: searchPackagesFunctionName,
@@ -99,7 +99,7 @@ export function searchPackagesFunction(packageModule: PackageModule) {
 }
 
 export const searchLibrariesFunctionName = 'searchLibraries';
-export function searchLibrariesFunction(packageModule: PackageModule) {
+export function searchLibrariesFunction(packageModule: PackageSkill) {
   return {
     definition: {
       name: searchLibrariesFunctionName,

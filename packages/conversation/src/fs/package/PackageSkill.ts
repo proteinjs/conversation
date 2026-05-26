@@ -23,7 +23,7 @@ export type LibraryImport = {
   typescriptDeclaration: string;
 };
 
-export class PackageModule implements ConversationSkill {
+export class PackageSkill implements ConversationSkill {
   private repoPath: string;
 
   constructor(repoPath: string) {
@@ -111,8 +111,8 @@ export class PackageModule implements ConversationSkill {
   }
 }
 
-export class PackageModuleFactory implements ConversationSkillFactory {
-  async createSkill(repoPath: string): Promise<PackageModule> {
-    return new PackageModule(repoPath);
+export class PackageSkillFactory implements ConversationSkillFactory {
+  async createSkill(repoPath: string): Promise<PackageSkill> {
+    return new PackageSkill(repoPath);
   }
 }

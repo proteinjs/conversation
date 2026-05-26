@@ -2,7 +2,7 @@ import { ConversationSkill } from '../ConversationSkill';
 import { Function } from '../Function';
 import { MessageModerator } from '../history/MessageModerator';
 
-export class CodeTemplateModule implements ConversationSkill {
+export class CodeTemplateSkill implements ConversationSkill {
   private static CODE_RESPONSE = 'Code with user input:';
 
   getName(): string {
@@ -12,7 +12,7 @@ export class CodeTemplateModule implements ConversationSkill {
   getSystemMessages(): string[] {
     return [
       `If they want to create a function/class/object using an API we are familiar with, we will ask the user for the required information to fill in all mandatory parameters and ask them if they want to provide optional parameter values`,
-      `Once we have gotten the values for all parameters, respond with '${CodeTemplateModule.CODE_RESPONSE}' followed by the code to instantiate/call the function/class/object with the user's responses for parameter values`,
+      `Once we have gotten the values for all parameters, respond with '${CodeTemplateSkill.CODE_RESPONSE}' followed by the code to instantiate/call the function/class/object with the user's responses for parameter values`,
       `If you're generating a call to a class that extends Template, require that the user provide Template's constructor parameters as well and combine them into the parameters passed into the base class you're instantiating`,
       `Make sure you ask for a srcPath and pass that in to the Template base class constructor arg`,
       `Surround generated code (not including imports) with a self-executing, anonymous async function like this (async function() =>{})()`,
