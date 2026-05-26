@@ -237,7 +237,13 @@ export class Conversation {
     // include when the user explicitly requests search via the toggle.
     const webSearchTools = this.getWebSearchTools(provider, modelString, params.webSearch);
 
-    const allTools = { ...tools, ...webSearchTools };
+    // Provider-defined tools contributed by skills (e.g. Anthropic's native
+    // text_editor / bash). Injected directly here — like webSearchTools —
+    // rather than through buildAiSdkTools, since they are AI SDK provider
+    // tools, not our `Function` shape.
+    const skillProviderTools = this.getSkillProviderDefinedTools(provider);
+
+    const allTools = { ...tools, ...webSearchTools, ...skillProviderTools };
 
     const result = streamText({
       model,
@@ -1020,6 +1026,38 @@ export class Conversation {
       this.logger.error({ message: `Web search tool not available for provider: ${provider}`, error });
       return {};
     }
+  }
+
+  /**
+   * Collects provider-defined tools contributed by skills via the optional
+   * `ConversationSkill.getProviderDefinedTools` hook.
+   *
+   * Unlike skill `Function`s — which are converted by `buildAiSdkTools` — these
+   * are already AI SDK provider tools (e.g. Anthropic's native `text_editor` /
+   * `bash`) and are merged straight into the tool set passed to `streamText`.
+   * A skill returns only the tools the active `provider` natively supports.
+   */
+  private getSkillProviderDefinedTools(provider: string): ToolSet {
+    const skills = this.params.skills;
+    if (!skills || skills.length === 0) {
+      return {};
+    }
+
+    const result: ToolSet = {};
+    for (const skill of skills) {
+      if (typeof skill.getProviderDefinedTools !== 'function') {
+        continue;
+      }
+      try {
+        Object.assign(result, skill.getProviderDefinedTools(provider));
+      } catch (error) {
+        this.logger.error({
+          message: `Error collecting provider-defined tools from skill: ${skill.getName()}`,
+          error,
+        });
+      }
+    }
+    return result;
   }
 
   // ────────────────────────────────────────────────────────────
