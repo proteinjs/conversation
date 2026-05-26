@@ -11,7 +11,15 @@ const PROVIDER_FACTORIES: Record<string, (modelId: string) => LanguageModel> = {
   openai: (modelId) => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { openai } = require('@ai-sdk/openai');
-    return openai(modelId);
+    // Use OpenAI's Responses API rather than Chat Completions:
+    // - It's the path that streams `reasoning-delta` chunks for reasoning
+    //   models (Chat Completions only returns reasoning_tokens counts), so
+    //   the UI gets reasoning text on par with Anthropic.
+    // - The `reasoningSummary` provider option is honored only on the
+    //   Responses model.
+    // - Works for non-reasoning models as well — same `LanguageModelV3`
+    //   interface downstream, no change to streamText consumers.
+    return openai.responses(modelId);
   },
   anthropic: (modelId) => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -26,11 +34,14 @@ const PROVIDER_FACTORIES: Record<string, (modelId: string) => LanguageModel> = {
   xai: (modelId) => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { xai } = require('@ai-sdk/xai');
-    // Multi-agent models require the Responses API, not Chat Completions.
-    if (/multi-agent/i.test(modelId)) {
-      return xai.responses(modelId);
-    }
-    return xai(modelId);
+    // All xAI models go through the Responses endpoint (`/v1/responses`),
+    // which xAI calls the "Agent Tools API". The Chat Completions endpoint's
+    // legacy `search_parameters` Live Search field is deprecated (xAI returns
+    // 410 Gone) and the `webSearch` tool factory is only honored on the
+    // Responses path. Routing everything here also means reasoning output
+    // is normalized across all Grok models (multi-part summary_part events,
+    // handled by the timeline builder's startReasoningPart fix).
+    return xai.responses(modelId);
   },
 };
 

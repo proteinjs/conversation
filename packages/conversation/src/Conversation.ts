@@ -72,7 +72,16 @@ export type StreamPart =
   | { type: 'reasoning-delta'; textDelta: string }
   | { type: 'reasoning-end' }
   | { type: 'source'; source: StreamSource }
-  | { type: 'tool-call'; toolName: string };
+  | {
+      type: 'tool-call';
+      toolName: string;
+      /**
+       * A short, human-meaningful subject for the call when one can be derived
+       * from the tool input (e.g. a web-search query, a created space/thought
+       * title) — used to personalize the call's node in the thinking timeline.
+       */
+      detail?: string;
+    };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
 export type StreamResult = {
@@ -245,10 +254,17 @@ export class Conversation {
 
     const allTools = { ...tools, ...webSearchTools, ...skillProviderTools };
 
+    // When the user toggles search on, force the search tool on the first
+    // step so the toggle has a consistent "guarantee a search this turn"
+    // meaning across providers. After step 1 the model returns to default
+    // (auto) tool choice for subsequent steps.
+    const webSearchToolChoice = this.getWebSearchToolChoice(provider, webSearchTools, params.webSearch);
+
     const result = streamText({
       model,
       messages,
       tools: Object.keys(allTools).length > 0 ? allTools : undefined,
+      toolChoice: webSearchToolChoice,
       stopWhen: stepCountIs(params.maxToolCalls ?? 50),
       abortSignal: params.abortSignal,
       providerOptions,
@@ -915,6 +931,11 @@ export class Conversation {
         openaiOpts.reasoningEffort = effort === 'max' ? 'xhigh' : effort;
       }
       // 'auto': omit reasoningEffort — let OpenAI use its default reasoning behavior
+      // Always request reasoning summary text. The Responses API (used by
+      // resolveModel for OpenAI) only emits `reasoning-delta` stream chunks
+      // when `reasoningSummary` is set; default is no summary. Honored on
+      // reasoning models; harmlessly ignored on non-reasoning models.
+      openaiOpts.reasoningSummary = 'auto';
       if (params.serviceTier) {
         openaiOpts.serviceTier = params.serviceTier;
       }
@@ -931,7 +952,10 @@ export class Conversation {
           anthropicOpts.thinking = { type: 'enabled', budgetTokens: 10000 };
         } else {
           // Opus 4.7 + Sonnet 4.6 support adaptive thinking — model decides effort.
-          anthropicOpts.thinking = { type: 'adaptive' };
+          // display: 'summarized' is required for Opus 4.7+ to stream reasoning text;
+          // its default is 'omitted'. Sonnet 4.6 also defaults to omitted on adaptive
+          // — passing 'summarized' makes the behavior explicit across the family.
+          anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
         }
       } else if (effort && effort !== 'none') {
         if (isHaiku) {
@@ -943,7 +967,7 @@ export class Conversation {
           // Opus 4.7 + Sonnet 4.6 (and 4.5) support adaptive thinking with effort.
           // Anthropic accepts effort: low | medium | high | xhigh | max
           // ('xhigh' was added in Opus 4.7 — sits between high and max.)
-          anthropicOpts.thinking = { type: 'adaptive' };
+          anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
           anthropicOpts.effort = effort;
         }
       }
@@ -952,9 +976,14 @@ export class Conversation {
 
     if (provider === 'google') {
       const googleOpts: Record<string, any> = {};
+      // includeThoughts is required for Gemini to stream `thought_summary`
+      // events back; without it the model computes reasoning internally but
+      // doesn't surface any text. Equivalent to Anthropic's
+      // `display: 'summarized'` and OpenAI's `reasoningSummary: 'auto'`.
+      // Always-on, except when effort is explicitly 'none'.
       if (effort === 'auto') {
-        // Auto: enable thinking without specifying level — model decides
-        googleOpts.thinkingConfig = {};
+        // Auto: enable thinking with summaries; let Gemini choose the level.
+        googleOpts.thinkingConfig = { includeThoughts: true };
       } else if (effort && effort !== 'none') {
         // Google accepts thinkingLevel: minimal | low | medium | high
         // Our 'max'/'xhigh' have no Google equivalent → map to 'high'
@@ -966,6 +995,7 @@ export class Conversation {
           max: 'high',
         };
         googleOpts.thinkingConfig = {
+          includeThoughts: true,
           thinkingLevel: levelMap[effort] ?? 'medium',
         };
       }
@@ -975,15 +1005,19 @@ export class Conversation {
     if (provider === 'xai') {
       const xaiOpts: Record<string, any> = {};
       // Only models with reasoning support accept the reasoningEffort parameter.
-      // Models like grok-4 (no "-fast" suffix) reject it with a 400 error.
+      // Models like grok-4 (no "-fast" suffix) reject it with a 400 error;
+      // the model decides effort internally.
       const xaiSupportsReasoning = modelString ? /fast/i.test(modelString) : false;
       if (effort && effort !== 'none' && effort !== 'auto' && xaiSupportsReasoning) {
-        // xAI accepts: low | high
-        // Map everything to the closest valid value
+        // xAI accepts: low | high (Responses also accepts 'medium')
+        // Map everything to the closest valid value.
         const xaiEffort = effort === 'low' ? 'low' : 'high';
         xaiOpts.reasoningEffort = xaiEffort;
       }
-      // 'auto': omit reasoningEffort — let xAI use its default reasoning behavior
+      // Live Search is enabled via the `webSearch` tool factory on the
+      // Responses endpoint (handled in getWebSearchTools). The old
+      // Chat Completions `searchParameters` API was deprecated by xAI
+      // — it now returns 410 with "switch to the Agent Tools API".
       options.xai = xaiOpts;
     }
 
@@ -997,7 +1031,7 @@ export class Conversation {
    * provider-executed tool (the model calls it server-side; we just pass
    * the tool definition into `streamText`).
    */
-  private getWebSearchTools(provider: string, modelString: string, _webSearchRequested?: boolean): ToolSet {
+  private getWebSearchTools(provider: string, modelString: string, webSearchRequested?: boolean): ToolSet {
     try {
       // Models that don't support programmatic tool calling can't use web search tools.
       // Haiku 4.5 and nano-class models are excluded.
@@ -1013,12 +1047,42 @@ export class Conversation {
         }
         case 'anthropic': {
           const { anthropic } = require('@ai-sdk/anthropic');
-          return { web_search: anthropic.tools.webSearch_20260209() };
+          // Deliberately the 2025 web search, not the agentic `webSearch_20260209`.
+          // `@ai-sdk/anthropic`'s replay converter (`convertToAnthropicMessagesPrompt`)
+          // only knows `webSearch_20250305OutputSchema` — it was never taught to
+          // round-trip 2026 server-tool results. With `webSearch_20260209` the model
+          // also gets a server-side `code_execution` tool; on step 2+ of a multi-step
+          // turn the converter drops those result blocks, orphaning the `server_tool_use`
+          // and 400-ing the turn. The 2025 tool keeps send/parse/replay on the one
+          // version the SDK fully supports. Revisit once the SDK round-trips 20260209.
+          return { web_search: anthropic.tools.webSearch_20250305() };
         }
-        // Google: grounding-based search is currently broken in @ai-sdk/google@3.0.43.
-        // Re-enable when the SDK is updated. When working, it should be gated on
-        // webSearchRequested since it grounds *every* response when present.
-        // case 'google': { ... }
+        case 'google': {
+          // Google's search is *grounding-based*, not a model-called tool:
+          // attaching `google_search` forces grounding on every response in
+          // the turn. So we only attach it when the user explicitly toggled
+          // search on. For Gemini 3.0+ this composes cleanly with custom
+          // function tools (`@ai-sdk/google` builds a combined toolConfig
+          // with `functionCallingConfig: VALIDATED`); earlier Geminis would
+          // drop function tools, but we only ship Gemini 3.x.
+          if (!webSearchRequested) {
+            return {};
+          }
+          const { google } = require('@ai-sdk/google');
+          // The `{}` is required — `googleSearch`'s factory destructures
+          // its arg, so passing `undefined` throws. Empty object = default
+          // grounding behavior with no extra filters (no time range, etc.).
+          return { google_search: google.tools.googleSearch({}) };
+        }
+        case 'xai': {
+          // All xAI models now route through Responses (see resolveModel),
+          // so the `webSearch` tool factory works uniformly. Always attach
+          // it so the model can search when the prompt warrants — same
+          // pattern as OpenAI/Anthropic. The webSearch toggle is a no-op
+          // for xAI just like it is for those providers.
+          const { xai } = require('@ai-sdk/xai');
+          return { web_search: xai.tools.webSearch() };
+        }
         default:
           return {};
       }
@@ -1058,6 +1122,42 @@ export class Conversation {
       }
     }
     return result;
+  }
+
+  /**
+   * Returns the `toolChoice` value to use when the user has toggled web
+   * search on. The toggle's contract: "guarantee a search this turn." We
+   * deliver that by forcing the search tool as the first step's tool call,
+   * after which the model returns to default (auto) tool selection.
+   *
+   * Provider notes:
+   * - OpenAI / Anthropic / xAI: search is a model-called tool. Set
+   *   `toolChoice: { type: 'tool', toolName: 'web_search' }` to force.
+   * - Google: search is grounding-based — attaching `googleSearch` already
+   *   forces it on every response (no model choice involved). So
+   *   toolChoice is irrelevant; we omit it.
+   * - Toggle off, or tool unavailable (e.g. Haiku/nano excluded models):
+   *   return `undefined` so the SDK falls back to its default (auto).
+   */
+  private getWebSearchToolChoice(
+    provider: string,
+    webSearchTools: ToolSet,
+    webSearchRequested?: boolean
+  ): { type: 'tool'; toolName: string } | undefined {
+    if (!webSearchRequested) {
+      return undefined;
+    }
+    if (provider === 'google') {
+      // googleSearch is auto-invoked by the API once attached; toolChoice is
+      // a no-op for it.
+      return undefined;
+    }
+    const toolName = Object.keys(webSearchTools)[0];
+    if (!toolName) {
+      // Model class doesn't have a search tool wired (e.g. nano/haiku).
+      return undefined;
+    }
+    return { type: 'tool', toolName };
   }
 
   // ────────────────────────────────────────────────────────────
@@ -1376,8 +1476,13 @@ export class Conversation {
    * in real-time, since it yields text, reasoning, and source events in the
    * order the model produces them.
    */
+  // ────────────────────────────────────────────────────────────
+  // Full-stream mapping
+  // ────────────────────────────────────────────────────────────
+
   private mapFullStream(aiSdkFullStream: AsyncIterable<any>): AsyncIterable<StreamPart> {
     const logger = this.logger;
+    const functions = this.functions;
     return {
       async *[Symbol.asyncIterator]() {
         const partCounts: Record<string, number> = {};
@@ -1403,7 +1508,23 @@ export class Conversation {
             } else if (part.type === 'reasoning-end') {
               yield { type: 'reasoning-end' as const };
             } else if (part.type === 'tool-call') {
-              yield { type: 'tool-call' as const, toolName: part.toolName ?? 'unknown' };
+              const toolName = part.toolName ?? 'unknown';
+              // Prefer the tool's own detail resolver (it can name an entity by
+              // id); fall back to a generic detail derived from the input.
+              let detail: string | undefined;
+              try {
+                const fn = functions.find((f) => f.definition.name === toolName);
+                if (fn?.getTimelineDetail) {
+                  detail = (await fn.getTimelineDetail(part.input)) || undefined;
+                }
+              } catch {
+                // detail is best-effort — never let it break the stream
+              }
+              yield {
+                type: 'tool-call' as const,
+                toolName,
+                detail: detail ?? deriveToolCallDetail(part.input),
+              };
             } else if (part.type === 'source') {
               yield {
                 type: 'source' as const,
@@ -1527,4 +1648,36 @@ export class Conversation {
     visit(root);
     return root;
   }
+}
+
+/**
+ * Best-effort extraction of a short, human-meaningful subject from a tool
+ * call's input — used to personalize the call's node in the thinking timeline
+ * (e.g. "Searched the web · 'best SaaS billing practices'").
+ *
+ * Kept generic (matches common input field names rather than specific tool
+ * names) so the framework stays app-agnostic. Tools whose subject is only an
+ * id, not a name, resolve their detail elsewhere; this just returns undefined.
+ */
+function deriveToolCallDetail(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object') {
+    return undefined;
+  }
+  const obj = input as Record<string, unknown>;
+  // A search-style query.
+  if (typeof obj.query === 'string' && obj.query.trim()) {
+    return obj.query.trim();
+  }
+  // A created entity's title.
+  if (typeof obj.title === 'string' && obj.title.trim()) {
+    return obj.title.trim();
+  }
+  // A markdown document — use its first heading as the title.
+  if (typeof obj.markdown === 'string') {
+    const heading = /^#{1,6}\s+(.+)$/m.exec(obj.markdown);
+    if (heading?.[1]?.trim()) {
+      return heading[1].trim();
+    }
+  }
+  return undefined;
 }
