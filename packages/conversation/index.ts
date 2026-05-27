@@ -7,6 +7,7 @@ export * from './src/Conversation';
 export * from './src/CodegenConversation';
 export * from './src/code_template/Code';
 export * from './src/ConversationSkill';
+export * from './src/SkillDispatcherSkill';
 export * from './src/Function';
 export * from './src/history/MessageModerator';
 export * from './src/history/MessageHistory';
