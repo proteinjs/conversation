@@ -31,6 +31,10 @@ export class ConversationTemplateSkill implements ConversationSkill {
     this.params = params;
   }
 
+  getId(): string {
+    return 'conversation-template';
+  }
+
   getName(): string {
     return 'Conversation Template';
   }

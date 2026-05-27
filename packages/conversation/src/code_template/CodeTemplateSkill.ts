@@ -5,6 +5,10 @@ import { MessageModerator } from '../history/MessageModerator';
 export class CodeTemplateSkill implements ConversationSkill {
   private static CODE_RESPONSE = 'Code with user input:';
 
+  getId(): string {
+    return 'code-template';
+  }
+
   getName(): string {
     return 'Code Template';
   }

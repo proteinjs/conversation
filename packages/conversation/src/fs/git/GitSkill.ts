@@ -9,6 +9,10 @@ export class GitSkill implements ConversationSkill {
     this.repoPath = repoPath;
   }
 
+  getId(): string {
+    return 'git';
+  }
+
   getName(): string {
     return 'Git';
   }

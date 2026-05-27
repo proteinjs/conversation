@@ -30,6 +30,10 @@ export class PackageSkill implements ConversationSkill {
     this.repoPath = repoPath;
   }
 
+  getId(): string {
+    return 'package';
+  }
+
   getName(): string {
     return 'Package';
   }

@@ -60,6 +60,7 @@ function createNoParamTool(): { fn: Function; callCount: number[] } {
 /** A simple module that provides a system message and a tool. */
 function createTestSkill(systemMessage: string, functions: Function[]): ConversationSkill {
   return {
+    getId: () => 'test-skill',
     getName: () => 'TestSkill',
     getSystemMessages: () => [systemMessage],
     getFunctions: () => functions,

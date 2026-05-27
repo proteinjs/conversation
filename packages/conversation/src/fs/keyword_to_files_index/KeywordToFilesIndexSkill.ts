@@ -19,6 +19,10 @@ export class KeywordToFilesIndexSkill implements ConversationSkill {
     this.params = params;
   }
 
+  getId(): string {
+    return 'keyword-to-files-index';
+  }
+
   getName(): string {
     return 'Keyword to files index';
   }

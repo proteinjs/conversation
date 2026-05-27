@@ -23,6 +23,10 @@ export class ConversationFsSkill implements ConversationSkill {
     this.repoPath = repoPath;
   }
 
+  getId(): string {
+    return 'conversation-fs';
+  }
+
   getName(): string {
     return 'Conversation Fs';
   }
