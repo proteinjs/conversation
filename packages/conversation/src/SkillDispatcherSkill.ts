@@ -85,14 +85,24 @@ export class SkillDispatcherSkill implements ConversationSkill {
     if (this.skills.size === 0) {
       return '';
     }
-    const ids = Array.from(this.skills.keys()).sort();
+    // Surface name + summary per skill up front (not bare ids) so the model can
+    // recognize when a request matches a skill *without* first having to call
+    // listAvailableSkills. This is what lets it engage the right skill on the
+    // first turn rather than handling the request with its general tools.
+    const catalog = this.sortedSkills()
+      .map((skill) => {
+        const summary = skill.getSummary?.()?.trim();
+        return `- ${skill.getId()} (${skill.getName()})${summary ? ` — ${summary}` : ''}`;
+      })
+      .join('\n');
     return (
-      `You have additional skills available that are not eagerly loaded this turn. ` +
-      `Use \`listAvailableSkills\` to see them, \`describeSkill\` to learn how to ` +
-      `call a specific skill's tools, and \`useSkill\` to invoke a tool from an ` +
-      `unpinned skill. After the first \`useSkill\` call, that skill is pinned ` +
-      `for subsequent turns and its tools become directly callable. ` +
-      `Skills available now: ${ids.join(', ')}.`
+      `You have additional skills available this turn that aren't loaded directly. ` +
+      `**When a user's request matches one of these skills, prefer engaging that skill over ` +
+      `handling the request yourself with your general tools.** To engage one: call ` +
+      `\`describeSkill\` to learn its tools and any activation guidance (e.g. whether to confirm ` +
+      `with the user first), then \`useSkill\` to invoke it. After the first \`useSkill\` the skill ` +
+      `is pinned for subsequent turns and its tools become directly callable. (Use ` +
+      `\`listAvailableSkills\` only if you need this catalog again.)\n\nAvailable skills:\n${catalog}`
     );
   }
 

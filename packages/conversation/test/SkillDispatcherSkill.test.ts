@@ -76,14 +76,18 @@ describe('SkillDispatcherSkill', () => {
       expect(names).toEqual(['listAvailableSkills', 'describeSkill', 'useSkill']);
     });
 
-    it('reports a stable getId and lists known skill ids in system messages', () => {
+    it('reports a stable getId and lists known skills (name + summary) in system messages', () => {
       const dispatcher = new SkillDispatcherSkill([
-        makeSkill({ id: 'b' }),
-        makeSkill({ id: 'a' }),
+        makeSkill({ id: 'b', name: 'Beta', summary: 'does beta things' }),
+        makeSkill({ id: 'a', name: 'Alpha', summary: 'does alpha things' }),
       ]);
       expect(dispatcher.getId()).toBe('skill-dispatcher');
       const msg = dispatcher.getSystemMessages();
-      expect(msg).toContain('a, b');
+      // Sorted by id, each rendered with name + summary so the model can match
+      // requests to skills up front.
+      expect(msg).toContain('a (Alpha) — does alpha things');
+      expect(msg).toContain('b (Beta) — does beta things');
+      expect(msg.indexOf('a (Alpha)')).toBeLessThan(msg.indexOf('b (Beta)'));
     });
   });
 
