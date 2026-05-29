@@ -83,11 +83,11 @@ describe('SkillDispatcherSkill', () => {
       ]);
       expect(dispatcher.getId()).toBe('skill-dispatcher');
       const msg = dispatcher.getSystemMessages();
-      // Sorted by id, each rendered with name + summary so the model can match
-      // requests to skills up front.
-      expect(msg).toContain('a (Alpha) — does alpha things');
-      expect(msg).toContain('b (Beta) — does beta things');
-      expect(msg.indexOf('a (Alpha)')).toBeLessThan(msg.indexOf('b (Beta)'));
+      // Sorted by id; each rendered name-first with summary + id (the call key)
+      // labeled at the end, so the model can match requests to skills up front.
+      expect(msg).toContain('Alpha — does alpha things (id: `a`)');
+      expect(msg).toContain('Beta — does beta things (id: `b`)');
+      expect(msg.indexOf('(id: `a`)')).toBeLessThan(msg.indexOf('(id: `b`)'));
     });
   });
 
@@ -98,10 +98,10 @@ describe('SkillDispatcherSkill', () => {
         makeSkill({ id: 'beta', name: 'Beta' }),
       ]);
       const output = await callTool(dispatcher, 'listAvailableSkills', {});
-      expect(output).toContain('**alpha** (Alpha) — first skill');
-      expect(output).toContain('**beta** (Beta)');
+      expect(output).toContain('**Alpha** — first skill (id: `alpha`)');
+      expect(output).toContain('**Beta** (id: `beta`)');
       // No "—" without a summary
-      expect(output).not.toContain('**beta** (Beta) —');
+      expect(output).not.toContain('**Beta** —');
     });
   });
 

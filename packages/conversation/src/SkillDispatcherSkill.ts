@@ -92,7 +92,9 @@ export class SkillDispatcherSkill implements ConversationSkill {
     const catalog = this.sortedSkills()
       .map((skill) => {
         const summary = skill.getSummary?.()?.trim();
-        return `- ${skill.getId()} (${skill.getName()})${summary ? ` — ${summary}` : ''}`;
+        // Name + summary lead (what the model matches on); the call-key id is
+        // labeled at the end so it isn't redundant with a similar name.
+        return `- ${skill.getName()}${summary ? ` — ${summary}` : ''} (id: \`${skill.getId()}\`)`;
       })
       .join('\n');
     return (
@@ -206,8 +208,8 @@ export class SkillDispatcherSkill implements ConversationSkill {
     for (const skill of this.sortedSkills()) {
       const id = skill.getId();
       const name = skill.getName();
-      const summary = skill.getSummary?.() ?? '';
-      lines.push(`- **${id}** (${name})${summary ? ` — ${summary}` : ''}`);
+      const summary = skill.getSummary?.()?.trim() ?? '';
+      lines.push(`- **${name}**${summary ? ` — ${summary}` : ''} (id: \`${id}\`)`);
     }
     lines.push('');
     lines.push('Call `describeSkill({ skill: "<id>" })` to see a skill\'s tools and how to use them.');
