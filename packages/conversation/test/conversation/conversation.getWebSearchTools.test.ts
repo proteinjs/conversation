@@ -11,7 +11,7 @@ import { Conversation } from '../../src/Conversation';
  *   supports tool calling); model decides when to call.
  * - Google: grounding-based — attaching the tool forces grounding on
  *   every turn. Only attach when the user explicitly requests search.
- * - Haiku 4.5 + GPT nano models don't support tool-call search reliably,
+ * - Haiku + GPT nano models don't support tool-call search reliably,
  *   so search tools are dropped for them.
  */
 
@@ -38,7 +38,7 @@ describe('Conversation.getWebSearchTools', () => {
 
   describe('anthropic', () => {
     test('attaches web_search for Opus and Sonnet', () => {
-      expect(callGetWebSearchTools('anthropic', 'claude-opus-4-7')).toHaveProperty('web_search');
+      expect(callGetWebSearchTools('anthropic', 'claude-opus-4-8')).toHaveProperty('web_search');
       expect(callGetWebSearchTools('anthropic', 'claude-sonnet-4-6')).toHaveProperty('web_search');
     });
 

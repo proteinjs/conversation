@@ -255,6 +255,7 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   'codex-mini-latest': { inputUsdPer1M: 1.5, cachedInputUsdPer1M: 0.375, outputUsdPer1M: 6.0 },
 
   // ── Anthropic Claude models ──
+  'claude-opus-4-8': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
   'claude-opus-4-7': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
   'claude-opus-4-6': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
   'claude-opus-4.5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },

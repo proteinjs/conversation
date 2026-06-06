@@ -947,26 +947,25 @@ export class Conversation {
       const isHaiku = modelString ? /haiku/i.test(modelString) : false;
       if (effort === 'auto') {
         if (isHaiku) {
-          // Haiku 4.5 supports extended thinking (budget-based) but NOT adaptive.
+          // Haiku supports extended thinking (budget-based) but NOT adaptive.
           // Auto → enable with a moderate budget and let the model decide how much to use.
           anthropicOpts.thinking = { type: 'enabled', budgetTokens: 10000 };
         } else {
-          // Opus 4.7 + Sonnet 4.6 support adaptive thinking — model decides effort.
-          // display: 'summarized' is required for Opus 4.7+ to stream reasoning text;
-          // its default is 'omitted'. Sonnet 4.6 also defaults to omitted on adaptive
-          // — passing 'summarized' makes the behavior explicit across the family.
+          // Opus + Sonnet support adaptive thinking — the model decides effort.
+          // display: 'summarized' is required to stream reasoning text (the API
+          // defaults to 'omitted'); passing it makes the behavior explicit.
           anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
         }
       } else if (effort && effort !== 'none') {
         if (isHaiku) {
-          // Haiku 4.5 supports extended thinking (budget-based) but NOT adaptive.
+          // Haiku supports extended thinking (budget-based) but NOT adaptive.
           // Map effort levels to budget_tokens: low → 5k, medium → 10k, high → 50k
           const budgetMap: Record<string, number> = { low: 5000, medium: 10000, high: 50000 };
           anthropicOpts.thinking = { type: 'enabled', budgetTokens: budgetMap[effort] ?? 10000 };
         } else {
-          // Opus 4.7 + Sonnet 4.6 (and 4.5) support adaptive thinking with effort.
+          // Opus + Sonnet support adaptive thinking with explicit effort.
           // Anthropic accepts effort: low | medium | high | xhigh | max
-          // ('xhigh' was added in Opus 4.7 — sits between high and max.)
+          // ('xhigh' sits between high and max.)
           anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
           anthropicOpts.effort = effort;
         }
@@ -1034,7 +1033,7 @@ export class Conversation {
   private getWebSearchTools(provider: string, modelString: string, webSearchRequested?: boolean): ToolSet {
     try {
       // Models that don't support programmatic tool calling can't use web search tools.
-      // Haiku 4.5 and nano-class models are excluded.
+      // Haiku and nano-class models are excluded.
       if (/nano/i.test(modelString) || /haiku/i.test(modelString)) {
         return {};
       }

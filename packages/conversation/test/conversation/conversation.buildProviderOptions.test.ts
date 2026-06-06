@@ -10,9 +10,9 @@ import { Conversation, ReasoningEffort } from '../../src/Conversation';
  * These tests primarily protect each provider's "show reasoning text in
  * the UI" path, which is provider-specific and easy to break silently:
  *
- * - Anthropic: Opus 4.7 changed `thinking.display`'s default to 'omitted',
- *   so adaptive thinking now requires `display: 'summarized'` on the
- *   request to get reasoning text back on the stream.
+ * - Anthropic: adaptive thinking defaults `thinking.display` to 'omitted',
+ *   so it requires `display: 'summarized'` on the request to get reasoning
+ *   text back on the stream.
  * - OpenAI: the Responses API only emits `reasoning-delta` chunks when
  *   `reasoningSummary` is set (default is no summary).
  *
@@ -55,9 +55,9 @@ const buildGoogle = (effort: ReasoningEffort | undefined, modelString: string): 
 };
 
 describe('Conversation.buildProviderOptions (anthropic)', () => {
-  describe('adaptive thinking (Opus 4.7 / Sonnet 4.6)', () => {
+  describe('adaptive thinking (Opus / Sonnet)', () => {
     test.each([
-      ['claude-opus-4-7', 'auto'],
+      ['claude-opus-4-8', 'auto'],
       ['claude-sonnet-4-6', 'auto'],
     ] as Array<[string, ReasoningEffort]>)(
       'sets thinking: { type: adaptive, display: summarized } for model=%s effort=%s',
@@ -69,22 +69,22 @@ describe('Conversation.buildProviderOptions (anthropic)', () => {
     );
 
     test.each([['low'], ['medium'], ['high'], ['xhigh'], ['max']] as Array<[ReasoningEffort]>)(
-      'sets thinking: { type: adaptive, display: summarized } and effort: %s on Opus 4.7',
+      'sets thinking: { type: adaptive, display: summarized } and effort: %s on Opus',
       (effort) => {
-        const anthropic = buildAnthropic(effort, 'claude-opus-4-7');
+        const anthropic = buildAnthropic(effort, 'claude-opus-4-8');
         expect(anthropic.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
         expect(anthropic.effort).toBe(effort);
       }
     );
 
     test('omits thinking entirely when effort is "none"', () => {
-      const anthropic = buildAnthropic('none', 'claude-opus-4-7');
+      const anthropic = buildAnthropic('none', 'claude-opus-4-8');
       expect(anthropic.thinking).toBeUndefined();
       expect(anthropic.effort).toBeUndefined();
     });
   });
 
-  describe('extended thinking (Haiku 4.5)', () => {
+  describe('extended thinking (Haiku)', () => {
     test('auto effort → enabled with default budget, no display field', () => {
       const anthropic = buildAnthropic('auto', 'claude-haiku-4-5');
       expect(anthropic.thinking).toEqual({ type: 'enabled', budgetTokens: 10000 });
