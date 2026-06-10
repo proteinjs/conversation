@@ -113,7 +113,7 @@ describe('SkillDispatcherSkill', () => {
       expect(output).toContain('known');
     });
 
-    it("renders instructions, when-to-use, and tools with JSON schemas", async () => {
+    it('renders instructions, when-to-use, and tools with JSON schemas', async () => {
       const fn = makeFn('doThing', 'Does a thing.', async () => 'ok');
       const dispatcher = new SkillDispatcherSkill([
         makeSkill({
@@ -137,9 +137,7 @@ describe('SkillDispatcherSkill', () => {
       expect(output).toContain('Does a thing.');
       expect(output).toContain('```json');
       expect(output).toContain('"value"');
-      expect(output).toContain(
-        'useSkill({ skill: "demo", tool: "<name>", args: { ... } })'
-      );
+      expect(output).toContain('useSkill({ skill: "demo", tool: "<name>", args: { ... } })');
     });
 
     it('handles skills with no dispatcher-reachable tools', async () => {
@@ -158,9 +156,7 @@ describe('SkillDispatcherSkill', () => {
   describe('useSkill', () => {
     it('dispatches into the named tool and returns its result as a string', async () => {
       const fn = makeFn('echo', 'Echoes input.', async (args) => ({ got: args }));
-      const dispatcher = new SkillDispatcherSkill([
-        makeSkill({ id: 'mod', name: 'Mod', functions: [fn] }),
-      ]);
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'mod', name: 'Mod', functions: [fn] })]);
       const output = await callTool(dispatcher, 'useSkill', {
         skill: 'mod',
         tool: 'echo',
@@ -172,9 +168,7 @@ describe('SkillDispatcherSkill', () => {
 
     it('returns a string result directly without JSON.stringify wrapping', async () => {
       const fn = makeFn('plain', 'Plain string result.', async () => 'just a string');
-      const dispatcher = new SkillDispatcherSkill([
-        makeSkill({ id: 'mod', functions: [fn] }),
-      ]);
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [fn] })]);
       const output = await callTool(dispatcher, 'useSkill', {
         skill: 'mod',
         tool: 'plain',
@@ -186,10 +180,7 @@ describe('SkillDispatcherSkill', () => {
     it('fires onSkillUsed exactly once per dispatch', async () => {
       const fn = makeFn('a', 'a', async () => 'ok');
       const onSkillUsed = jest.fn();
-      const dispatcher = new SkillDispatcherSkill(
-        [makeSkill({ id: 'mod', functions: [fn] })],
-        { onSkillUsed }
-      );
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [fn] })], { onSkillUsed });
       await callTool(dispatcher, 'useSkill', { skill: 'mod', tool: 'a', args: {} });
       expect(onSkillUsed).toHaveBeenCalledTimes(1);
       expect(onSkillUsed).toHaveBeenCalledWith('mod');
@@ -200,10 +191,7 @@ describe('SkillDispatcherSkill', () => {
       const onSkillUsed = jest.fn(() => {
         throw new Error('auto-pin failed');
       });
-      const dispatcher = new SkillDispatcherSkill(
-        [makeSkill({ id: 'mod', functions: [fn] })],
-        { onSkillUsed }
-      );
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [fn] })], { onSkillUsed });
       const output = await callTool(dispatcher, 'useSkill', { skill: 'mod', tool: 'a', args: {} });
       expect(output).toBe('dispatched');
     });
@@ -220,9 +208,7 @@ describe('SkillDispatcherSkill', () => {
 
     it('returns an unknown-tool message listing available tool names', async () => {
       const fn = makeFn('exists', 'e', async () => 'ok');
-      const dispatcher = new SkillDispatcherSkill([
-        makeSkill({ id: 'mod', functions: [fn] }),
-      ]);
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [fn] })]);
       const output = await callTool(dispatcher, 'useSkill', {
         skill: 'mod',
         tool: 'missing',
@@ -237,10 +223,7 @@ describe('SkillDispatcherSkill', () => {
         throw new Error('boom');
       });
       const onSkillUsed = jest.fn();
-      const dispatcher = new SkillDispatcherSkill(
-        [makeSkill({ id: 'mod', functions: [fn] })],
-        { onSkillUsed }
-      );
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [fn] })], { onSkillUsed });
       const output = await callTool(dispatcher, 'useSkill', { skill: 'mod', tool: 'broken', args: {} });
       expect(output).toContain('Error invoking mod.broken: boom');
       // Tool errored — we don't pin a skill that failed.

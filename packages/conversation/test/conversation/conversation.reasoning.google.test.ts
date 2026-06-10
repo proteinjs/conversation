@@ -31,7 +31,9 @@ describeIfKey('Conversation.generateStream — Gemini reasoning + grounded searc
       const conversation = new Conversation({ name: 'test-gemini-reasoning' });
 
       const result = await conversation.generateStream({
-        messages: ['If a train leaves Chicago at 9am going 60mph and another leaves NYC at 11am going 80mph, do they meet before 4pm? Answer yes or no with one sentence of reasoning.'],
+        messages: [
+          'If a train leaves Chicago at 9am going 60mph and another leaves NYC at 11am going 80mph, do they meet before 4pm? Answer yes or no with one sentence of reasoning.',
+        ],
         model: REASONING_MODEL,
         reasoningEffort: 'low',
       });

@@ -63,7 +63,9 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
       const conversation = new Conversation({ name: 'test-grok-4.3-reasoning' });
 
       const result = await conversation.generateStream({
-        messages: ['A train leaves Chicago at 9am at 60mph; another leaves NYC at 11am at 80mph (distance ~790 miles, traveling toward each other). Do they meet before 4pm? Answer yes or no with one sentence of reasoning.'],
+        messages: [
+          'A train leaves Chicago at 9am at 60mph; another leaves NYC at 11am at 80mph (distance ~790 miles, traveling toward each other). Do they meet before 4pm? Answer yes or no with one sentence of reasoning.',
+        ],
         model: FLAGSHIP_MODEL,
         reasoningEffort: 'auto',
       });
@@ -117,7 +119,9 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
       const conversation = new Conversation({ name: 'test-grok-text-asks-search' });
 
       const result = await conversation.generateStream({
-        messages: ['Please search the web and tell me the latest news headline today. One sentence, name the publisher.'],
+        messages: [
+          'Please search the web and tell me the latest news headline today. One sentence, name the publisher.',
+        ],
         model: FAST_MODEL,
       });
 

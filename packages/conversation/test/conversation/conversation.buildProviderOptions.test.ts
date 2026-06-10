@@ -159,11 +159,14 @@ describe('Conversation.buildProviderOptions (google)', () => {
     ['high', 'high'],
     ['xhigh', 'high'], // Gemini caps at 'high'
     ['max', 'high'],
-  ] as Array<[ReasoningEffort, string]>)('effort %s → thinkingLevel %s, always includes thoughts', (input, expected) => {
-    const google = buildGoogle(input, 'gemini-3.5-flash');
-    expect(google.thinkingConfig?.includeThoughts).toBe(true);
-    expect(google.thinkingConfig?.thinkingLevel).toBe(expected);
-  });
+  ] as Array<[ReasoningEffort, string]>)(
+    'effort %s → thinkingLevel %s, always includes thoughts',
+    (input, expected) => {
+      const google = buildGoogle(input, 'gemini-3.5-flash');
+      expect(google.thinkingConfig?.includeThoughts).toBe(true);
+      expect(google.thinkingConfig?.thinkingLevel).toBe(expected);
+    }
+  );
 
   test('omits thinkingConfig entirely when effort is "none"', () => {
     const google = buildGoogle('none', 'gemini-3.5-flash');
@@ -180,11 +183,7 @@ const buildXai = (
   modelString: string,
   webSearch?: boolean
 ): XaiProviderOptions => {
-  const opts = (conv as any).buildProviderOptions(
-    'xai',
-    { reasoningEffort: effort, webSearch },
-    modelString
-  );
+  const opts = (conv as any).buildProviderOptions('xai', { reasoningEffort: effort, webSearch }, modelString);
   return opts.xai as XaiProviderOptions;
 };
 
