@@ -3,6 +3,40 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.0.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.7.0...@proteinjs/conversation@5.0.0) (2026-06-10)
+
+
+* feat!: require getId() on ConversationSkill ([ff6c1e2](https://github.com/proteinjs/conversation/commit/ff6c1e289805c816d12c4c8bdb74cc3cf69936e7))
+* refactor!: rename concrete *Module skills to *Skill ([c311cd4](https://github.com/proteinjs/conversation/commit/c311cd406e2013bb0c3ce6cbe4db93068c944972))
+
+
+### Features
+
+* add provider-defined tool injection to Conversation ([45d2d58](https://github.com/proteinjs/conversation/commit/45d2d5880873135d3cd9a5413229b8767727307a))
+* add SkillDispatcherSkill for cross-provider lazy skill loading ([95689f6](https://github.com/proteinjs/conversation/commit/95689f6620d948fe764b02c6033e117f0ceb9b84))
+* **conversation:** emit tool-invocation events from the tool loop ([32ae9b0](https://github.com/proteinjs/conversation/commit/32ae9b07c0caa7bc819ebf6c4a95839538a431a0))
+* surface provider-defined tool calls + capture reasoning ([682a240](https://github.com/proteinjs/conversation/commit/682a240597d5037fb5b81915dbfbea29ee1e4b46))
+* surface skill name+summary in dispatcher catalog so the model engages skills ([62535b5](https://github.com/proteinjs/conversation/commit/62535b5bed099c7e04f5467607df4f44215c3d2d))
+
+
+### BREAKING CHANGES
+
+* ConversationSkill.getId(): string is now required.
+External implementers must add a stable, kebab-case id that should not
+change after release.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+* every exported concrete skill class and its factory has
+been renamed. Consumers must update imports from `@proteinjs/conversation`,
+e.g. `import { ConversationFsSkill } from '@proteinjs/conversation'`
+(was `ConversationFsModule`).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+
+
+
+
+
 # [3.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.2.0...@proteinjs/conversation@3.3.0) (2026-04-24)
 
 
