@@ -81,6 +81,14 @@ export type StreamPart =
        * title) — used to personalize the call's node in the thinking timeline.
        */
       detail?: string;
+      /**
+       * True when this is a provider-defined tool (e.g. Anthropic's native
+       * `text_editor` / `bash`) rather than a custom function tool. Custom tools
+       * surface through the `onToolInvocation` callback, so stream consumers that
+       * also listen there skip them here to avoid double-counting; provider-defined
+       * tools have no callback and are surfaced ONLY through this stream part.
+       */
+      providerDefined: boolean;
     };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
@@ -555,9 +563,7 @@ export class Conversation {
 
       if (trimmed.length > 0) {
         const formatted = trimmed.join('. ');
-        this.addSystemMessagesToHistory([
-          `The following are instructions from the ${skillName} skill:\n${formatted}`,
-        ]);
+        this.addSystemMessagesToHistory([`The following are instructions from the ${skillName} skill:\n${formatted}`]);
       }
 
       // Functions
@@ -723,12 +729,14 @@ export class Conversation {
         inputSchema: jsonSchema(this.normalizeToolParameters(def.parameters)),
         execute: async (args: any, executionOptions: { toolCallId: string }) => {
           const toolStartedAt = new Date();
+          const timelineDetail = await this.resolveToolTimelineDetail(def.name, args);
           onToolInvocation?.({
             type: 'started',
             id: executionOptions.toolCallId,
             name: def.name,
             startedAt: toolStartedAt,
             input: args,
+            detail: timelineDetail,
           });
           let result: unknown;
           try {
@@ -1475,6 +1483,27 @@ export class Conversation {
    * in real-time, since it yields text, reasoning, and source events in the
    * order the model produces them.
    */
+  /**
+   * Resolve the curated one-line timeline detail for a tool call — prefer the tool's own
+   * `getTimelineDetail` (it can name an entity), fall back to a generic detail from the input.
+   * Used by `buildAiSdkTools` so flow tool-progress events carry the same detail `mapFullStream`
+   * surfaces on the non-flow streaming path. Best-effort: never throws.
+   */
+  private async resolveToolTimelineDetail(toolName: string, input: unknown): Promise<string | undefined> {
+    try {
+      const fn = this.functions.find((f) => f.definition.name === toolName);
+      if (fn?.getTimelineDetail) {
+        const detail = await fn.getTimelineDetail(input);
+        if (detail) {
+          return detail;
+        }
+      }
+    } catch {
+      // detail is best-effort — never let it break a tool call
+    }
+    return deriveToolCallDetail(input);
+  }
+
   // ────────────────────────────────────────────────────────────
   // Full-stream mapping
   // ────────────────────────────────────────────────────────────
@@ -1508,11 +1537,15 @@ export class Conversation {
               yield { type: 'reasoning-end' as const };
             } else if (part.type === 'tool-call') {
               const toolName = part.toolName ?? 'unknown';
+              // A custom function tool resolves to one of our `functions`; a
+              // provider-defined tool (Anthropic `text_editor` / `bash`) does not.
+              // This is the robust custom-vs-provider signal (independent of the
+              // exact provider tool name, which may be e.g. `str_replace_based_edit_tool`).
+              const fn = functions.find((f) => f.definition.name === toolName);
               // Prefer the tool's own detail resolver (it can name an entity by
               // id); fall back to a generic detail derived from the input.
               let detail: string | undefined;
               try {
-                const fn = functions.find((f) => f.definition.name === toolName);
                 if (fn?.getTimelineDetail) {
                   detail = (await fn.getTimelineDetail(part.input)) || undefined;
                 }
@@ -1523,6 +1556,7 @@ export class Conversation {
                 type: 'tool-call' as const,
                 toolName,
                 detail: detail ?? deriveToolCallDetail(part.input),
+                providerDefined: !fn,
               };
             } else if (part.type === 'source') {
               yield {
@@ -1663,13 +1697,48 @@ function deriveToolCallDetail(input: unknown): string | undefined {
     return undefined;
   }
   const obj = input as Record<string, unknown>;
-  // A search-style query.
-  if (typeof obj.query === 'string' && obj.query.trim()) {
-    return obj.query.trim();
+  // Collapse to a single trimmed line (commands/patterns can be multi-line); the display layer
+  // truncates. The audience is developers, so the raw argument (pattern / command / path) is the
+  // reliable, useful signal — we only surface fields we recognize, never raw JSON.
+  const oneLine = (v: unknown): string | undefined => {
+    if (typeof v !== 'string') {
+      return undefined;
+    }
+    const s = v.replace(/\s+/g, ' ').trim();
+    return s || undefined;
+  };
+
+  // Common dev-tool arguments, most-salient first.
+  const command = oneLine(obj.command); // bash shell line / text-editor operation verb
+  const filePath = oneLine(obj.file_path) ?? oneLine(obj.filePath) ?? oneLine(obj.path); // read / write / edit
+  // `text_editor` carries BOTH: `command` is the operation verb (view/str_replace/insert/create) and
+  // `path` is the file — the file is the meaningful subject, so it wins. `bash` carries `command`
+  // alone (the actual shell line, no path), so it falls through to the command.
+  if (command && filePath) {
+    return filePath;
   }
-  // A created entity's title.
-  if (typeof obj.title === 'string' && obj.title.trim()) {
-    return obj.title.trim();
+  if (command) {
+    return command;
+  }
+  const pattern = oneLine(obj.pattern) ?? oneLine(obj.glob); // grep / glob
+  if (pattern) {
+    const path = oneLine(obj.path);
+    return path ? `${pattern} — ${path}` : pattern;
+  }
+  const query = oneLine(obj.query); // search-style query
+  if (query) {
+    return query;
+  }
+  if (filePath) {
+    return filePath;
+  }
+  const url = oneLine(obj.url); // fetch
+  if (url) {
+    return url;
+  }
+  const title = oneLine(obj.title); // created entity
+  if (title) {
+    return title;
   }
   // A markdown document — use its first heading as the title.
   if (typeof obj.markdown === 'string') {

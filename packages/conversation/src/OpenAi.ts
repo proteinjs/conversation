@@ -45,6 +45,8 @@ export type ToolInvocationStartEvent = {
   name: string;
   startedAt: Date;
   input: unknown;
+  /** Curated one-line timeline detail (e.g. the edited thought's title) from the tool's getTimelineDetail. */
+  detail?: string;
 };
 
 export const isToolInvocationStartEvent = (event: ToolInvocationProgressEvent): event is ToolInvocationStartEvent =>
