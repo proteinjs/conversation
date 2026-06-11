@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.0.0...@proteinjs/conversation@5.1.0) (2026-06-11)
+
+
+### Features
+
+* split text-editor view vs edit tool names in the stream ([5e306cf](https://github.com/proteinjs/conversation/commit/5e306cf509fac4198dd886382861f160a548617d))
+
+
+
+
+
 # [5.0.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@3.7.0...@proteinjs/conversation@5.0.0) (2026-06-10)
 
 
