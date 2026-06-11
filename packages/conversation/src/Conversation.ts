@@ -1552,9 +1552,17 @@ export class Conversation {
               } catch {
                 // detail is best-effort — never let it break the stream
               }
+              // The provider text-editor multiplexes operations behind one tool (`command` verb +
+              // `path`); suffix non-view operations so the display layer can label views (a file OR
+              // a directory) apart from edits. `bash` carries `command` alone, so it's untouched.
+              const input = (part.input ?? {}) as Record<string, unknown>;
+              const editorOp =
+                !fn && typeof input.command === 'string' && typeof (input.path ?? input.file_path) === 'string'
+                  ? input.command
+                  : undefined;
               yield {
                 type: 'tool-call' as const,
-                toolName,
+                toolName: editorOp && editorOp !== 'view' ? `${toolName}:edit` : toolName,
                 detail: detail ?? deriveToolCallDetail(part.input),
                 providerDefined: !fn,
               };
