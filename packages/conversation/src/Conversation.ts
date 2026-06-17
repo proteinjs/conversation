@@ -276,9 +276,12 @@ export class Conversation {
       stopWhen: stepCountIs(params.maxToolCalls ?? 50),
       abortSignal: params.abortSignal,
       providerOptions,
-      prepareStep: pendingImageInjections
-        ? ({ messages: stepMessages }) => this.injectPendingImageUserMessages(stepMessages, pendingImageInjections)
-        : undefined,
+      prepareStep: ({ messages: stepMessages }) => {
+        const withImages = pendingImageInjections
+          ? this.injectPendingImageUserMessages(stepMessages, pendingImageInjections).messages
+          : stepMessages;
+        return { messages: this.sanitizeToolCallInputs(withImages) };
+      },
     });
 
     // Build the StreamResult
@@ -892,6 +895,49 @@ export class Conversation {
       }
     }
     return { messages: out };
+  }
+
+  /**
+   * Guarantee every assistant tool-call carries an OBJECT `input` before it goes on the wire.
+   *
+   * When the model emits empty/malformed arguments for a tool that has required fields, the AI SDK
+   * marks the call invalid and leaves its `input` as the raw string (e.g. `""`) — then copies that
+   * verbatim into the assistant message it re-sends on the next (continuation) step. The Anthropic
+   * adapter forwards it as-is, and the API rejects the whole request:
+   * `messages.N.content.M.tool_use.input: Input should be an object` (HTTP 400) — killing the turn.
+   *
+   * We can't force the model to always emit valid args, so we enforce the on-wire invariant here
+   * (the layer we own): coerce any non-object tool-call input to `{}`. The call was already flagged
+   * invalid and carries a tool-error result, so the model still sees the failure and recovers — the
+   * request just no longer crashes. Runs on every step; continuations are where a prior step's
+   * invalid tool-call gets re-serialized.
+   */
+  private sanitizeToolCallInputs(messages: ModelMessage[]): ModelMessage[] {
+    let mutated = false;
+    const out = messages.map((msg) => {
+      if (msg.role !== 'assistant' || !Array.isArray(msg.content)) {
+        return msg;
+      }
+      let contentMutated = false;
+      const content = msg.content.map((part) => {
+        if ((part as { type?: string }).type !== 'tool-call') {
+          return part;
+        }
+        const input = (part as { input?: unknown }).input;
+        const isObject = typeof input === 'object' && input !== null && !Array.isArray(input);
+        if (isObject) {
+          return part;
+        }
+        contentMutated = true;
+        return { ...(part as object), input: {} };
+      });
+      if (!contentMutated) {
+        return msg;
+      }
+      mutated = true;
+      return { ...msg, content } as ModelMessage;
+    });
+    return mutated ? out : messages;
   }
 
   /**
