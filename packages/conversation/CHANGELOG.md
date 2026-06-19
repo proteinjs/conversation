@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.1.0...@proteinjs/conversation@5.2.0) (2026-06-19)
+
+
+### Features
+
+* prompt caching, tool-image pruning, and live usage for agentic loops ([e014a6c](https://github.com/proteinjs/conversation/commit/e014a6c16d99b838570400da0484e42c54cde560))
+* track cache-write tokens and fix usage cost accounting ([a4bdeaf](https://github.com/proteinjs/conversation/commit/a4bdeaf110d9fcdeeb918b2f1f7cd8edadd04565))
+
+
+
+
+
 # [5.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.0.0...@proteinjs/conversation@5.1.0) (2026-06-11)
 
 
