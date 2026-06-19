@@ -305,16 +305,31 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   'claude-opus-4-7': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4-6': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4.5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
-  'claude-opus-4-20250514': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, cacheWriteUsdPer1M: 18.75, outputUsdPer1M: 75.0 },
+  'claude-opus-4-20250514': {
+    inputUsdPer1M: 15.0,
+    cachedInputUsdPer1M: 1.5,
+    cacheWriteUsdPer1M: 18.75,
+    outputUsdPer1M: 75.0,
+  },
   'claude-opus-4.1': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, cacheWriteUsdPer1M: 18.75, outputUsdPer1M: 75.0 },
   'claude-sonnet-4-6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
   'claude-sonnet-4.6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
   'claude-sonnet-4-5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
   'claude-sonnet-4.5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
-  'claude-sonnet-4-20250514': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
+  'claude-sonnet-4-20250514': {
+    inputUsdPer1M: 3.0,
+    cachedInputUsdPer1M: 0.3,
+    cacheWriteUsdPer1M: 3.75,
+    outputUsdPer1M: 15.0,
+  },
   'claude-haiku-4-5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, cacheWriteUsdPer1M: 1.25, outputUsdPer1M: 5.0 },
   'claude-haiku-4.5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, cacheWriteUsdPer1M: 1.25, outputUsdPer1M: 5.0 },
-  'claude-3-haiku-20240307': { inputUsdPer1M: 0.25, cachedInputUsdPer1M: 0.03, cacheWriteUsdPer1M: 0.3125, outputUsdPer1M: 1.25 },
+  'claude-3-haiku-20240307': {
+    inputUsdPer1M: 0.25,
+    cachedInputUsdPer1M: 0.03,
+    cacheWriteUsdPer1M: 0.3125,
+    outputUsdPer1M: 1.25,
+  },
 
   // ── Google Gemini models ──
   // cachedInputUsdPer1M reflects Google's documented implicit-cache discount
