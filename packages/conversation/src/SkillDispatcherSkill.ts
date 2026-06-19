@@ -193,6 +193,10 @@ export class SkillDispatcherSkill implements ConversationSkill {
           additionalProperties: false,
         },
       },
+      // The timeline must show WHICH skill/tool was dispatched — a bare
+      // "Use skill" node is unreadable in a long investigation.
+      getTimelineDetail: (input: { skill?: string; tool?: string }) =>
+        [input.skill, input.tool].filter(Boolean).join(' → '),
       call: async ({ skill, tool, args }: { skill?: string; tool?: string; args?: unknown }) =>
         this.dispatch(skill, tool, args),
     };
