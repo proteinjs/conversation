@@ -364,6 +364,7 @@ export class OpenAi {
         inputTokens: response.usage.prompt_tokens,
         reasoningTokens: response.usage.completion_tokens_details?.reasoning_tokens ?? 0,
         cachedInputTokens: response.usage.prompt_tokens_details?.cached_tokens ?? 0,
+        cacheWriteTokens: 0,
         outputTokens: response.usage.completion_tokens,
         totalTokens: response.usage.total_tokens,
       });

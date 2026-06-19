@@ -98,6 +98,7 @@ export class OpenAiStreamProcessor {
             this.usageDataAccumulator.addTokenUsage({
               inputTokens: chunk.usage.prompt_tokens,
               cachedInputTokens: chunk.usage.prompt_tokens_details?.cached_tokens ?? 0,
+              cacheWriteTokens: 0,
               reasoningTokens: chunk.usage.completion_tokens_details?.reasoning_tokens ?? 0,
               outputTokens: chunk.usage.completion_tokens,
               totalTokens: chunk.usage.total_tokens,

@@ -1095,6 +1095,7 @@ export class OpenAiResponses {
       {
         inputTokens: response.usage.input_tokens,
         cachedInputTokens: response.usage.input_tokens_details.cached_tokens,
+        cacheWriteTokens: 0,
         outputTokens: response.usage.output_tokens,
         reasoningTokens: response.usage.output_tokens_details.reasoning_tokens,
         totalTokens: response.usage.total_tokens,
