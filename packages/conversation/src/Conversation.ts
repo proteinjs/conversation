@@ -1,7 +1,7 @@
 import type { LanguageModel, ToolSet, LanguageModelUsage, ReasoningOutput, ModelMessage } from 'ai';
 import type { ImagePart, TextPart, FilePart } from '@ai-sdk/provider-utils';
 import type { LanguageModelV3Source } from '@ai-sdk/provider';
-import { streamText, generateObject as aiGenerateObject, jsonSchema, stepCountIs } from 'ai';
+import { streamText, generateObject as aiGenerateObject, jsonSchema, stepCountIs, hasToolCall } from 'ai';
 import { SdkContentParts } from './sdkContentParts';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
@@ -33,6 +33,17 @@ export type ConversationParams = {
     maxMessagesInHistory?: number;
     tokenLimit?: number;
   };
+  /**
+   * Keep only the most recent N image-bearing tool results in what is sent to
+   * the model; older ones are replaced with a text placeholder. A stateless
+   * per-step projection of the outbound request (never mutates history) for
+   * image-heavy tool loops — e.g. computer use, where every action returns a
+   * screenshot and stale frames carry little signal (the app is live; the model
+   * can always look again). Evicts in batches (hysteresis) so the message
+   * prefix stays prompt-cache-stable between evictions. User-message images are
+   * never touched. Off when unset.
+   */
+  toolImageRetention?: number;
 };
 
 /** Message format accepted by Conversation methods. */
@@ -56,8 +67,23 @@ export type GenerateStreamParams = {
   tools?: Function[];
   onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
   onUsageData?: (usageData: UsageData) => Promise<void>;
+  /**
+   * Fired after EACH step (tool-call round) with the cumulative usage so far,
+   * for live in-flight token/cost display. The running sum reconciles exactly to
+   * the final `onUsageData` (which maps `result.totalUsage`). Only meaningful for
+   * multi-step requests — a single-step request fires this once, at the end.
+   */
+  onPartialUsageData?: (usageData: UsageData) => Promise<void>;
   abortSignal?: AbortSignal;
   maxToolCalls?: number;
+  /**
+   * Tool names that END the loop when called: the step the tool is called in
+   * is the last step, by construction. For turn-ending tools (e.g. a flow's
+   * `askQuestion`) — instructions alone don't stop a model from continuing to
+   * work after asking, which strands the recorded ask out of sync with the
+   * work that follows it.
+   */
+  stopOnToolCalls?: string[];
 
   // OpenAI-specific
   backgroundMode?: boolean;
@@ -268,20 +294,70 @@ export class Conversation {
     // (auto) tool choice for subsequent steps.
     const webSearchToolChoice = this.getWebSearchToolChoice(provider, webSearchTools, params.webSearch);
 
+    // Cumulative per-step usage for live in-flight reporting. Each step (tool-call
+    // round) is a separate billed call, so summing step usage reconciles exactly
+    // to the final `result.totalUsage`.
+    let cumIn = 0;
+    let cumOut = 0;
+    let cumTotal = 0;
+    let cumCacheRead = 0;
+    let cumCacheWrite = 0;
+    let cumReason = 0;
+    let cumSteps = 0;
+
     const result = streamText({
       model,
       messages,
       tools: Object.keys(allTools).length > 0 ? allTools : undefined,
       toolChoice: webSearchToolChoice,
-      stopWhen: stepCountIs(params.maxToolCalls ?? 50),
+      stopWhen: [
+        stepCountIs(params.maxToolCalls ?? 50),
+        ...(params.stopOnToolCalls ?? []).map((name) => hasToolCall(name)),
+      ],
       abortSignal: params.abortSignal,
       providerOptions,
       prepareStep: ({ messages: stepMessages }) => {
-        const withImages = pendingImageInjections
-          ? this.injectPendingImageUserMessages(stepMessages, pendingImageInjections).messages
-          : stepMessages;
-        return { messages: this.sanitizeToolCallInputs(withImages) };
+        let next = stepMessages;
+        if (pendingImageInjections) {
+          next = this.injectPendingImageUserMessages(next, pendingImageInjections).messages;
+        }
+        if (this.params.toolImageRetention != null) {
+          next = Conversation.pruneStaleToolImages(next, this.params.toolImageRetention);
+        }
+        if (provider === 'anthropic') {
+          // Runs for every step including the first, so this is the single seam
+          // where outgoing Anthropic requests get cache breakpoints (after pruning —
+          // marks must land on the final per-step messages).
+          next = Conversation.applyAnthropicPromptCaching(next);
+        }
+        // Coerce non-object tool-call inputs LAST, so it sees the final per-step
+        // messages (after image inject/prune + cache marking).
+        return { messages: this.sanitizeToolCallInputs(next) };
       },
+      onStepFinish: params.onPartialUsageData
+        ? async (step) => {
+            const su = step.usage;
+            cumIn += su?.inputTokens ?? 0;
+            cumOut += su?.outputTokens ?? 0;
+            cumTotal += su?.totalTokens ?? (su?.inputTokens ?? 0) + (su?.outputTokens ?? 0);
+            cumCacheRead += su?.inputTokenDetails?.cacheReadTokens ?? 0;
+            cumCacheWrite += su?.inputTokenDetails?.cacheWriteTokens ?? 0;
+            cumReason += su?.outputTokenDetails?.reasoningTokens ?? 0;
+            cumSteps += 1;
+            const partial = this.mapSdkUsage(
+              {
+                inputTokens: cumIn,
+                outputTokens: cumOut,
+                totalTokens: cumTotal,
+                inputTokenDetails: { cacheReadTokens: cumCacheRead, cacheWriteTokens: cumCacheWrite },
+                outputTokenDetails: { reasoningTokens: cumReason },
+              } as LanguageModelUsage,
+              modelString,
+              Array.from({ length: cumSteps }, () => ({}))
+            );
+            await params.onPartialUsageData!(partial);
+          }
+        : undefined,
     });
 
     // Build the StreamResult
@@ -333,6 +409,7 @@ export class Conversation {
           initialRequestTokenUsage: {
             inputTokens: 0,
             cachedInputTokens: 0,
+            cacheWriteTokens: 0,
             reasoningTokens: 0,
             outputTokens: 0,
             totalTokens: 0,
@@ -341,6 +418,7 @@ export class Conversation {
           totalTokenUsage: {
             inputTokens: 0,
             cachedInputTokens: 0,
+            cacheWriteTokens: 0,
             reasoningTokens: 0,
             outputTokens: 0,
             totalTokens: 0,
@@ -410,8 +488,11 @@ export class Conversation {
 
     let messages = this.buildAiSdkMessages(params.messages);
 
-    // Google requires all system messages at the beginning
-    if (provider === 'google') {
+    // Google and Anthropic require all system messages at the beginning
+    // (Anthropic's converter rejects non-leading system messages outright —
+    // and callers legitimately mix them in, e.g. a flow's system preludes
+    // appended after recorded conversation history). Mirrors generateStream.
+    if (provider === 'google' || provider === 'anthropic') {
       const system = messages.filter((m) => m.role === 'system');
       const nonSystem = messages.filter((m) => m.role !== 'system');
       messages = [...system, ...nonSystem];
@@ -941,6 +1022,190 @@ export class Conversation {
   }
 
   /**
+   * Map a `computer` tool action to a timeline display category + human detail
+   * (e.g. `click` + `(200,125)`, `type` + `"hello…"`). Returns undefined when the
+   * input doesn't look like a computer action — the caller falls back to the
+   * plain tool name.
+   */
+  private static describeComputerAction(
+    input: Record<string, unknown>
+  ): { suffix: string; detail?: string } | undefined {
+    const action = typeof input.action === 'string' ? input.action : undefined;
+    if (!action) {
+      return undefined;
+    }
+    const at = Array.isArray(input.coordinate) ? `(${input.coordinate[0]},${input.coordinate[1]})` : undefined;
+    const text = typeof input.text === 'string' ? input.text : undefined;
+    const truncate = (value: string, max = 40) => (value.length > max ? `${value.slice(0, max)}…` : value);
+    switch (action) {
+      case 'screenshot':
+        return { suffix: 'screenshot' };
+      case 'left_click':
+      case 'right_click':
+      case 'middle_click':
+      case 'double_click':
+      case 'triple_click':
+        return { suffix: 'click', detail: at };
+      case 'type':
+        return { suffix: 'type', detail: text ? `"${truncate(text)}"` : undefined };
+      case 'key':
+      case 'hold_key':
+        return { suffix: 'key', detail: text };
+      case 'scroll': {
+        const direction = typeof input.scroll_direction === 'string' ? input.scroll_direction : '';
+        const amount = typeof input.scroll_amount === 'number' ? ` ×${input.scroll_amount}` : '';
+        return { suffix: 'scroll', detail: `${direction}${amount}`.trim() || undefined };
+      }
+      case 'left_click_drag': {
+        const from = Array.isArray(input.start_coordinate)
+          ? `(${input.start_coordinate[0]},${input.start_coordinate[1]})`
+          : undefined;
+        return { suffix: 'drag', detail: from && at ? `${from} → ${at}` : at };
+      }
+      case 'mouse_move':
+      case 'cursor_position':
+        return { suffix: 'move', detail: at };
+      case 'wait':
+        return { suffix: 'wait', detail: typeof input.duration === 'number' ? `${input.duration}s` : undefined };
+      default:
+        return { suffix: action.replace(/_/g, '-'), detail: at };
+    }
+  }
+
+  /**
+   * Keep only the most recent `keepLast` image-bearing tool results in the
+   * outgoing messages; older ones have their image output replaced with a text
+   * placeholder. A stateless per-step projection (`prepareStep`) — persisted and
+   * in-memory history are never mutated. Only tool-result outputs are touched;
+   * images in user messages are preserved. See `ConversationParams.toolImageRetention`.
+   */
+  private static pruneStaleToolImages(
+    messages: ModelMessage[],
+    keepLast: number,
+    // Hysteresis: only evict once the excess reaches a batch, so the message
+    // prefix stays byte-stable between evictions (prompt-cache friendly) instead
+    // of shifting by one image every step.
+    evictionBatch = 4
+  ): ModelMessage[] {
+    type ToolOutput = { type?: string; value?: unknown };
+    type ToolResultLike = { type?: string; output?: ToolOutput };
+    const hasImageOutput = (part: ToolResultLike): boolean => {
+      if (part.type !== 'tool-result' || !part.output || part.output.type !== 'content') {
+        return false;
+      }
+      const value = part.output.value;
+      return (
+        Array.isArray(value) &&
+        value.some((p: { type?: string }) => p?.type === 'media' || p?.type === 'file-data' || p?.type === 'image-data')
+      );
+    };
+
+    // Pass 1: count image-bearing tool results so we know which fall outside the keep window.
+    let imageCount = 0;
+    for (const msg of messages) {
+      if (msg.role !== 'tool' || !Array.isArray(msg.content)) {
+        continue;
+      }
+      for (const part of msg.content) {
+        if (hasImageOutput(part as ToolResultLike)) {
+          imageCount++;
+        }
+      }
+    }
+    const keep = Math.max(0, keepLast);
+    if (imageCount < keep + Math.max(1, evictionBatch)) {
+      return messages;
+    }
+    const pruneCount = imageCount - keep;
+
+    // Pass 2: replace the oldest `pruneCount` image outputs with a text placeholder.
+    let pruned = 0;
+    return messages.map((msg) => {
+      if (msg.role !== 'tool' || !Array.isArray(msg.content) || pruned >= pruneCount) {
+        return msg;
+      }
+      let changed = false;
+      const content = msg.content.map((part) => {
+        if (pruned < pruneCount && hasImageOutput(part as ToolResultLike)) {
+          pruned++;
+          changed = true;
+          return {
+            ...(part as object),
+            output: {
+              type: 'text',
+              value: '[stale screenshot removed — superseded by more recent screenshots]',
+            },
+          };
+        }
+        return part;
+      });
+      return changed ? ({ ...msg, content } as ModelMessage) : msg;
+    });
+  }
+
+  /**
+   * Anthropic prompt caching: mark cache breakpoints on the outgoing messages
+   * so each request reuses the previous one's prefix instead of re-reading the
+   * whole conversation at full input price (agentic loops resend the entire
+   * prefix every step — uncached, that dominates turn cost).
+   *
+   * Breakpoints (≤3 of Anthropic's max 4):
+   *  - the last system message — caches tools + system, stable across turns;
+   *  - the last TWO non-system messages — a rolling pair: the next request's
+   *    penultimate breakpoint is this request's last one, so the longest
+   *    cached prefix is re-read every step even as the transcript grows.
+   *
+   * Marks from earlier steps persist on message objects, so unmarked messages
+   * are STRIPPED of stale breakpoints — past 4 total Anthropic rejects the
+   * request. Stateless per-step projection like `pruneStaleToolImages`:
+   * persisted and in-memory history are never mutated.
+   */
+  private static applyAnthropicPromptCaching(messages: ModelMessage[]): ModelMessage[] {
+    type WithProviderOptions = { providerOptions?: Record<string, Record<string, unknown>> };
+    const cacheControl = { type: 'ephemeral' as const };
+
+    const markIndexes = new Set<number>();
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'system') {
+        markIndexes.add(i);
+        break;
+      }
+    }
+    let rollingMarks = 0;
+    for (let i = messages.length - 1; i >= 0 && rollingMarks < 2; i--) {
+      if (messages[i].role === 'system') {
+        continue;
+      }
+      markIndexes.add(i);
+      rollingMarks++;
+    }
+
+    return messages.map((msg, i) => {
+      const prev = (msg as WithProviderOptions).providerOptions;
+      if (markIndexes.has(i)) {
+        return {
+          ...msg,
+          providerOptions: { ...prev, anthropic: { ...(prev?.anthropic ?? {}), cacheControl } },
+        } as ModelMessage;
+      }
+      if (!prev?.anthropic || !('cacheControl' in prev.anthropic)) {
+        return msg;
+      }
+      const { cacheControl: _stale, ...restAnthropic } = prev.anthropic;
+      const nextOptions: Record<string, Record<string, unknown>> = { ...prev };
+      if (Object.keys(restAnthropic).length > 0) {
+        nextOptions.anthropic = restAnthropic;
+      } else {
+        delete nextOptions.anthropic;
+      }
+      return {
+        ...msg,
+        providerOptions: Object.keys(nextOptions).length > 0 ? nextOptions : undefined,
+      } as ModelMessage;
+    });
+  }
+
+  /**
    * Normalize tool parameter schemas to ensure they are valid JSON Schema
    * with `type: "object"`. Handles missing, null, or invalid schemas
    * (e.g. `type: "None"` which some functions produce).
@@ -1463,9 +1728,9 @@ export class Conversation {
   /**
    * Map AI SDK's `LanguageModelUsage` to our `UsageData`.
    *
-   * The AI SDK v6 provides cached/reasoning token breakdowns directly in
-   * `LanguageModelUsage.inputTokenDetails` and `outputTokenDetails`, so we
-   * use those first and only fall back to provider metadata for older providers.
+   * The AI SDK v6 normalizes the cached/reasoning/cache-write token breakdowns
+   * across providers into `LanguageModelUsage.inputTokenDetails` and
+   * `outputTokenDetails`, so we read them directly from there.
    */
   private mapSdkUsage(
     sdkUsage: LanguageModelUsage,
@@ -1476,13 +1741,17 @@ export class Conversation {
     const outputTokens = sdkUsage?.outputTokens ?? 0;
     const totalTokens = sdkUsage?.totalTokens ?? inputTokens + outputTokens;
 
-    // AI SDK v6 provides structured token details
+    // AI SDK v6 provides structured token details. cacheReadTokens (cheap) and
+    // cacheWriteTokens (premium, e.g. Anthropic cache_creation) are both carved
+    // out of inputTokens and priced differently in calculateUsageCostUsd.
     const cachedInputTokens = sdkUsage?.inputTokenDetails?.cacheReadTokens ?? 0;
+    const cacheWriteTokens = sdkUsage?.inputTokenDetails?.cacheWriteTokens ?? 0;
     const reasoningTokens = sdkUsage?.outputTokenDetails?.reasoningTokens ?? 0;
 
     const tokenUsage: TokenUsage = {
       inputTokens,
       cachedInputTokens,
+      cacheWriteTokens,
       reasoningTokens,
       outputTokens,
       totalTokens,
@@ -1606,10 +1875,20 @@ export class Conversation {
                 !fn && typeof input.command === 'string' && typeof (input.path ?? input.file_path) === 'string'
                   ? input.command
                   : undefined;
+              // The provider computer tool likewise multiplexes every action behind one
+              // name; suffix by action category (+ a human detail like coordinates or
+              // typed text) so a long browser session reads as distinct steps in the
+              // timeline instead of an opaque run of `computer` calls.
+              const computerAction =
+                !fn && toolName === 'computer' ? Conversation.describeComputerAction(input) : undefined;
               yield {
                 type: 'tool-call' as const,
-                toolName: editorOp && editorOp !== 'view' ? `${toolName}:edit` : toolName,
-                detail: detail ?? deriveToolCallDetail(part.input),
+                toolName: computerAction
+                  ? `${toolName}:${computerAction.suffix}`
+                  : editorOp && editorOp !== 'view'
+                    ? `${toolName}:edit`
+                    : toolName,
+                detail: detail ?? computerAction?.detail ?? deriveToolCallDetail(part.input),
                 providerDefined: !fn,
               };
             } else if (part.type === 'source') {

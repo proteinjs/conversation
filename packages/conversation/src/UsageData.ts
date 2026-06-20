@@ -3,6 +3,13 @@ import { TiktokenModel } from 'tiktoken';
 export type TokenUsage = {
   inputTokens: number;
   cachedInputTokens: number;
+  /**
+   * Tokens written to the provider's prompt cache this request (e.g. Anthropic
+   * `cache_creation_input_tokens`). A subset of `inputTokens`, but priced at a
+   * PREMIUM (cache writes cost more than fresh input), unlike `cachedInputTokens`
+   * (cache reads) which are cheaper. 0 for providers/requests that don't write a cache.
+   */
+  cacheWriteTokens: number;
   reasoningTokens: number;
   outputTokens: number;
   totalTokens: number;
@@ -11,8 +18,10 @@ export type TokenUsage = {
 export type ModelApiCost = {
   /** USD per 1M input tokens */
   inputUsdPer1M: number;
-  /** USD per 1M cached input tokens (if supported) */
+  /** USD per 1M cached input tokens (cache reads; if supported) */
   cachedInputUsdPer1M?: number;
+  /** USD per 1M cache-write tokens (cache creation; if supported, typically > input rate) */
+  cacheWriteUsdPer1M?: number;
   /** USD per 1M output tokens */
   outputUsdPer1M: number;
 };
@@ -63,6 +72,7 @@ export class UsageDataAccumulator {
         inputTokens: 0,
         reasoningTokens: 0,
         cachedInputTokens: 0,
+        cacheWriteTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
       },
@@ -76,6 +86,7 @@ export class UsageDataAccumulator {
       totalTokenUsage: {
         inputTokens: 0,
         cachedInputTokens: 0,
+        cacheWriteTokens: 0,
         reasoningTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
@@ -116,13 +127,15 @@ export class UsageDataAccumulator {
           totalUsd: this.usageData.totalCostUsd.totalUsd + cost.totalUsd,
         };
       }
-
-      this.usageData.totalCostUsd = roundUsageCostUsdToCents(this.usageData.totalCostUsd);
+      // NB: no per-step rounding here. Rounding each request to cents drops
+      // sub-cent costs (a real money-loss bug when summing many small requests);
+      // we carry full precision and round only at the display/ledger boundary.
     }
 
     this.usageData.totalTokenUsage = {
       inputTokens: this.usageData.totalTokenUsage.inputTokens + tokenUsage.inputTokens,
       cachedInputTokens: this.usageData.totalTokenUsage.cachedInputTokens + tokenUsage.cachedInputTokens,
+      cacheWriteTokens: this.usageData.totalTokenUsage.cacheWriteTokens + tokenUsage.cacheWriteTokens,
       reasoningTokens: this.usageData.totalTokenUsage.reasoningTokens + tokenUsage.reasoningTokens,
       outputTokens: this.usageData.totalTokenUsage.outputTokens + tokenUsage.outputTokens,
       totalTokens: this.usageData.totalTokenUsage.totalTokens + tokenUsage.totalTokens,
@@ -150,7 +163,11 @@ export function aggregateUsageData(list: UsageData[]): UsageData | undefined {
   const first = list[0];
 
   const out: UsageData = {
-    model: first.model,
+    // The representative model is the one that did the most work, NOT whichever
+    // ran first — otherwise a run whose real work is on (say) Opus but that also
+    // made one tiny utility call (a cheap title/routing model) gets mislabeled by
+    // the incidental call. See pickRepresentativeModel.
+    model: pickRepresentativeModel(list),
     initialRequestTokenUsage: { ...first.initialRequestTokenUsage },
     totalTokenUsage: { ...first.totalTokenUsage },
     totalRequestsToAssistant: first.totalRequestsToAssistant,
@@ -163,6 +180,7 @@ export function aggregateUsageData(list: UsageData[]): UsageData | undefined {
   for (const u of list.slice(1)) {
     out.totalTokenUsage.inputTokens += u.totalTokenUsage.inputTokens;
     out.totalTokenUsage.cachedInputTokens += u.totalTokenUsage.cachedInputTokens;
+    out.totalTokenUsage.cacheWriteTokens += u.totalTokenUsage.cacheWriteTokens;
     out.totalTokenUsage.reasoningTokens += u.totalTokenUsage.reasoningTokens;
     out.totalTokenUsage.outputTokens += u.totalTokenUsage.outputTokens;
     out.totalTokenUsage.totalTokens += u.totalTokenUsage.totalTokens;
@@ -179,11 +197,36 @@ export function aggregateUsageData(list: UsageData[]): UsageData | undefined {
     out.totalCostUsd.reasoningUsd += u.totalCostUsd.reasoningUsd;
     out.totalCostUsd.outputUsd += u.totalCostUsd.outputUsd;
     out.totalCostUsd.totalUsd += u.totalCostUsd.totalUsd;
-
-    out.totalCostUsd = roundUsageCostUsdToCents(out.totalCostUsd);
+    // Full precision retained; rounding happens only at display/ledger.
   }
 
   return out;
+}
+
+/**
+ * The model that best represents a multi-model aggregate: the one that produced
+ * the most output tokens (i.e. did the most work), tie-broken by spend. Entries
+ * with no model are ignored; falls back to the first entry's model when nothing
+ * has output/cost yet.
+ */
+function pickRepresentativeModel(list: UsageData[]): UsageData['model'] {
+  let best: UsageData | undefined;
+  for (const u of list) {
+    if (!u?.model) {
+      continue;
+    }
+    if (!best) {
+      best = u;
+      continue;
+    }
+    const moreOutput = u.totalTokenUsage.outputTokens > best.totalTokenUsage.outputTokens;
+    const sameOutput = u.totalTokenUsage.outputTokens === best.totalTokenUsage.outputTokens;
+    const moreCost = (u.totalCostUsd?.totalUsd ?? 0) > (best.totalCostUsd?.totalUsd ?? 0);
+    if (moreOutput || (sameOutput && moreCost)) {
+      best = u;
+    }
+  }
+  return best?.model ?? list[0].model;
 }
 
 /**
@@ -255,38 +298,67 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   'codex-mini-latest': { inputUsdPer1M: 1.5, cachedInputUsdPer1M: 0.375, outputUsdPer1M: 6.0 },
 
   // ── Anthropic Claude models ──
-  'claude-opus-4-8': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
-  'claude-opus-4-7': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
-  'claude-opus-4-6': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
-  'claude-opus-4.5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 25.0 },
-  'claude-opus-4-20250514': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, outputUsdPer1M: 75.0 },
-  'claude-opus-4.1': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, outputUsdPer1M: 75.0 },
-  'claude-sonnet-4-6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
-  'claude-sonnet-4.6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
-  'claude-sonnet-4-5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
-  'claude-sonnet-4.5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
-  'claude-sonnet-4-20250514': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, outputUsdPer1M: 15.0 },
-  'claude-haiku-4-5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, outputUsdPer1M: 5.0 },
-  'claude-haiku-4.5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, outputUsdPer1M: 5.0 },
-  'claude-3-haiku-20240307': { inputUsdPer1M: 0.25, cachedInputUsdPer1M: 0.03, outputUsdPer1M: 1.25 },
+  // cacheWriteUsdPer1M = 1.25x input — the 5-minute ephemeral cache write rate
+  // (N3XA writes default ephemeral caches via applyAnthropicPromptCaching, no
+  // explicit ttl). cachedInputUsdPer1M is the cache-READ rate (0.1x input).
+  'claude-opus-4-8': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
+  'claude-opus-4-7': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
+  'claude-opus-4-6': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
+  'claude-opus-4.5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
+  'claude-opus-4-20250514': {
+    inputUsdPer1M: 15.0,
+    cachedInputUsdPer1M: 1.5,
+    cacheWriteUsdPer1M: 18.75,
+    outputUsdPer1M: 75.0,
+  },
+  'claude-opus-4.1': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, cacheWriteUsdPer1M: 18.75, outputUsdPer1M: 75.0 },
+  'claude-sonnet-4-6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
+  'claude-sonnet-4.6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
+  'claude-sonnet-4-5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
+  'claude-sonnet-4.5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
+  'claude-sonnet-4-20250514': {
+    inputUsdPer1M: 3.0,
+    cachedInputUsdPer1M: 0.3,
+    cacheWriteUsdPer1M: 3.75,
+    outputUsdPer1M: 15.0,
+  },
+  'claude-haiku-4-5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, cacheWriteUsdPer1M: 1.25, outputUsdPer1M: 5.0 },
+  'claude-haiku-4.5': { inputUsdPer1M: 1.0, cachedInputUsdPer1M: 0.1, cacheWriteUsdPer1M: 1.25, outputUsdPer1M: 5.0 },
+  'claude-3-haiku-20240307': {
+    inputUsdPer1M: 0.25,
+    cachedInputUsdPer1M: 0.03,
+    cacheWriteUsdPer1M: 0.3125,
+    outputUsdPer1M: 1.25,
+  },
 
   // ── Google Gemini models ──
-  'gemini-3.1-pro-preview': { inputUsdPer1M: 2.0, outputUsdPer1M: 12.0 },
-  'gemini-3-pro-preview': { inputUsdPer1M: 2.0, outputUsdPer1M: 12.0 },
-  'gemini-3-flash-preview': { inputUsdPer1M: 0.5, outputUsdPer1M: 3.0 },
-  'gemini-3-flash': { inputUsdPer1M: 0.5, outputUsdPer1M: 3.0 },
+  // cachedInputUsdPer1M reflects Google's documented implicit-cache discount
+  // (~75% off input, i.e. 0.25x). Without it, cached tokens fall back to the
+  // full input rate in calculateUsageCostUsd and overcharge ~4x.
+  'gemini-3.1-pro-preview': { inputUsdPer1M: 2.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 12.0 },
+  'gemini-3-pro-preview': { inputUsdPer1M: 2.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 12.0 },
+  'gemini-3-flash-preview': { inputUsdPer1M: 0.5, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 3.0 },
+  'gemini-3-flash': { inputUsdPer1M: 0.5, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 3.0 },
+  // Live catalog id (ChatSettings modelCatalog) — mirrors gemini-3-flash.
+  'gemini-3.5-flash': { inputUsdPer1M: 0.5, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 3.0 },
   'gemini-2.5-pro': { inputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 10.0 },
   'gemini-2.5-flash': { inputUsdPer1M: 0.3, cachedInputUsdPer1M: 0.03, outputUsdPer1M: 2.5 },
-  'gemini-2.0-flash': { inputUsdPer1M: 0.1, outputUsdPer1M: 0.4 },
-  'gemini-2.0-flash-lite': { inputUsdPer1M: 0.1, outputUsdPer1M: 0.4 },
+  'gemini-2.0-flash': { inputUsdPer1M: 0.1, cachedInputUsdPer1M: 0.025, outputUsdPer1M: 0.4 },
+  'gemini-2.0-flash-lite': { inputUsdPer1M: 0.1, cachedInputUsdPer1M: 0.025, outputUsdPer1M: 0.4 },
 
   // ── xAI Grok models ──
-  'grok-4.20': { inputUsdPer1M: 3.0, outputUsdPer1M: 15.0 },
-  'grok-4': { inputUsdPer1M: 3.0, outputUsdPer1M: 15.0 },
-  'grok-4-fast': { inputUsdPer1M: 0.2, outputUsdPer1M: 0.5 },
-  'grok-4.1-fast': { inputUsdPer1M: 0.2, outputUsdPer1M: 0.5 },
-  'grok-3': { inputUsdPer1M: 3.0, outputUsdPer1M: 15.0 },
-  'grok-3-mini': { inputUsdPer1M: 0.3, outputUsdPer1M: 0.5 },
+  // cachedInputUsdPer1M reflects xAI's published cache-read rate (0.25x input).
+  // Live catalog ids: grok-4.3 (flagship, mirrors grok-4.20) and
+  // grok-4-1-fast-reasoning (mirrors grok-4.1-fast) — both were absent and
+  // therefore billed $0 on real calls.
+  'grok-4.3': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
+  'grok-4.20': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
+  'grok-4': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
+  'grok-4-fast': { inputUsdPer1M: 0.2, cachedInputUsdPer1M: 0.05, outputUsdPer1M: 0.5 },
+  'grok-4.1-fast': { inputUsdPer1M: 0.2, cachedInputUsdPer1M: 0.05, outputUsdPer1M: 0.5 },
+  'grok-4-1-fast-reasoning': { inputUsdPer1M: 0.2, cachedInputUsdPer1M: 0.05, outputUsdPer1M: 0.5 },
+  'grok-3': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
+  'grok-3-mini': { inputUsdPer1M: 0.3, cachedInputUsdPer1M: 0.075, outputUsdPer1M: 0.5 },
 };
 
 export const MODEL_API_COST_USD_PER_1M_TOKENS_BATCH: Record<string, ModelApiCost> = {
@@ -421,6 +493,14 @@ const resolveModelApiCost = (model: string, tier?: UsagePricingTier): ModelApiCo
   return undefined;
 };
 
+/**
+ * True when `model` resolves to a pricing row — i.e. its recorded cost is real,
+ * not the all-zero fallback `calculateUsageCostUsd` returns for unknown models.
+ * Lets consumers (e.g. the usage ledger / UI) distinguish "cost unavailable"
+ * from a genuinely zero-cost request.
+ */
+export const isModelPriced = (model: string): boolean => !!resolveModelApiCost(model);
+
 export const calculateUsageCostUsd = (
   model: string,
   tokenUsage: TokenUsage,
@@ -440,43 +520,40 @@ export const calculateUsageCostUsd = (
 
   const input = Number.isFinite(tokenUsage.inputTokens) ? Number(tokenUsage.inputTokens) : 0;
   const cachedInput = Number.isFinite(tokenUsage.cachedInputTokens) ? Number(tokenUsage.cachedInputTokens) : 0;
+  const cacheWrite = Number.isFinite(tokenUsage.cacheWriteTokens) ? Number(tokenUsage.cacheWriteTokens) : 0;
   const reasoning = Number.isFinite(tokenUsage.reasoningTokens) ? Number(tokenUsage.reasoningTokens) : 0;
   const output = Number.isFinite(tokenUsage.outputTokens) ? Number(tokenUsage.outputTokens) : 0;
 
   const inputTokens = Math.max(0, input);
   const cachedInputTokens = Math.max(0, cachedInput);
-  const nonCachedInputTokens = Math.max(0, inputTokens - cachedInputTokens);
+  const cacheWriteTokens = Math.max(0, cacheWrite);
+  // Both cache reads and cache writes are carved out of inputTokens; whatever
+  // remains is fresh input priced at the full rate.
+  const nonCachedInputTokens = Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens);
   const reasoningTokens = Math.max(0, reasoning);
   const outputTokens = Math.max(0, output);
 
   const cachedRate =
     typeof pricing.cachedInputUsdPer1M === 'number' ? pricing.cachedInputUsdPer1M : pricing.inputUsdPer1M;
+  // Cache writes cost a PREMIUM over fresh input (e.g. Anthropic 5-min cache = 1.25x).
+  // Fall back to the full input rate where a model has no distinct write rate.
+  const cacheWriteRate =
+    typeof pricing.cacheWriteUsdPer1M === 'number' ? pricing.cacheWriteUsdPer1M : pricing.inputUsdPer1M;
 
-  const inputUsd = (nonCachedInputTokens * pricing.inputUsdPer1M + cachedInputTokens * cachedRate) / TOKENS_PER_1M;
+  const inputUsd =
+    (nonCachedInputTokens * pricing.inputUsdPer1M +
+      cachedInputTokens * cachedRate +
+      cacheWriteTokens * cacheWriteRate) /
+    TOKENS_PER_1M;
   const cachedInputUsd = (cachedInputTokens * cachedRate) / TOKENS_PER_1M;
   const reasoningUsd = (reasoningTokens * pricing.outputUsdPer1M) / TOKENS_PER_1M;
   const outputUsd = (outputTokens * pricing.outputUsdPer1M) / TOKENS_PER_1M;
+  // total = input + output ONLY. `inputUsd` already folds in cached + cache-write;
+  // `reasoningUsd` is already inside `outputUsd` (providers count reasoning within
+  // output_tokens). Adding either would double-count. Full precision is retained
+  // here — rounding to cents happens at the display/ledger boundary, never per
+  // request (per-step rounding silently zeroed sub-cent calls).
   const totalUsd = inputUsd + outputUsd;
-
-  return roundUsageCostUsdToCents({
-    inputUsd,
-    cachedInputUsd,
-    reasoningUsd,
-    outputUsd,
-    totalUsd,
-  });
-};
-
-function roundToHundredths(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-function roundUsageCostUsdToCents(cost: UsageCostUsd): UsageCostUsd {
-  const inputUsd = roundToHundredths(cost.inputUsd);
-  const cachedInputUsd = roundToHundredths(cost.cachedInputUsd);
-  const reasoningUsd = roundToHundredths(cost.reasoningUsd);
-  const outputUsd = roundToHundredths(cost.outputUsd);
-  const totalUsd = roundToHundredths(inputUsd + cachedInputUsd + outputUsd);
 
   return {
     inputUsd,
@@ -485,4 +562,4 @@ function roundUsageCostUsdToCents(cost: UsageCostUsd): UsageCostUsd {
     outputUsd,
     totalUsd,
   };
-}
+};
