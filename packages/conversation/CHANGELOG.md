@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [5.2.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.2.0...@proteinjs/conversation@5.2.1) (2026-06-20)
+
+
+### Bug Fixes
+
+* coerce non-object tool-call input to {} before the wire ([34b5d69](https://github.com/proteinjs/conversation/commit/34b5d69fbfd1a47d8dffffd5ff2ae64f02c7cf7c))
+
+
+
+
+
 # [5.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.1.0...@proteinjs/conversation@5.2.0) (2026-06-19)
 
 
