@@ -5,6 +5,7 @@ import type { ConversationSkill } from './ConversationSkill';
 import type { Function } from './Function';
 import { UsageData, UsageDataAccumulator } from './UsageData';
 import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
+import { LlmTransportRetry } from './LlmTransportRetry';
 import type { GenerateResponseReturn, ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import { TiktokenModel } from 'tiktoken';
 
@@ -120,6 +121,9 @@ export type ResponsesGenerateObjectParams<S> = {
 export class OpenAiResponses {
   private readonly client: OpenAIApi;
   private readonly logger: Logger;
+  // Invisible bounded retries for transient failures on create/retrieve — the SDK's own retries are
+  // disabled in the constructor so exactly one layer owns retrying.
+  private readonly transportRetry = new LlmTransportRetry();
 
   private readonly skills: ConversationSkill[];
   private readonly allowedFunctionNames?: string[];
@@ -134,7 +138,9 @@ export class OpenAiResponses {
   private functions: Function[] = [];
 
   constructor(opts: OpenAiResponsesParams = {}) {
-    this.client = new OpenAIApi();
+    // Retries are owned by LlmTransportRetry at the call sites below (bounded, jittered, budgeted) —
+    // disable the openai SDK's built-in 2 retries so the layers don't stack.
+    this.client = new OpenAIApi({ maxRetries: 0 });
     this.logger = new Logger({ name: 'OpenAiResponses', logLevel: opts.logLevel });
 
     this.skills = opts.skills ?? [];
@@ -673,23 +679,32 @@ export class OpenAiResponses {
       body.store = true;
     }
 
-    let created: OpenAIApi.Responses.Response;
-    try {
-      created = await this.client.responses.create(
-        body as never,
-        args.abortSignal ? { signal: args.abortSignal } : undefined
-      );
-    } catch (error: unknown) {
-      throw this.toOpenAiApiError(error, {
-        operation: 'responses.create',
-        model: args.model,
-        reasoningEffort: args.reasoningEffort,
-        backgroundMode: args.backgroundMode,
-        previousResponseId: args.previousResponseId,
-        aborted: args.abortSignal?.aborted ? true : undefined,
-        requestedServiceTier: args.serviceTier,
-      });
-    }
+    // Transient failures (429/5xx/network) retry invisibly under the transport-retry policy; the
+    // error is classified AFTER conversion so the existing retryable flag finally gets consumed.
+    const created: OpenAIApi.Responses.Response = await this.transportRetry.run(
+      async () => {
+        try {
+          return await this.client.responses.create(
+            body as never,
+            args.abortSignal ? { signal: args.abortSignal } : undefined
+          );
+        } catch (error: unknown) {
+          throw this.toOpenAiApiError(error, {
+            operation: 'responses.create',
+            model: args.model,
+            reasoningEffort: args.reasoningEffort,
+            backgroundMode: args.backgroundMode,
+            previousResponseId: args.previousResponseId,
+            aborted: args.abortSignal?.aborted ? true : undefined,
+            requestedServiceTier: args.serviceTier,
+          });
+        }
+      },
+      {
+        abortSignal: args.abortSignal,
+        isRetryable: (error) => error instanceof OpenAiResponsesError && error.code === 'OPENAI_API' && error.retryable,
+      }
+    );
 
     if (!args.backgroundMode) {
       return created;
@@ -818,29 +833,45 @@ export class OpenAiResponses {
 
       let resp: OpenAIApi.Responses.Response;
       try {
-        resp = await this.client.responses.retrieve(
-          responseId,
-          undefined,
-          abortSignal ? { signal: abortSignal } : undefined
+        // Transient poll failures retry invisibly (bounded); aborts pass through to the abort handling.
+        resp = await this.transportRetry.run(
+          async () => {
+            try {
+              return await this.client.responses.retrieve(
+                responseId,
+                undefined,
+                abortSignal ? { signal: abortSignal } : undefined
+              );
+            } catch (error: unknown) {
+              if (abortSignal?.aborted || isAbortError(error)) {
+                throw error;
+              }
+              throw this.toOpenAiApiError(error, {
+                operation: 'responses.retrieve',
+                model: ctx?.model,
+                reasoningEffort: ctx?.reasoningEffort,
+                backgroundMode: true,
+                responseId,
+                pollAttempt,
+                waitedMs,
+                maxWaitMs,
+                lastStatus,
+                requestedServiceTier: ctx?.requestedServiceTier,
+              });
+            }
+          },
+          {
+            abortSignal,
+            isRetryable: (error) =>
+              error instanceof OpenAiResponsesError && error.code === 'OPENAI_API' && error.retryable,
+          }
         );
       } catch (error: unknown) {
         // If the request was aborted mid-flight, treat it as an abort and still attempt cancellation.
         if (abortSignal?.aborted || isAbortError(error)) {
           await throwPollingStop({ kind: 'aborted', cause: error });
         }
-
-        throw this.toOpenAiApiError(error, {
-          operation: 'responses.retrieve',
-          model: ctx?.model,
-          reasoningEffort: ctx?.reasoningEffort,
-          backgroundMode: true,
-          responseId,
-          pollAttempt,
-          waitedMs,
-          maxWaitMs,
-          lastStatus,
-          requestedServiceTier: ctx?.requestedServiceTier,
-        });
+        throw error;
       }
 
       const status = typeof resp?.status === 'string' ? resp.status : '';

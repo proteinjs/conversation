@@ -18,6 +18,7 @@ export { AssistantResponseStreamChunk } from './src/OpenAiStreamProcessor';
 export * from './src/UsageData';
 export * from './src/OpenAiResponses';
 export * from './src/resolveModel';
+export * from './src/LlmTransportRetry';
 
 // Conversation modules
 export * from './src/fs/conversation_fs/ConversationFsSkill';

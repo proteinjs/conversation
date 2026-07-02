@@ -11,6 +11,7 @@ import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
 import { UsageData, UsageDataAccumulator, TokenUsage } from './UsageData';
 import { resolveModel, inferProvider } from './resolveModel';
+import { LlmTransportRetry } from './LlmTransportRetry';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat';
@@ -201,6 +202,10 @@ export class Conversation {
   private params: ConversationParams;
   private skillsProcessed = false;
   private processingSkillsPromise: Promise<void> | null = null;
+  // Invisible bounded retries for transient transport failures on EVERY LLM request this conversation
+  // makes (each tool-loop step included) — see resolveModelInstance. The SDKs' own retries are disabled
+  // (maxRetries: 0 at the streamText/generateObject call sites) so exactly one layer owns retrying.
+  private transportRetry = new LlmTransportRetry();
 
   constructor(params: ConversationParams) {
     this.params = params;
@@ -314,6 +319,9 @@ export class Conversation {
         stepCountIs(params.maxToolCalls ?? 50),
         ...(params.stopOnToolCalls ?? []).map((name) => hasToolCall(name)),
       ],
+      // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer so
+      // budgets don't stack multiplicatively.
+      maxRetries: 0,
       abortSignal: params.abortSignal,
       providerOptions,
       prepareStep: ({ messages: stepMessages }) => {
@@ -506,6 +514,8 @@ export class Conversation {
       model,
       messages,
       schema: normalizedSchema,
+      // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer.
+      maxRetries: 0,
       abortSignal: params.abortSignal,
       maxOutputTokens: params.maxTokens,
       temperature: params.temperature,
@@ -1650,7 +1660,9 @@ export class Conversation {
 
   private resolveModelInstance(model?: LanguageModel | string): LanguageModel {
     const m = model ?? this.params.defaultModel ?? DEFAULT_MODEL;
-    return resolveModel(m);
+    // The single transport choke point: streamText, generateObject, and every per-step tool-loop
+    // request run through the wrapped model, so transient provider failures retry invisibly here.
+    return this.transportRetry.wrap(resolveModel(m) as never);
   }
 
   private getModelString(model?: LanguageModel | string): string {
@@ -1899,6 +1911,15 @@ export class Conversation {
                   title: part.sourceType === 'url' ? part.title : undefined,
                 },
               };
+            } else if (part.type === 'error') {
+              // The AI SDK never throws from streamText — failures arrive as `error` parts. Before this,
+              // a transport failure surviving the retry layer SILENTLY truncated the stream: consumers saw
+              // an empty message + zero usage and treated it as a (bogus) successful result. Surfacing it
+              // lets the visible layers own it — FlowRunner's task retry, then the blocker-ask.
+              const cause = (part as { error?: unknown }).error;
+              throw cause instanceof Error
+                ? cause
+                : new Error(String((cause as { message?: string })?.message ?? cause ?? 'LLM stream error'));
             }
           }
         } finally {
