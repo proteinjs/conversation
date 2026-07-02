@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.2.1...@proteinjs/conversation@5.3.0) (2026-07-02)
+
+
+### Features
+
+* LlmTransportRetry — invisible bounded retries for transient LLM transport failures ([d148dd6](https://github.com/proteinjs/conversation/commit/d148dd6ff1d457eaa83c588d2c94072ce44676a6))
+
+
+
+
+
 ## [5.2.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.2.0...@proteinjs/conversation@5.2.1) (2026-06-20)
 
 
