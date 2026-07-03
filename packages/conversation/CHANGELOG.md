@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [5.3.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.3.0...@proteinjs/conversation@5.3.1) (2026-07-03)
+
+
+### Bug Fixes
+
+* generateStream tool invocations report real per-call outcomes ([8dd2785](https://github.com/proteinjs/conversation/commit/8dd27858b248c99d56b93fe04cbaf2df6948b46a))
+
+
+
+
+
 # [5.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.2.1...@proteinjs/conversation@5.3.0) (2026-07-02)
 
 
