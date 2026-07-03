@@ -271,9 +271,13 @@ export class Conversation {
       ? new Map<string, Array<TextPart | ImagePart | FilePart>>()
       : undefined;
     const allFunctions = [...this.functions, ...(params.tools ?? [])];
+    // Ground truth for this call's tool outcomes (ok/error/timing), captured by the execute
+    // wrapper — the SDK's step data can't distinguish a failed tool from a successful one.
+    const capturedInvocations: ToolInvocationResult[] = [];
     const tools = this.buildAiSdkTools(allFunctions, {
       pendingImageInjections,
       onToolInvocation: params.onToolInvocation,
+      recordInvocation: (r) => capturedInvocations.push(r),
     });
 
     // Build provider options
@@ -370,7 +374,7 @@ export class Conversation {
 
     // Build the StreamResult
     const usagePromise = this.buildUsagePromise(result, modelString, params);
-    const toolInvocationsPromise = this.buildToolInvocationsPromise(result);
+    const toolInvocationsPromise = this.buildToolInvocationsPromise(result, capturedInvocations);
 
     // IMPORTANT: We must NOT eagerly evaluate result.text, result.reasoning,
     // or result.sources here. In AI SDK v6, these getters trigger internal
@@ -790,11 +794,18 @@ export class Conversation {
     options?: {
       pendingImageInjections?: Map<string, Array<TextPart | ImagePart | FilePart>>;
       onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
+      /**
+       * Ground-truth capture of each invocation's outcome (same result object the 'finished'
+       * event carries) — `buildToolInvocationsPromise` prefers these over rows fabricated from
+       * SDK steps, which have no failure signal.
+       */
+      recordInvocation?: (result: ToolInvocationResult) => void;
     }
   ): ToolSet {
     const tools: ToolSet = {};
     const pendingImageInjections = options?.pendingImageInjections;
     const onToolInvocation = options?.onToolInvocation;
+    const recordInvocation = options?.recordInvocation;
     const imageRedirectEnabled = !!pendingImageInjections;
 
     // Sentinel for tool returns that produced multimodal content parts.
@@ -836,35 +847,33 @@ export class Conversation {
           try {
             result = await f.call(args);
           } catch (toolError) {
-            onToolInvocation?.({
-              type: 'finished',
-              result: {
-                id: executionOptions.toolCallId,
-                name: def.name,
-                startedAt: toolStartedAt,
-                finishedAt: new Date(),
-                input: args,
-                ok: false,
-                error: {
-                  message: toolError instanceof Error ? toolError.message : String(toolError),
-                  stack: toolError instanceof Error ? toolError.stack : undefined,
-                },
-              },
-            });
-            throw toolError;
-          }
-          onToolInvocation?.({
-            type: 'finished',
-            result: {
+            const failedInvocation: ToolInvocationResult = {
               id: executionOptions.toolCallId,
               name: def.name,
               startedAt: toolStartedAt,
               finishedAt: new Date(),
               input: args,
-              ok: true,
-              data: result,
-            },
-          });
+              ok: false,
+              error: {
+                message: toolError instanceof Error ? toolError.message : String(toolError),
+                stack: toolError instanceof Error ? toolError.stack : undefined,
+              },
+            };
+            recordInvocation?.(failedInvocation);
+            onToolInvocation?.({ type: 'finished', result: failedInvocation });
+            throw toolError;
+          }
+          const okInvocation: ToolInvocationResult = {
+            id: executionOptions.toolCallId,
+            name: def.name,
+            startedAt: toolStartedAt,
+            finishedAt: new Date(),
+            input: args,
+            ok: true,
+            data: result,
+          };
+          recordInvocation?.(okInvocation);
+          onToolInvocation?.({ type: 'finished', result: okInvocation });
           if (typeof result === 'undefined') {
             return { result: 'Function executed successfully' };
           }
@@ -1709,19 +1718,29 @@ export class Conversation {
     return usage;
   }
 
-  private async buildToolInvocationsPromise(result: {
-    steps: PromiseLike<
-      Array<{
-        toolCalls?: Array<{ toolCallId?: string; toolName?: string; args?: unknown }>;
-        toolResults?: Array<{ toolCallId?: string; result?: unknown }>;
-      }>
-    >;
-  }): Promise<ToolInvocationResult[]> {
+  private async buildToolInvocationsPromise(
+    result: {
+      steps: PromiseLike<
+        Array<{
+          toolCalls?: Array<{ toolCallId?: string; toolName?: string; args?: unknown }>;
+          toolResults?: Array<{ toolCallId?: string; result?: unknown }>;
+        }>
+      >;
+    },
+    capturedInvocations?: ToolInvocationResult[]
+  ): Promise<ToolInvocationResult[]> {
     const steps = await result.steps;
     const invocations: ToolInvocationResult[] = [];
 
     for (const step of steps ?? []) {
       for (const toolCall of step.toolCalls ?? []) {
+        // Prefer the execute wrapper's captured outcome — it carries the real ok/error/timing.
+        // Fabricate a row only for calls that never ran our wrapper (provider-executed tools).
+        const captured = capturedInvocations?.find((r) => r.id === toolCall.toolCallId);
+        if (captured) {
+          invocations.push(captured);
+          continue;
+        }
         invocations.push({
           id: toolCall.toolCallId ?? '',
           name: toolCall.toolName ?? '',
