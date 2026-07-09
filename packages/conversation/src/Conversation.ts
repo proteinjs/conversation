@@ -344,7 +344,9 @@ export class Conversation {
         }
         // Coerce non-object tool-call inputs LAST, so it sees the final per-step
         // messages (after image inject/prune + cache marking).
-        return { messages: this.sanitizeToolCallInputs(next) };
+        const finalMessages = this.sanitizeToolCallInputs(next);
+        Conversation.dumpOutgoingRequest(finalMessages, allTools, modelString);
+        return { messages: finalMessages };
       },
       onStepFinish: params.onPartialUsageData
         ? async (step) => {
@@ -1179,6 +1181,35 @@ export class Conversation {
    * request. Stateless per-step projection like `pruneStaleToolImages`:
    * persisted and in-memory history are never mutated.
    */
+  /**
+   * Prompt-cache diagnosis affordance: when PROMPT_DUMP_DIR is set, write each outgoing per-step
+   * request (final projected messages + tool inventory) there as numbered JSON. Diffing two
+   * consecutive dumps shows exactly which prefix bytes changed between requests — cache misses are
+   * byte diffs, not theories. Server-only: fs is required lazily so client bundles never pull it in.
+   */
+  private static dumpOutgoingRequest(messages: ModelMessage[], tools: ToolSet, modelString: string): void {
+    const dir = typeof process !== 'undefined' ? process.env?.PROMPT_DUMP_DIR : undefined;
+    if (!dir) {
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const fs = require('fs') as typeof import('fs');
+    const seq = ++Conversation.promptDumpSeq;
+    const toolInventory = Object.fromEntries(
+      Object.entries(tools).map(([name, t]) => {
+        const anyTool = t as { description?: string; inputSchema?: unknown; parameters?: unknown };
+        return [name, { description: anyTool.description, schema: anyTool.inputSchema ?? anyTool.parameters }];
+      })
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      `${dir}/req-${String(seq).padStart(4, '0')}.json`,
+      JSON.stringify({ modelString, tools: toolInventory, messages }, null, 2)
+    );
+  }
+
+  private static promptDumpSeq = 0;
+
   private static applyAnthropicPromptCaching(messages: ModelMessage[]): ModelMessage[] {
     type WithProviderOptions = { providerOptions?: Record<string, Record<string, unknown>> };
     const cacheControl = { type: 'ephemeral' as const };
