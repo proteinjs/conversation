@@ -12,7 +12,7 @@ import { z } from 'zod';
 const hasApiKey = !!process.env.OPENAI_API_KEY;
 const describeIfKey = hasApiKey ? describe : describe.skip;
 
-const TEST_MODEL = 'gpt-4.1-nano';
+const TEST_MODEL = 'gpt-5.4-nano';
 const TIMEOUT = 60_000;
 
 type CountryInfo = {

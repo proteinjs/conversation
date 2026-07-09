@@ -12,7 +12,7 @@ import { MessageModerator } from '../../src/history/MessageModerator';
 const hasApiKey = !!process.env.OPENAI_API_KEY;
 const describeIfKey = hasApiKey ? describe : describe.skip;
 
-const TEST_MODEL = 'gpt-4.1-nano';
+const TEST_MODEL = 'gpt-5.4-nano';
 const TIMEOUT = 60_000;
 
 function createTestSkill(systemMessage: string, functions: Function[]): ConversationSkill {
@@ -102,7 +102,7 @@ describeIfKey('Conversation.generateResponse', () => {
       expect(result.usage.totalTokenUsage.inputTokens).toBeGreaterThan(50);
       expect(result.usage.totalTokenUsage.outputTokens).toBeGreaterThan(10);
 
-      // Cost should be calculated (gpt-4.1-nano is in our pricing table)
+      // Cost should be calculated (gpt-5.4-nano is in our pricing table)
       expect(result.usage.totalCostUsd.totalUsd).toBeGreaterThanOrEqual(0);
     },
     TIMEOUT
