@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.4.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.3.1...@proteinjs/conversation@5.4.0) (2026-07-09)
+
+
+### Features
+
+* **conversation:** PROMPT_DUMP_DIR debug affordance for prompt-cache diagnosis ([90f2f2b](https://github.com/proteinjs/conversation/commit/90f2f2beb51c0d3b3a49ad8ad65676f7ed0c5a7f))
+
+
+
+
+
 ## [5.3.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.3.0...@proteinjs/conversation@5.3.1) (2026-07-03)
 
 
