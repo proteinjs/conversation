@@ -1,7 +1,7 @@
 import type { LanguageModel, ToolSet, LanguageModelUsage, ReasoningOutput, ModelMessage } from 'ai';
 import type { ImagePart, TextPart, FilePart } from '@ai-sdk/provider-utils';
 import type { LanguageModelV3Source } from '@ai-sdk/provider';
-import { streamText, generateObject as aiGenerateObject, jsonSchema, stepCountIs, hasToolCall } from 'ai';
+import { streamText, generateText, generateObject as aiGenerateObject, jsonSchema, stepCountIs, hasToolCall } from 'ai';
 import { SdkContentParts } from './sdkContentParts';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
@@ -175,6 +175,20 @@ export type GenerateObjectParams<T> = {
   abortSignal?: AbortSignal;
   onUsageData?: (usageData: UsageData) => Promise<void>;
   recordInHistory?: boolean;
+
+  /**
+   * Allow an agentic TOOL LOOP before the object is produced (investigate-then-answer): when > 1
+   * and the conversation (or `tools`) carries functions, the model runs with those tools plus a
+   * `submit_result` tool bound to `schema`, and the loop ends when it submits (or the step budget
+   * runs out — an error). Provider-agnostic, so structured gates that must read the world first
+   * (e.g. grep a repo) work on models with no server-side tool runtime. When absent (or ≤ 1),
+   * generation is the plain single-shot object call.
+   */
+  maxToolCalls?: number;
+  /** Extra tools for the tool loop, merged with the conversation's skill functions. */
+  tools?: Function[];
+  /** Tool-loop progress events (same shape as generateStream's). */
+  onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
 
   // OpenAI-specific
   backgroundMode?: boolean;
@@ -535,6 +549,22 @@ export class Conversation {
     const isZod = this.isZodSchema(params.schema);
     const normalizedSchema = isZod ? params.schema : jsonSchema(this.strictifyJsonSchema(params.schema));
 
+    // Investigate-then-answer: when the call allows a tool budget and tools exist, run an agentic
+    // loop that ends with a `submit_result` call bound to the schema. Plain single-shot object
+    // generation (no tools) cannot serve gates that must read the world first — and unlike
+    // OpenAI's hosted-tool background mode, this works on every provider.
+    const loopFunctions = [...this.functions, ...(params.tools ?? [])];
+    if ((params.maxToolCalls ?? 0) > 1 && loopFunctions.length > 0) {
+      return this.generateObjectViaToolLoop<T>(params, {
+        model,
+        modelString,
+        provider,
+        messages,
+        loopFunctions,
+        normalizedSchema,
+      });
+    }
+
     const result = await aiGenerateObject({
       model,
       messages,
@@ -586,6 +616,111 @@ export class Conversation {
       usage,
       reasoning: reasoning || undefined,
       toolInvocations: [],
+    };
+  }
+
+  /**
+   * The investigate-then-answer object path (see `GenerateObjectParams.maxToolCalls`): an agentic
+   * `generateText` loop over the conversation's tools plus a `submit_result` tool whose input IS
+   * the requested schema. The loop stops when the model submits (or the step budget runs out —
+   * an error, surfaced to the caller's retry handling). The submitted input arrives validated:
+   * the SDK enforces the tool's inputSchema before `execute` runs.
+   */
+  private async generateObjectViaToolLoop<T>(
+    params: GenerateObjectParams<T>,
+    args: {
+      model: LanguageModel;
+      modelString: string;
+      provider: string;
+      messages: ModelMessage[];
+      loopFunctions: Function[];
+      normalizedSchema: unknown;
+    }
+  ): Promise<GenerateObjectResult<T>> {
+    if (this.isZodSchema(params.schema)) {
+      // The submit tool rides the Function shape (JSON-schema parameters). Extend when a caller
+      // actually needs Zod here; a silent partial conversion would be worse than a clear error.
+      throw new Error('generateObject with maxToolCalls requires a JSON schema (Zod is not supported on this path).');
+    }
+
+    let submitted: T | undefined;
+    const submitFunction: Function = {
+      definition: {
+        name: 'submit_result',
+        description:
+          'Submit the FINAL structured result. Call exactly once, when your investigation is complete — it ends the loop.',
+        parameters: this.strictifyJsonSchema(params.schema),
+      },
+      call: async (input: unknown) => {
+        submitted = input as T;
+        return 'Result recorded.';
+      },
+    };
+
+    const capturedInvocations: ToolInvocationResult[] = [];
+    const tools = this.buildAiSdkTools([...args.loopFunctions, submitFunction], {
+      onToolInvocation: params.onToolInvocation,
+      recordInvocation: (r) => capturedInvocations.push(r),
+    });
+
+    // The submit contract rides a system message — inserted at the END of the LEADING system
+    // block (messages arrive system-first for Anthropic/Google, which reject system messages
+    // after user/assistant turns).
+    const contract: ModelMessage = {
+      role: 'system',
+      content:
+        'Use the available tools to investigate as needed. When you have everything required, call ' +
+        '`submit_result` exactly once with the final structured result — that submission is your answer; ' +
+        'any prose you produce is discarded.',
+    };
+    let leadingSystemCount = 0;
+    while (leadingSystemCount < args.messages.length && args.messages[leadingSystemCount].role === 'system') {
+      leadingSystemCount++;
+    }
+    const loopMessages = [
+      ...args.messages.slice(0, leadingSystemCount),
+      contract,
+      ...args.messages.slice(leadingSystemCount),
+    ];
+
+    const result = await generateText({
+      model: args.model,
+      messages: loopMessages,
+      tools,
+      stopWhen: [stepCountIs(params.maxToolCalls ?? 50), hasToolCall('submit_result')],
+      // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer.
+      maxRetries: 0,
+      abortSignal: params.abortSignal,
+      maxOutputTokens: params.maxTokens,
+      temperature: params.temperature,
+      topP: params.topP,
+      providerOptions: this.buildProviderOptions(args.provider, params, args.modelString),
+    });
+
+    const usage = this.processAiSdkUsage({ usage: result.totalUsage }, args.modelString);
+    if (params.onUsageData) {
+      await params.onUsageData(usage);
+    }
+
+    if (submitted === undefined) {
+      throw new Error(
+        `No object generated: the model finished the tool loop without calling submit_result (steps: ${result.steps?.length ?? 0}).`
+      );
+    }
+
+    if (params.recordInHistory !== false) {
+      try {
+        this.addAssistantMessagesToHistory([JSON.stringify(submitted)]);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return {
+      object: submitted,
+      usage,
+      reasoning: this.extractReasoningFromResult(result) || undefined,
+      toolInvocations: capturedInvocations,
     };
   }
 
