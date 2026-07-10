@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.5.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.4.0...@proteinjs/conversation@5.5.0) (2026-07-10)
+
+
+### Features
+
+* toolResultTokenBudget guard + pre-output mid-stream transport retry + live-API test hardening ([7ab9fe0](https://github.com/proteinjs/conversation/commit/7ab9fe0a2e31a6d8303cb45b10d3667e93b55c97))
+
+
+
+
+
 # [5.4.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.3.1...@proteinjs/conversation@5.4.0) (2026-07-09)
 
 
