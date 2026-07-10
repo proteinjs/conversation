@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.6.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.5.0...@proteinjs/conversation@5.6.0) (2026-07-10)
+
+
+### Features
+
+* pricing for claude-fable-5 and grok-4.5 ([44f7fca](https://github.com/proteinjs/conversation/commit/44f7fca2b8afa851b194190de5fa4ee2fba08ebf))
+
+
+
+
+
 # [5.5.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.4.0...@proteinjs/conversation@5.5.0) (2026-07-10)
 
 
