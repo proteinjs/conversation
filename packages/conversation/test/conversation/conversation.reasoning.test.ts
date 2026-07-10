@@ -20,6 +20,9 @@ import type { StreamPart } from '../../src/Conversation';
  * test fails loudly on any model that regresses to signature-only.
  */
 
+// Live-provider suite: transient API flake must not gate releases — deterministic failures still fail all 3 attempts.
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 type ReasoningCase = { provider: string; model: string; keyEnv: string };
 
 const REASONING_MODELS: ReasoningCase[] = [

@@ -21,6 +21,9 @@ import { Conversation } from '../../src/Conversation';
  *   a tool call. Sources surface via result.sources.
  */
 
+// Live-provider suite: transient API flake must not gate releases — deterministic failures still fail all 3 attempts.
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 const hasApiKey = !!process.env.XAI_API_KEY;
 const describeIfKey = hasApiKey ? describe : describe.skip;
 

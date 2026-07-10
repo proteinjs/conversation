@@ -15,7 +15,7 @@ import { LlmTransportRetry } from './LlmTransportRetry';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat';
-import { TiktokenModel } from 'tiktoken';
+import { TiktokenModel, Tiktoken, encoding_for_model } from 'tiktoken';
 
 // Re-export for convenience
 export type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
@@ -45,6 +45,22 @@ export type ConversationParams = {
    * never touched. Off when unset.
    */
   toolImageRetention?: number;
+  /**
+   * Cap the cumulative tokens of text/json tool-result outputs in what is sent
+   * to the model each step; the OLDEST results over budget are replaced with a
+   * text placeholder. Prevents the silent context-window blowout in long tool
+   * loops: the loop resends every prior step's results on every step, and
+   * nothing else bounds their bytes (only the step COUNT is bounded) — so a
+   * 50-step chat turn or 1000-step dev-flow loop can grow the request past the
+   * model window mid-turn, the provider 400s ("prompt is too long"), and the
+   * turn dies with its accumulated work unrecoverable. Like
+   * `toolImageRetention`, a stateless per-step projection (never mutates
+   * history) with hysteresis (evict in one batch down to a floor, then hold)
+   * so the message prefix stays prompt-cache-stable between evictions. The
+   * results of the step the model has not yet responded to are never evicted.
+   * Off when unset.
+   */
+  toolResultTokenBudget?: number;
 };
 
 /** Message format accepted by Conversation methods. */
@@ -335,6 +351,9 @@ export class Conversation {
         }
         if (this.params.toolImageRetention != null) {
           next = Conversation.pruneStaleToolImages(next, this.params.toolImageRetention);
+        }
+        if (this.params.toolResultTokenBudget != null) {
+          next = Conversation.pruneToolResultsOverBudget(next, this.params.toolResultTokenBudget);
         }
         if (provider === 'anthropic') {
           // Runs for every step including the first, so this is the single seam
@@ -1156,6 +1175,155 @@ export class Conversation {
               type: 'text',
               value: '[stale screenshot removed — superseded by more recent screenshots]',
             },
+          };
+        }
+        return part;
+      });
+      return changed ? ({ ...msg, content } as ModelMessage) : msg;
+    });
+  }
+
+  /** Placeholder that replaces an evicted tool result's output — tells the model how to recover. */
+  private static readonly TOOL_RESULT_PRUNED_PLACEHOLDER =
+    '[tool result pruned to fit the context budget — re-run the tool if you still need it]';
+
+  /**
+   * Token counts memoized per tool-result part OBJECT: the SDK reuses the same
+   * part objects as the loop accumulates steps, so each result is encoded once
+   * per turn instead of once per step. WeakMap → entries die with the turn.
+   */
+  private static toolResultTokenCounts = new WeakMap<object, number>();
+
+  /** Shared encoder, created on first use and kept for the process lifetime (WASM setup isn't free). */
+  private static toolResultEncoder: Tiktoken | undefined;
+
+  /**
+   * The same `gpt-4o` (o200k_base) encoder every other budgeting layer uses
+   * (history tiers, MessagePager), so counts line up across layers.
+   * `encode_ordinary` treats special-token strings in tool output (arbitrary
+   * file/tool bytes in dev loops) as plain text instead of throwing.
+   */
+  private static countToolResultTokens(text: string): number {
+    if (!Conversation.toolResultEncoder) {
+      Conversation.toolResultEncoder = encoding_for_model('gpt-4o');
+    }
+    return Conversation.toolResultEncoder.encode_ordinary(text).length;
+  }
+
+  /**
+   * Keep the cumulative tokens of text/json tool-result outputs in the outgoing
+   * messages under `budget`; the oldest results over budget have their output
+   * replaced with a text placeholder. A stateless per-step projection
+   * (`prepareStep`) like `pruneStaleToolImages` — persisted and in-memory
+   * history are never mutated. See `ConversationParams.toolResultTokenBudget`.
+   *
+   * Hysteresis (the `tier1EvictionFloorRatio` idiom): eviction epochs are
+   * REPLAYED deterministically over the accumulated results in order — when the
+   * running total of live results crosses the budget, the oldest live evictable
+   * results are evicted in ONE batch down to the floor, then the projection
+   * holds byte-stable until the next crossing (prompt-cache friendly) instead
+   * of sliding by one result every step. Because each step's message array is
+   * the previous step's plus appended results, the replay reproduces the prior
+   * steps' eviction decisions exactly.
+   *
+   * The TRAILING tool results (every tool message after the last assistant
+   * message — the step the model has not yet responded to) are counted but
+   * never evicted: the model must see each result at least once.
+   */
+  private static pruneToolResultsOverBudget(
+    messages: ModelMessage[],
+    budget: number,
+    evictionFloorRatio = 0.75,
+    countTokens: (text: string) => number = Conversation.countToolResultTokens
+  ): ModelMessage[] {
+    if (!(budget > 0)) {
+      return messages;
+    }
+    type ToolOutput = { type?: string; value?: unknown };
+    type ToolResultLike = { type?: string; output?: ToolOutput };
+    // Text/json outputs only — 'content' outputs (images) are the image pruner's territory.
+    const outputText = (part: ToolResultLike): string | undefined => {
+      if (part.type !== 'tool-result' || !part.output) {
+        return undefined;
+      }
+      const { type, value } = part.output;
+      if (type === 'text' || type === 'error-text') {
+        return typeof value === 'string' ? value : String(value ?? '');
+      }
+      if (type === 'json' || type === 'error-json') {
+        try {
+          return JSON.stringify(value) ?? '';
+        } catch {
+          return String(value);
+        }
+      }
+      return undefined;
+    };
+    const tokensFor = (part: object, text: string): number => {
+      const cached = Conversation.toolResultTokenCounts.get(part);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const count = countTokens(text);
+      Conversation.toolResultTokenCounts.set(part, count);
+      return count;
+    };
+
+    // The trailing (final-step) region: tool messages after the last assistant message.
+    let lastAssistantIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') {
+        lastAssistantIndex = i;
+        break;
+      }
+    }
+
+    // Pass 1: replay the eviction epochs over the results in chronological order.
+    const floor = Math.floor(budget * evictionFloorRatio);
+    const evicted = new Set<object>();
+    const evictable: Array<{ part: object; tokens: number }> = [];
+    let evictCursor = 0; // oldest not-yet-evicted evictable result
+    let liveTokens = 0;
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (msg.role !== 'tool' || !Array.isArray(msg.content)) {
+        continue;
+      }
+      for (const part of msg.content) {
+        const text = outputText(part as ToolResultLike);
+        if (text === undefined) {
+          continue;
+        }
+        const tokens = tokensFor(part as object, text);
+        liveTokens += tokens;
+        if (i <= lastAssistantIndex) {
+          evictable.push({ part: part as object, tokens });
+        }
+        if (liveTokens > budget) {
+          while (liveTokens > floor && evictCursor < evictable.length) {
+            const oldest = evictable[evictCursor++];
+            evicted.add(oldest.part);
+            liveTokens -= oldest.tokens;
+          }
+        }
+      }
+    }
+    if (evicted.size === 0) {
+      return messages;
+    }
+
+    // Pass 2: replace the evicted results' output with the placeholder.
+    return messages.map((msg) => {
+      if (msg.role !== 'tool' || !Array.isArray(msg.content)) {
+        return msg;
+      }
+      let changed = false;
+      const content = msg.content.map((part) => {
+        if (evicted.has(part as object)) {
+          changed = true;
+          return {
+            ...(part as object),
+            output: { type: 'text', value: Conversation.TOOL_RESULT_PRUNED_PLACEHOLDER },
           };
         }
         return part;

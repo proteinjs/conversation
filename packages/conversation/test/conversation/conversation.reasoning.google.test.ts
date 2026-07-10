@@ -18,6 +18,9 @@ import { Conversation } from '../../src/Conversation';
  *   text becomes grounded and sources surface via the sources stream.
  */
 
+// Live-provider suite: transient API flake must not gate releases — deterministic failures still fail all 3 attempts.
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 const hasApiKey = !!process.env.GOOGLE_GENERATIVE_AI_API_KEY;
 const describeIfKey = hasApiKey ? describe : describe.skip;
 

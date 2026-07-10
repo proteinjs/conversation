@@ -9,6 +9,9 @@ import { MessageModerator } from '../../src/history/MessageModerator';
  * These hit the real OpenAI API (requires OPENAI_API_KEY env var).
  */
 
+// Live-provider suite: transient API flake must not gate releases — deterministic failures still fail all 3 attempts.
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 const hasApiKey = !!process.env.OPENAI_API_KEY;
 const describeIfKey = hasApiKey ? describe : describe.skip;
 

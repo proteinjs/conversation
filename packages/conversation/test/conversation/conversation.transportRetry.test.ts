@@ -34,6 +34,20 @@ const semanticError = () =>
     responseBody: '',
   });
 
+/**
+ * The payload the @ai-sdk/openai Responses transport enqueues on an `error` stream part when the
+ * provider fails mid-stream: the raw SSE error chunk, NOT an APICallError — there's no HTTP status.
+ * This exact shape (nested `error.type: 'server_error'`) killed a CI release run before any output.
+ */
+const openAiServerErrorPart = () => ({
+  type: 'error' as const,
+  error: {
+    type: 'error',
+    sequence_number: 0,
+    error: { type: 'server_error', code: 'server_error', message: 'The server had an error.', param: null },
+  },
+});
+
 const usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
   outputTokens: { total: 1, text: 1, reasoning: 0 },
@@ -58,6 +72,16 @@ const goodStream = (text: string) =>
       usage,
     },
   ]);
+
+const collectText = async (result: { fullStream: AsyncIterable<{ type: string; textDelta?: string }> }) => {
+  let text = '';
+  for await (const part of result.fullStream) {
+    if (part.type === 'text-delta') {
+      text += part.textDelta;
+    }
+  }
+  return text;
+};
 
 describe('LlmTransportRetry via Conversation', () => {
   test(
@@ -124,12 +148,7 @@ describe('LlmTransportRetry via Conversation', () => {
       });
 
       const result = await newConversation().generateStream({ messages: ['hi'], model: model as never });
-      let text = '';
-      for await (const part of result.fullStream) {
-        if (part.type === 'text-delta') {
-          text += part.textDelta;
-        }
-      }
+      const text = await collectText(result);
 
       expect(calls).toBe(3);
       expect(text).toBe('hello world');
@@ -138,26 +157,191 @@ describe('LlmTransportRetry via Conversation', () => {
   );
 
   test(
-    'generateStream: an error PART surfaces as a thrown error (no silent empty result)',
+    'generateStream: a transient error PART before any output retries invisibly, then streams fully',
     async () => {
+      let calls = 0;
       const model = new MockLanguageModelV3({
-        doStream: async () => ({
-          stream: convertArrayToReadableStream([
-            { type: 'stream-start' as const, warnings: [] },
-            { type: 'error' as const, error: new Error('transport died mid-stream') },
-          ]),
-        }),
+        doStream: async () => {
+          calls++;
+          if (calls === 1) {
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                openAiServerErrorPart(),
+              ]),
+            };
+          }
+          return { stream: goodStream('hello world') };
+        },
       });
 
       const result = await newConversation().generateStream({ messages: ['hi'], model: model as never });
+      const text = await collectText(result);
+
+      expect(calls).toBe(2);
+      expect(text).toBe('hello world');
+    },
+    TIMEOUT
+  );
+
+  test(
+    'generateStream: a transient error THROWN before any output retries invisibly, then streams fully',
+    async () => {
+      let calls = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async () => {
+          calls++;
+          if (calls === 1) {
+            return {
+              stream: new ReadableStream({
+                start(controller) {
+                  controller.enqueue({ type: 'stream-start', warnings: [] });
+                  controller.error(transientError());
+                },
+              }),
+            };
+          }
+          return { stream: goodStream('hello world') };
+        },
+      });
+
+      const result = await newConversation().generateStream({ messages: ['hi'], model: model as never });
+      const text = await collectText(result);
+
+      expect(calls).toBe(2);
+      expect(text).toBe('hello world');
+    },
+    TIMEOUT
+  );
+
+  test(
+    'generateStream: a semantic (non-retryable) error PART surfaces as a thrown error — no retry',
+    async () => {
+      let calls = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async () => {
+          calls++;
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start' as const, warnings: [] },
+              // A 400 (e.g. prompt too long) must surface even pre-output — never retried.
+              { type: 'error' as const, error: semanticError() },
+            ]),
+          };
+        },
+      });
+
+      const result = await newConversation().generateStream({ messages: ['hi'], model: model as never });
+      await expect(collectText(result)).rejects.toThrow('bad request');
+      expect(calls).toBe(1);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'generateStream: an error AFTER output has flowed surfaces immediately, even when transient-shaped',
+    async () => {
+      let calls = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async () => {
+          calls++;
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start' as const, warnings: [] },
+              { type: 'text-start' as const, id: 't1' },
+              { type: 'text-delta' as const, id: 't1', delta: 'partial' },
+              openAiServerErrorPart(),
+            ]),
+          };
+        },
+      });
+
+      const result = await newConversation().generateStream({ messages: ['hi'], model: model as never });
+      // Partial output already reached the consumer — replaying would duplicate it, so no retry.
+      const streamed: string[] = [];
       await expect(
         (async () => {
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          for await (const _part of result.fullStream) {
-            // consume
+          for await (const part of result.fullStream) {
+            if (part.type === 'text-delta') {
+              streamed.push(part.textDelta);
+            }
           }
         })()
-      ).rejects.toThrow('transport died mid-stream');
+      ).rejects.toThrow();
+      expect(streamed.join('')).toBe('partial');
+      expect(calls).toBe(1);
+    },
+    TIMEOUT
+  );
+});
+
+describe('LlmTransportRetry.wrap — stream part accounting', () => {
+  const readAllParts = async (stream: ReadableStream<{ type: string }>) => {
+    const parts: Array<{ type: string }> = [];
+    const reader = stream.getReader();
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) {
+        break;
+      }
+      parts.push(result.value);
+    }
+    return parts;
+  };
+
+  test(
+    "doStream: a failed attempt's preamble parts are discarded — the consumer sees exactly one attempt",
+    async () => {
+      let calls = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async () => {
+          calls++;
+          if (calls === 1) {
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                { type: 'response-metadata' as const, id: 'failed-attempt' },
+                openAiServerErrorPart(),
+              ]),
+            };
+          }
+          return { stream: goodStream('ok') };
+        },
+      });
+
+      const wrapped = new LlmTransportRetry().wrap(model as never);
+      const { stream } = await wrapped.doStream({ prompt: [] });
+      const parts = await readAllParts(stream);
+
+      expect(calls).toBe(2);
+      expect(parts.map((p) => p.type)).toEqual(['stream-start', 'text-start', 'text-delta', 'text-end', 'finish']);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'doStream: budget exhaustion on a pre-output transient error surfaces the error part (preamble intact)',
+    async () => {
+      let calls = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async () => {
+          calls++;
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start' as const, warnings: [] },
+              openAiServerErrorPart(),
+            ]),
+          };
+        },
+      });
+
+      // budget of 0ms can't fit any backoff delay → exactly one attempt, error passes through.
+      const wrapped = new LlmTransportRetry({ budgetMs: 0 }).wrap(model as never);
+      const { stream } = await wrapped.doStream({ prompt: [] });
+      const parts = await readAllParts(stream);
+
+      expect(calls).toBe(1);
+      expect(parts.map((p) => p.type)).toEqual(['stream-start', 'error']);
     },
     TIMEOUT
   );

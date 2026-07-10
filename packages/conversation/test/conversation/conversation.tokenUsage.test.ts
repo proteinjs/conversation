@@ -16,6 +16,9 @@ import { Conversation } from '../../src/Conversation';
  *    flow all the way through to a priced UsageData.
  */
 
+// Live-provider suite: transient API flake must not gate releases — deterministic failures still fail all 3 attempts.
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 type UsageCase = { provider: string; model: string; keyEnv: string };
 
 const USAGE_MODELS: UsageCase[] = [

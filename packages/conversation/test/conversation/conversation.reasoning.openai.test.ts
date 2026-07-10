@@ -13,6 +13,9 @@ import { Conversation } from '../../src/Conversation';
  * OpenAI through.
  */
 
+// Live-provider suite: transient API flake must not gate releases — deterministic failures still fail all 3 attempts.
+jest.retryTimes(2, { logErrorsBeforeRetry: true });
+
 const hasApiKey = !!process.env.OPENAI_API_KEY;
 const describeIfKey = hasApiKey ? describe : describe.skip;
 
@@ -25,15 +28,23 @@ describeIfKey('Conversation.generateStream — OpenAI reasoning + web search', (
     async () => {
       const conversation = new Conversation({ name: 'test-openai-reasoning' });
 
-      // A question that benefits from reasoning. We ask for a brief answer
-      // so we don't burn output tokens, but reasoning effort is what we're
-      // actually testing for.
+      // A genuinely multi-step problem at 'medium' effort: at 'low' on a
+      // simpler prompt, gpt-5.5 occasionally emits reasoning-start/end with
+      // ZERO summary deltas (observed as CI release flake) — the model just
+      // doesn't have enough to summarize. The assertion stays strict (it
+      // guards the reasoningSummary-not-requested regression), so make the
+      // reasoning reliably non-empty instead of weakening the check. NOTE:
+      // 'high'/'xhigh'/'max' would reroute to the background/polling path
+      // (shouldUseBackgroundMode) — 'medium' is the max effort that stays on
+      // the streaming Responses path this test pins.
       const result = await conversation.generateStream({
         messages: [
-          'If a train leaves Chicago at 9am going 60mph and another leaves NYC at 11am going 80mph, do they meet before 4pm? Answer yes or no with one sentence of reasoning.',
+          'A farmer has chickens and rabbits: 35 heads and 94 legs in total. How many chickens and how many rabbits? ' +
+            'Then check your answer: if the chicken and rabbit counts were swapped, how many legs would there be? ' +
+            'Answer with the two counts and the swapped-legs number.',
         ],
         model: REASONING_MODEL,
-        reasoningEffort: 'low',
+        reasoningEffort: 'medium',
       });
 
       // Drain the full stream so reasoning is captured.
