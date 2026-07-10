@@ -301,6 +301,7 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   // cacheWriteUsdPer1M = 1.25x input — the 5-minute ephemeral cache write rate
   // (N3XA writes default ephemeral caches via applyAnthropicPromptCaching, no
   // explicit ttl). cachedInputUsdPer1M is the cache-READ rate (0.1x input).
+  'claude-fable-5': { inputUsdPer1M: 10.0, cachedInputUsdPer1M: 1.0, cacheWriteUsdPer1M: 12.5, outputUsdPer1M: 50.0 },
   'claude-opus-4-8': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4-7': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4-6': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
@@ -351,6 +352,10 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   // Live catalog ids: grok-4.3 (flagship, mirrors grok-4.20) and
   // grok-4-1-fast-reasoning (mirrors grok-4.1-fast) — both were absent and
   // therefore billed $0 on real calls.
+  // grok-4.5 (released 2026-07-08): $2/$6 base, cache reads at a 75% discount
+  // (0.25x input). xAI doubles both rates past 200k input tokens; ModelApiCost
+  // has no context-tiered rates, so we record the base tier.
+  'grok-4.5': { inputUsdPer1M: 2.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 6.0 },
   'grok-4.3': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
   'grok-4.20': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
   'grok-4': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
