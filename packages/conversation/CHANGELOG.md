@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.7.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.6.0...@proteinjs/conversation@5.7.0) (2026-07-11)
+
+
+### Features
+
+* injected-context splice hook, empty-messages normalization, GPT-5.6/5.5-Pro pricing ([f01096d](https://github.com/proteinjs/conversation/commit/f01096d35fe5f5eb5dcecd1c2733a47241736697))
+
+
+
+
+
 # [5.6.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.5.0...@proteinjs/conversation@5.6.0) (2026-07-10)
 
 
