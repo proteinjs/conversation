@@ -344,6 +344,16 @@ export class Conversation {
     let cumReason = 0;
     let cumSteps = 0;
 
+    // Stream liveness guard (2026-07-10 hang, root-caused live): a stream's connection can die
+    // SILENTLY — no error, no end, zero open sockets — and the SDK's fullStream iterator then
+    // waits forever; no layer times out (transport retries only cover errors that surface). The
+    // guard aborts the call when no stream part arrives within the idle window, turning an
+    // invisible forever-hang into an honest, retryable failure.
+    const livenessController = new AbortController();
+    const combinedAbortSignal = params.abortSignal
+      ? Conversation.anySignal([params.abortSignal, livenessController.signal])
+      : livenessController.signal;
+
     const result = streamText({
       model,
       messages,
@@ -356,7 +366,7 @@ export class Conversation {
       // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer so
       // budgets don't stack multiplicatively.
       maxRetries: 0,
-      abortSignal: params.abortSignal,
+      abortSignal: combinedAbortSignal,
       providerOptions,
       prepareStep: ({ messages: stepMessages }) => {
         let next = stepMessages;
@@ -495,7 +505,7 @@ export class Conversation {
         // Reasoning is available via the promise after generation completes.
         // For real-time streaming, use fullStream instead.
       })(),
-      fullStream: this.mapFullStream(result.fullStream),
+      fullStream: this.mapFullStream(this.guardStreamLiveness(result.fullStream, livenessController, modelString)),
       // Lazy getters: only start consuming the AI SDK stream when accessed.
       // This prevents dual-consumption when the caller uses fullStream instead.
       get text() {
@@ -565,13 +575,18 @@ export class Conversation {
       });
     }
 
+    // Liveness ceiling (see guardStreamLiveness): a non-streaming call whose connection dies
+    // silently wedges its single await forever — bound it and hand the failure to retry handling.
+    const objectTimeoutMs = Number(process.env.CONVERSATION_OBJECT_TIMEOUT_MS || 600_000);
+    const objectSignals = [AbortSignal.timeout(objectTimeoutMs), ...(params.abortSignal ? [params.abortSignal] : [])];
+
     const result = await aiGenerateObject({
       model,
       messages,
       schema: normalizedSchema,
       // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer.
       maxRetries: 0,
-      abortSignal: params.abortSignal,
+      abortSignal: Conversation.anySignal(objectSignals),
       maxOutputTokens: params.maxTokens,
       temperature: params.temperature,
       topP: params.topP,
@@ -683,6 +698,11 @@ export class Conversation {
       ...args.messages.slice(leadingSystemCount),
     ];
 
+    // Liveness ceiling (see guardStreamLiveness): generous — investigation loops legitimately run
+    // long — but bounded, so a silently dead connection can't wedge the loop forever.
+    const loopTimeoutMs = Number(process.env.CONVERSATION_TOOL_LOOP_TIMEOUT_MS || 1_200_000);
+    const loopSignals = [AbortSignal.timeout(loopTimeoutMs), ...(params.abortSignal ? [params.abortSignal] : [])];
+
     const result = await generateText({
       model: args.model,
       messages: loopMessages,
@@ -690,7 +710,7 @@ export class Conversation {
       stopWhen: [stepCountIs(params.maxToolCalls ?? 50), hasToolCall('submit_result')],
       // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer.
       maxRetries: 0,
-      abortSignal: params.abortSignal,
+      abortSignal: Conversation.anySignal(loopSignals),
       maxOutputTokens: params.maxTokens,
       temperature: params.temperature,
       topP: params.topP,
@@ -2187,6 +2207,53 @@ export class Conversation {
   // ────────────────────────────────────────────────────────────
   // Full-stream mapping
   // ────────────────────────────────────────────────────────────
+
+  /**
+   * Stream liveness guard (2026-07-10 hang, root-caused live): a stream's connection can die
+   * SILENTLY — no error, no stream end, zero open sockets — and the iterator then waits forever;
+   * transport retries never see it (nothing errors) and no other layer times out. Each `next()`
+   * races an idle timer that resets on every part; on timeout the linked controller aborts the
+   * SDK call and the iterator throws an HONEST error, handing the failure to the existing
+   * retry / blocker-ask machinery. Long thinking pauses are legitimate (adaptive Opus) — the
+   * default window is generous and env-tunable via CONVERSATION_STREAM_IDLE_TIMEOUT_MS.
+   */
+  /** `AbortSignal.any` exists at runtime (node ≥ 20.3) but not in this TS lib target. */
+  private static anySignal(signals: AbortSignal[]): AbortSignal {
+    return (AbortSignal as unknown as { any(signals: AbortSignal[]): AbortSignal }).any(signals);
+  }
+
+  private async *guardStreamLiveness(
+    aiSdkFullStream: AsyncIterable<any>,
+    livenessController: AbortController,
+    modelString: string
+  ): AsyncIterable<any> {
+    const idleTimeoutMs = Number(process.env.CONVERSATION_STREAM_IDLE_TIMEOUT_MS || 300_000);
+    const iterator = aiSdkFullStream[Symbol.asyncIterator]();
+    while (true) {
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const idle = new Promise<never>((_, reject) => {
+        idleTimer = setTimeout(() => {
+          livenessController.abort();
+          reject(
+            new Error(
+              `Model stream stalled: no parts from ${modelString} for ${Math.round(idleTimeoutMs / 1000)}s (silent connection loss); aborted for retry.`
+            )
+          );
+        }, idleTimeoutMs);
+        idleTimer.unref?.();
+      });
+      let step: IteratorResult<any>;
+      try {
+        step = await Promise.race([iterator.next(), idle]);
+      } finally {
+        clearTimeout(idleTimer);
+      }
+      if (step.done) {
+        return;
+      }
+      yield step.value;
+    }
+  }
 
   private mapFullStream(aiSdkFullStream: AsyncIterable<any>): AsyncIterable<StreamPart> {
     const logger = this.logger;
