@@ -101,6 +101,18 @@ export type GenerateStreamParams = {
    * work that follows it.
    */
   stopOnToolCalls?: string[];
+  /**
+   * Mid-call injected context: user input that arrives WHILE this call's tool loop runs. Called at
+   * every step boundary (`prepareStep` — the earliest point the next outgoing request is
+   * assembled); each returned string is spliced into the outgoing messages as a `role: 'user'`
+   * message anchored where the conversation stood when it drained, and re-projected at that same
+   * anchor on every later step of this call (the anchor is the raw step-message count at drain
+   * time; steps only append, so the request prefix stays byte-stable — prompt-cache friendly —
+   * and the note keeps its chronological position). The callback transfers ownership: it must
+   * drain its source destructively (never hand the same item back twice) — this layer owns only
+   * the splice; the caller owns transport, durability, and any acknowledgment bookkeeping.
+   */
+  drainInjectedContext?: () => string[];
 
   // OpenAI-specific
   backgroundMode?: boolean;
@@ -265,16 +277,7 @@ export class Conversation {
     }
 
     // Build messages for the AI SDK
-    let messages = this.buildAiSdkMessages(params.messages);
-
-    // Many providers (Anthropic, Google) require all system messages at the
-    // beginning of the conversation. Reorder so system messages come first,
-    // preserving relative order within each group.
-    if (provider === 'google' || provider === 'anthropic') {
-      const system = messages.filter((m) => m.role === 'system');
-      const nonSystem = messages.filter((m) => m.role !== 'system');
-      messages = [...system, ...nonSystem];
-    }
+    const messages = this.normalizeMessagesForProvider(provider, this.buildAiSdkMessages(params.messages));
 
     // Build tools from skill functions + any extra tools. For providers
     // whose tool-result adapter strips image content (xAI — see
@@ -319,6 +322,12 @@ export class Conversation {
     // (auto) tool choice for subsequent steps.
     const webSearchToolChoice = this.getWebSearchToolChoice(provider, webSearchTools, params.webSearch);
 
+    // Mid-call injected context (see GenerateStreamParams.drainInjectedContext): notes drained at a
+    // step boundary are recorded here with the raw step-message count at drain time as their anchor,
+    // then re-projected at that anchor on every subsequent step. Steps only append raw messages, so
+    // the projection is deterministic and the prefix stays byte-stable between steps.
+    const injectedContextSplices: Array<{ anchorIndex: number; message: ModelMessage }> = [];
+
     // Cumulative per-step usage for live in-flight reporting. Each step (tool-call
     // round) is a separate billed call, so summing step usage reconciles exactly
     // to the final `result.totalUsage`.
@@ -346,6 +355,21 @@ export class Conversation {
       providerOptions,
       prepareStep: ({ messages: stepMessages }) => {
         let next = stepMessages;
+        if (params.drainInjectedContext) {
+          for (const content of params.drainInjectedContext() ?? []) {
+            const text = String(content ?? '').trim();
+            if (!text) {
+              continue;
+            }
+            injectedContextSplices.push({
+              anchorIndex: stepMessages.length,
+              message: { role: 'user', content: text } as ModelMessage,
+            });
+          }
+          if (injectedContextSplices.length > 0) {
+            next = Conversation.spliceInjectedContext(next, injectedContextSplices);
+          }
+        }
         if (pendingImageInjections) {
           next = this.injectPendingImageUserMessages(next, pendingImageInjections).messages;
         }
@@ -519,17 +543,7 @@ export class Conversation {
       return this.generateObjectViaPolling(params, modelString);
     }
 
-    let messages = this.buildAiSdkMessages(params.messages);
-
-    // Google and Anthropic require all system messages at the beginning
-    // (Anthropic's converter rejects non-leading system messages outright —
-    // and callers legitimately mix them in, e.g. a flow's system preludes
-    // appended after recorded conversation history). Mirrors generateStream.
-    if (provider === 'google' || provider === 'anthropic') {
-      const system = messages.filter((m) => m.role === 'system');
-      const nonSystem = messages.filter((m) => m.role !== 'system');
-      messages = [...system, ...nonSystem];
-    }
+    const messages = this.normalizeMessagesForProvider(provider, this.buildAiSdkMessages(params.messages));
 
     // Schema normalization
     const isZod = this.isZodSchema(params.schema);
@@ -711,6 +725,37 @@ export class Conversation {
   // ────────────────────────────────────────────────────────────
   // AI SDK message building
   // ────────────────────────────────────────────────────────────
+
+  /**
+   * Normalize the assembled message list into a shape every provider accepts.
+   *
+   * 1. Google and Anthropic require all system messages at the beginning of the
+   *    conversation (Anthropic's converter rejects non-leading system messages
+   *    outright — and callers legitimately mix them in, e.g. a flow's system
+   *    preludes appended after recorded conversation history). Reorder so system
+   *    messages come first, preserving relative order within each group.
+   * 2. Skill-driven utility calls (topic grouping, thought summaries, markdown
+   *    extraction) pass `messages: []` — the whole task lives in skill system
+   *    messages. Anthropic (and Google) reject a request with no conversation
+   *    turns ("messages: at least one message is required"), so when the list
+   *    contains no user/assistant turns, append a minimal kickoff user turn.
+   *    Applied uniformly across providers so prompt assembly has one shape.
+   */
+  private normalizeMessagesForProvider(provider: string, built: ModelMessage[]): ModelMessage[] {
+    let messages = built;
+
+    if (provider === 'google' || provider === 'anthropic') {
+      const system = messages.filter((m) => m.role === 'system');
+      const nonSystem = messages.filter((m) => m.role !== 'system');
+      messages = [...system, ...nonSystem];
+    }
+
+    if (!messages.some((m) => m.role === 'user' || m.role === 'assistant')) {
+      messages = [...messages, { role: 'user', content: 'Proceed with the task defined in the system prompt.' }];
+    }
+
+    return messages;
+  }
 
   private buildAiSdkMessages(callMessages: ConversationMessage[]): ModelMessage[] {
     const result: ModelMessage[] = [];
@@ -1016,6 +1061,32 @@ export class Conversation {
       }
     }
     return { messages: out };
+  }
+
+  /**
+   * Re-project mid-call injected context (see `GenerateStreamParams.drainInjectedContext`) into a
+   * step's outgoing messages: each spliced note is inserted after the first `anchorIndex` RAW
+   * messages (its drain-time position). Runs on the raw step messages BEFORE the other per-step
+   * projections, so anchors stay valid (steps only append raw messages) and later projections
+   * (image injection, pruning, cache marking) see the final ordering. Stateless per-step
+   * projection like `pruneStaleToolImages` — history is never mutated.
+   */
+  private static spliceInjectedContext(
+    messages: ModelMessage[],
+    splices: Array<{ anchorIndex: number; message: ModelMessage }>
+  ): ModelMessage[] {
+    const out: ModelMessage[] = [];
+    for (let i = 0; i <= messages.length; i++) {
+      for (const splice of splices) {
+        if (splice.anchorIndex === i) {
+          out.push(splice.message);
+        }
+      }
+      if (i < messages.length) {
+        out.push(messages[i]);
+      }
+    }
+    return out;
   }
 
   /**
