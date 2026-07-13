@@ -3,6 +3,39 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.7.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.6.0...@proteinjs/conversation@5.7.0) (2026-07-11)
+
+
+### Features
+
+* injected-context splice hook, empty-messages normalization, GPT-5.6/5.5-Pro pricing ([f01096d](https://github.com/proteinjs/conversation/commit/f01096d35fe5f5eb5dcecd1c2733a47241736697))
+
+
+
+
+
+# [5.6.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.5.0...@proteinjs/conversation@5.6.0) (2026-07-10)
+
+
+### Features
+
+* pricing for claude-fable-5 and grok-4.5 ([44f7fca](https://github.com/proteinjs/conversation/commit/44f7fca2b8afa851b194190de5fa4ee2fba08ebf))
+
+
+
+
+
+# [5.5.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.4.0...@proteinjs/conversation@5.5.0) (2026-07-10)
+
+
+### Features
+
+* toolResultTokenBudget guard + pre-output mid-stream transport retry + live-API test hardening ([7ab9fe0](https://github.com/proteinjs/conversation/commit/7ab9fe0a2e31a6d8303cb45b10d3667e93b55c97))
+
+
+
+
+
 # [5.4.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.3.1...@proteinjs/conversation@5.4.0) (2026-07-09)
 
 

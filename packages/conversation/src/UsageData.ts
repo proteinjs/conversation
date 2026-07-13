@@ -236,6 +236,12 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   // Short-context pricing from developers.openai.com/api/docs/pricing.
   // Long-context rates (>~272k input) are ~2x these; tracked here as the
   // default because chats below the threshold hit this tier.
+  // GPT-5.6 (GA 2026-07-09): cached reads are 0.1x input, and — new with 5.6+ —
+  // cache WRITES bill at 1.25x input (same shape as Anthropic's ephemeral
+  // cache; see claude-fable-5 below). Earlier GPT generations have no write
+  // charge, so their rows carry no cacheWriteUsdPer1M.
+  'gpt-5.6-sol': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 30.0 },
+  'gpt-5.6-terra': { inputUsdPer1M: 2.5, cachedInputUsdPer1M: 0.25, cacheWriteUsdPer1M: 3.125, outputUsdPer1M: 15.0 },
   'gpt-5.5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 30.0 },
   'gpt-5.4': { inputUsdPer1M: 2.5, cachedInputUsdPer1M: 0.25, outputUsdPer1M: 15.0 },
   'gpt-5.4-mini': { inputUsdPer1M: 0.4, cachedInputUsdPer1M: 0.1, outputUsdPer1M: 1.6 },
@@ -255,6 +261,9 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   'gpt-5.1-codex': { inputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 10.0 },
   'gpt-5-codex': { inputUsdPer1M: 1.25, cachedInputUsdPer1M: 0.125, outputUsdPer1M: 10.0 },
 
+  // Pro tiers have NO cached-input discount — cachedInputUsdPer1M is omitted so
+  // cache reads bill at the full input rate in calculateUsageCostUsd.
+  'gpt-5.5-pro': { inputUsdPer1M: 30.0, outputUsdPer1M: 180.0 },
   'gpt-5.2-pro': { inputUsdPer1M: 21.0, outputUsdPer1M: 168.0 },
   'gpt-5-pro': { inputUsdPer1M: 15.0, outputUsdPer1M: 120.0 },
 
@@ -301,6 +310,7 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   // cacheWriteUsdPer1M = 1.25x input — the 5-minute ephemeral cache write rate
   // (N3XA writes default ephemeral caches via applyAnthropicPromptCaching, no
   // explicit ttl). cachedInputUsdPer1M is the cache-READ rate (0.1x input).
+  'claude-fable-5': { inputUsdPer1M: 10.0, cachedInputUsdPer1M: 1.0, cacheWriteUsdPer1M: 12.5, outputUsdPer1M: 50.0 },
   'claude-opus-4-8': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4-7': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4-6': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
@@ -351,6 +361,10 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   // Live catalog ids: grok-4.3 (flagship, mirrors grok-4.20) and
   // grok-4-1-fast-reasoning (mirrors grok-4.1-fast) — both were absent and
   // therefore billed $0 on real calls.
+  // grok-4.5 (released 2026-07-08): $2/$6 base, cache reads at a 75% discount
+  // (0.25x input). xAI doubles both rates past 200k input tokens; ModelApiCost
+  // has no context-tiered rates, so we record the base tier.
+  'grok-4.5': { inputUsdPer1M: 2.0, cachedInputUsdPer1M: 0.5, outputUsdPer1M: 6.0 },
   'grok-4.3': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
   'grok-4.20': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
   'grok-4': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.75, outputUsdPer1M: 15.0 },
