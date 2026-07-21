@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.8.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.7.0...@proteinjs/conversation@5.8.0) (2026-07-21)
+
+
+### Bug Fixes
+
+* liveness guards on model calls — silent connection death can no longer hang forever ([2000906](https://github.com/proteinjs/conversation/commit/200090683cb5ccc2e35ff0901f2438282de83c76))
+
+
+### Features
+
+* generateObject supports an investigate-then-answer tool loop ([787be5b](https://github.com/proteinjs/conversation/commit/787be5bb7d3163ab25747b92fb09ca54f228da95))
+
+
+
+
+
 # [5.7.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.6.0...@proteinjs/conversation@5.7.0) (2026-07-11)
 
 
