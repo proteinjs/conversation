@@ -28,7 +28,7 @@
     "ts-jest": "^29.1.1"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.79",
+    "@ai-sdk/anthropic": "^3.0.100",
     "@ai-sdk/google": "^3.0.79",
     "@ai-sdk/openai": "^3.0.65",
     "@ai-sdk/xai": "^3.0.92",

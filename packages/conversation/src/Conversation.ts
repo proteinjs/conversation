@@ -569,9 +569,14 @@ export class Conversation {
 
     const messages = this.normalizeMessagesForProvider(provider, this.buildAiSdkMessages(params.messages));
 
-    // Schema normalization
+    // Schema normalization. Strict-mode rewriting (every property required) is an OpenAI
+    // Structured Outputs requirement ONLY — other providers get the schema as authored.
+    // Forcing all-required on Anthropic makes models serialize nested objects as JSON STRINGS
+    // (observed on claude-fable-5: `patch` arrived double-encoded, reading as an empty plan).
     const isZod = this.isZodSchema(params.schema);
-    const normalizedSchema = isZod ? params.schema : jsonSchema(this.strictifyJsonSchema(params.schema));
+    const normalizedSchema = isZod
+      ? params.schema
+      : jsonSchema(provider === 'openai' ? this.strictifyJsonSchema(params.schema) : params.schema);
 
     // Investigate-then-answer: when the call allows a tool budget and tools exist, run an agentic
     // loop that ends with a `submit_result` call bound to the schema. Plain single-shot object
@@ -678,7 +683,8 @@ export class Conversation {
         name: 'submit_result',
         description:
           'Submit the FINAL structured result. Call exactly once, when your investigation is complete — it ends the loop.',
-        parameters: this.strictifyJsonSchema(params.schema),
+        // Same provider split as the direct path: strict-mode rewriting is OpenAI-only.
+        parameters: args.provider === 'openai' ? this.strictifyJsonSchema(params.schema) : params.schema,
       },
       call: async (input: unknown) => {
         submitted = input as T;
@@ -2454,7 +2460,11 @@ export class Conversation {
   }
 
   /**
-   * Strictifies a JSON Schema for OpenAI Structured Outputs (strict mode).
+   * Strictifies a JSON Schema for OpenAI Structured Outputs (strict mode). OpenAI-ONLY: strict
+   * mode demands every property listed in `required`. Applying that rewrite to other providers
+   * changes model behavior — Anthropic models handed an all-required schema stringify nested
+   * objects instead of nesting them (empty-plan defect, 2026-07-22) — so callers gate this on
+   * `provider === 'openai'`.
    */
   private strictifyJsonSchema(schema: any): any {
     const root = JSON.parse(JSON.stringify(schema ?? {}));
