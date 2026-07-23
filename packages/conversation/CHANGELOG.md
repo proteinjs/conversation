@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [5.8.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.8.1...@proteinjs/conversation@5.8.2) (2026-07-23)
+
+
+### Bug Fixes
+
+* OpenAI-only strict-mode schema rewriting; bump @ai-sdk/anthropic to 3.0.100 ([f8191b4](https://github.com/proteinjs/conversation/commit/f8191b474de1c305351f4aa66f97b2c4afd1bf90))
+
+
+
+
+
 # [5.8.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.7.0...@proteinjs/conversation@5.8.0) (2026-07-21)
 
 
