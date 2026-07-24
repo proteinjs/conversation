@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.10.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.9.0...@proteinjs/conversation@5.10.0) (2026-07-24)
+
+
+### Features
+
+* claude-opus-5 pricing row ([c77a88a](https://github.com/proteinjs/conversation/commit/c77a88a82a787530b38fa5154cddb2be7c745eb7))
+
+
+
+
+
 # [5.9.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.8.2...@proteinjs/conversation@5.9.0) (2026-07-24)
 
 
