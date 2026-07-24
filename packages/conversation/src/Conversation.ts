@@ -363,6 +363,10 @@ export class Conversation {
       ? Conversation.anySignal([params.abortSignal, livenessController.signal])
       : livenessController.signal;
 
+    // Loud pre-dispatch failure when a hard-capped model's input would overflow (see
+    // assertInputWithinModelCap).
+    this.assertInputWithinModelCap(messages, modelString);
+
     const result = streamText({
       model,
       messages,
@@ -599,6 +603,10 @@ export class Conversation {
     const objectTimeoutMs = Number(process.env.CONVERSATION_OBJECT_TIMEOUT_MS || 600_000);
     const objectSignals = [AbortSignal.timeout(objectTimeoutMs), ...(params.abortSignal ? [params.abortSignal] : [])];
 
+    // Loud pre-dispatch failure when a hard-capped model's input would overflow (see
+    // assertInputWithinModelCap).
+    this.assertInputWithinModelCap(messages, modelString);
+
     const result = await aiGenerateObject({
       model,
       messages,
@@ -722,6 +730,10 @@ export class Conversation {
     // long — but bounded, so a silently dead connection can't wedge the loop forever.
     const loopTimeoutMs = Number(process.env.CONVERSATION_TOOL_LOOP_TIMEOUT_MS || 1_200_000);
     const loopSignals = [AbortSignal.timeout(loopTimeoutMs), ...(params.abortSignal ? [params.abortSignal] : [])];
+
+    // Loud pre-dispatch failure when a hard-capped model's input would overflow (see
+    // assertInputWithinModelCap).
+    this.assertInputWithinModelCap(loopMessages, args.modelString);
 
     const result = await generateText({
       model: args.model,
@@ -2120,6 +2132,81 @@ export class Conversation {
       return model;
     }
     return (model as any).modelId ?? 'unknown';
+  }
+
+  // ────────────────────────────────────────────────────────────
+  // Hard input-cap guard
+  // ────────────────────────────────────────────────────────────
+
+  /**
+   * HARD per-request input-token caps, keyed by model id prefix. Only models whose
+   * window sits BELOW the 1M default belong here — 1M-window models (claude-fable-5,
+   * claude-opus-4-8, claude-sonnet-4-6) are deliberately absent: 1M is their default
+   * window at standard pricing (no premium long-context tier since 2026-03-13), so
+   * overflowing one is a content problem, not a routing problem.
+   */
+  private static readonly HARD_INPUT_TOKEN_CAPS: Record<string, number> = {
+    // Anthropic 400s ("prompt is too long") past 200K.
+    'claude-haiku-4-5': 200_000,
+  };
+
+  /**
+   * Fail LOUDLY before dispatch when the assembled input would blow a hard-capped
+   * model's window. Runs at every dispatch seam (generateStream, generateObject, and
+   * the object tool loop) with the final outgoing messages. Capped models (haiku) are
+   * never user-selected — only internal flow implementations route to them — so
+   * exceeding the cap is always a routing bug; the provider's own failure is an opaque
+   * 400 ("prompt is too long") that hides which call overflowed. No rerouting here:
+   * the caller owns model choice and must fix the route.
+   *
+   * The estimate reuses the shared o200k encoder (`countToolResultTokens`) over the
+   * messages' textual content — string content, text parts, tool inputs/outputs as
+   * JSON; image/file bytes are provider-priced and skipped. The 5% headroom under the
+   * cap absorbs estimator drift against the provider's tokenizer.
+   */
+  private assertInputWithinModelCap(messages: ModelMessage[], modelString: string): void {
+    // Match on the model id — after any `provider:` prefix, tolerating dated suffixes
+    // (`claude-haiku-4-5-20251001`).
+    const colonIdx = modelString.indexOf(':');
+    const modelId = colonIdx > 0 ? modelString.slice(colonIdx + 1) : modelString;
+    const capEntry = Object.entries(Conversation.HARD_INPUT_TOKEN_CAPS).find(([prefix]) => modelId.startsWith(prefix));
+    if (!capEntry) {
+      return;
+    }
+
+    const cap = capEntry[1];
+    const threshold = Math.floor(cap * 0.95);
+    let estimated = 0;
+    for (const msg of messages) {
+      if (typeof msg.content === 'string') {
+        estimated += Conversation.countToolResultTokens(msg.content);
+        continue;
+      }
+      if (!Array.isArray(msg.content)) {
+        continue;
+      }
+      for (const part of msg.content as Array<Record<string, unknown>>) {
+        if (part.type === 'text' && typeof part.text === 'string') {
+          estimated += Conversation.countToolResultTokens(part.text);
+        } else if (part.type === 'tool-call' || part.type === 'tool-result') {
+          const payload = part.type === 'tool-call' ? part.input : part.output;
+          try {
+            estimated += Conversation.countToolResultTokens(JSON.stringify(payload) ?? '');
+          } catch {
+            // Non-serializable payloads contribute nothing to the estimate.
+          }
+        }
+      }
+    }
+    if (estimated <= threshold) {
+      return;
+    }
+
+    throw new Error(
+      `Input too large for hard-capped model ${modelString}: ~${estimated} estimated tokens > ${threshold} ` +
+        `(95% of its ${cap}-token input cap) [conversation: ${this.params.name}]. This model is only routed to ` +
+        `internally, so this is a routing bug — route this call to a 1M-context model.`
+    );
   }
 
   // ────────────────────────────────────────────────────────────
