@@ -311,6 +311,8 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   // (N3XA writes default ephemeral caches via applyAnthropicPromptCaching, no
   // explicit ttl). cachedInputUsdPer1M is the cache-READ rate (0.1x input).
   'claude-fable-5': { inputUsdPer1M: 10.0, cachedInputUsdPer1M: 1.0, cacheWriteUsdPer1M: 12.5, outputUsdPer1M: 50.0 },
+  // Opus 5 (launched 2026-07-24): same rates as Opus 4.8 per the published pricing page.
+  'claude-opus-5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4-8': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4-7': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
   'claude-opus-4-6': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },
