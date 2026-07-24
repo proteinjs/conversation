@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.9.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.8.2...@proteinjs/conversation@5.9.0) (2026-07-24)
+
+
+### Features
+
+* hard input-cap guard for capped models (haiku 200K) at the dispatch seams ([8f6a2ec](https://github.com/proteinjs/conversation/commit/8f6a2ec76a75915bada59a06a9056d5d642de183))
+
+
+
+
+
 ## [5.8.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.8.1...@proteinjs/conversation@5.8.2) (2026-07-23)
 
 
