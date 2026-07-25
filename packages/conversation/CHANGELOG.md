@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [5.11.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.11.0...@proteinjs/conversation@5.11.1) (2026-07-25)
+
+
+### Bug Fixes
+
+* gate exit-note absorption behind absorbExitNotes (chat-lane opt-in) ([f057071](https://github.com/proteinjs/conversation/commit/f05707195b575ae0e7006a34bc3d14c1e62f2abd))
+
+
+
+
+
 # [5.11.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.10.0...@proteinjs/conversation@5.11.0) (2026-07-25)
 
 
