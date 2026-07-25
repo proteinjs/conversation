@@ -6,7 +6,7 @@ import { SdkContentParts } from './sdkContentParts';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
 import { ConversationSkill } from './ConversationSkill';
-import { Function } from './Function';
+import { Function, ToolTimelineDetail } from './Function';
 import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
 import { UsageData, UsageDataAccumulator, TokenUsage } from './UsageData';
@@ -134,8 +134,10 @@ export type StreamPart =
        * A short, human-meaningful subject for the call when one can be derived
        * from the tool input (e.g. a web-search query, a created space/thought
        * title) — used to personalize the call's node in the thinking timeline.
+       * A `ToolTimelineDetail` additionally carries a deep-link href the
+       * rendering layer can make clickable.
        */
-      detail?: string;
+      detail?: string | ToolTimelineDetail;
       /**
        * True when this is a provider-defined tool (e.g. Anthropic's native
        * `text_editor` / `bash`) rather than a custom function tool. Custom tools
@@ -367,21 +369,22 @@ export class Conversation {
     // assertInputWithinModelCap).
     this.assertInputWithinModelCap(messages, modelString);
 
-    const result = streamText({
-      model,
-      messages,
-      tools: Object.keys(allTools).length > 0 ? allTools : undefined,
-      toolChoice: webSearchToolChoice,
-      stopWhen: [
-        stepCountIs(params.maxToolCalls ?? 50),
-        ...(params.stopOnToolCalls ?? []).map((name) => hasToolCall(name)),
-      ],
-      // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer so
-      // budgets don't stack multiplicatively.
-      maxRetries: 0,
-      abortSignal: combinedAbortSignal,
-      providerOptions,
-      prepareStep: ({ messages: stepMessages }) => {
+    const startCall = (callMessages: ModelMessage[]) =>
+      streamText({
+        model,
+        messages: callMessages,
+        tools: Object.keys(allTools).length > 0 ? allTools : undefined,
+        toolChoice: webSearchToolChoice,
+        stopWhen: [
+          stepCountIs(params.maxToolCalls ?? 50),
+          ...(params.stopOnToolCalls ?? []).map((name) => hasToolCall(name)),
+        ],
+        // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer so
+        // budgets don't stack multiplicatively.
+        maxRetries: 0,
+        abortSignal: combinedAbortSignal,
+        providerOptions,
+        prepareStep: ({ messages: stepMessages }) => {
         let next = stepMessages;
         if (params.drainInjectedContext) {
           for (const content of params.drainInjectedContext() ?? []) {
@@ -445,9 +448,165 @@ export class Conversation {
         : undefined,
     });
 
-    // Build the StreamResult
-    const usagePromise = this.buildUsagePromise(result, modelString, params);
-    const toolInvocationsPromise = this.buildToolInvocationsPromise(result, capturedInvocations);
+    const result = startCall(messages);
+
+    // ── Boundary-note absorption (the steering hold) ──
+    // A note that arrives DURING the final generation step never meets prepareStep (it only runs
+    // when there is a NEXT step), so it used to fall through to the caller's settle path and come
+    // back as a SECOND response after this one — out-of-order reading, two bands for one thought.
+    // Instead, when the SDK's stream completes while the drain still holds notes, this continues
+    // the SAME logical response: the finished call's transcript (raw step messages = original +
+    // response messages, which is exactly what the splice anchors were recorded against) gets the
+    // outstanding splices materialized, the notes append as user messages, and a follow-up call
+    // streams into the same fullStream. Repeats until the drain is quiet at exit — one turn, one
+    // response, ordered after everything it absorbed.
+    const MAX_CONTINUATION_ROUNDS = 10;
+    const roundResults: Array<typeof result> = [result];
+    let liveResult = result;
+
+    // Usage and tool invocations must cover ALL rounds as ONE logical response (downstream
+    // recorders key/dedupe on the response message id — per-round reporting would drop every
+    // round after the first). Deferred: resolved when the combined stream finishes.
+    let resolveUsage!: (u: UsageData) => void;
+    let rejectUsage!: (e: unknown) => void;
+    const usagePromise = new Promise<UsageData>((res, rej) => {
+      resolveUsage = res;
+      rejectUsage = rej;
+    });
+    let resolveToolInvocations!: (t: ToolInvocationResult[]) => void;
+    const toolInvocationsPromise = new Promise<ToolInvocationResult[]>((res) => {
+      resolveToolInvocations = res;
+    });
+    const finalizeAcrossRounds = async () => {
+      try {
+        const settled = await Promise.allSettled(
+          roundResults.map(async (r) => ({ usage: await r.totalUsage, steps: await r.steps }))
+        );
+        const rounds = settled.filter((s): s is PromiseFulfilledResult<any> => s.status === 'fulfilled').map((s) => s.value);
+        const summed = rounds.reduce(
+          (acc, { usage }) => ({
+            inputTokens: acc.inputTokens + (usage?.inputTokens ?? 0),
+            outputTokens: acc.outputTokens + (usage?.outputTokens ?? 0),
+            totalTokens: acc.totalTokens + (usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0)),
+            inputTokenDetails: {
+              cacheReadTokens: acc.inputTokenDetails.cacheReadTokens + (usage?.inputTokenDetails?.cacheReadTokens ?? 0),
+              cacheWriteTokens:
+                acc.inputTokenDetails.cacheWriteTokens + (usage?.inputTokenDetails?.cacheWriteTokens ?? 0),
+            },
+            outputTokenDetails: {
+              reasoningTokens:
+                acc.outputTokenDetails.reasoningTokens + (usage?.outputTokenDetails?.reasoningTokens ?? 0),
+            },
+          }),
+          {
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+            inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: 0 },
+            outputTokenDetails: { reasoningTokens: 0 },
+          }
+        );
+        const allSteps = rounds.flatMap(({ steps }) => steps ?? []);
+        const usage = this.mapSdkUsage(summed as LanguageModelUsage, modelString, allSteps);
+        if (params.onUsageData) {
+          await params.onUsageData(usage);
+        }
+        resolveUsage(usage);
+        resolveToolInvocations(
+          await this.buildToolInvocationsPromise({ steps: Promise.resolve(allSteps) }, capturedInvocations)
+        );
+      } catch (error) {
+        rejectUsage(error);
+        resolveToolInvocations(capturedInvocations);
+      }
+    };
+
+    // Finalization fires exactly once, from whichever path completes the call:
+    // - streaming consumers (fullStream) finalize when the combined generator ends;
+    // - buffered consumers (generateResponse awaits the promises without touching fullStream)
+    //   finalize when round 1's usage resolves — boundary absorption doesn't apply to them
+    //   (there is no live stream to hold open), and without this they'd deadlock on the
+    //   deferred usage promise.
+    let finalized = false;
+    let generatorStarted = false;
+    const finalizeOnce = () => {
+      if (finalized) {
+        return;
+      }
+      finalized = true;
+      void finalizeAcrossRounds();
+    };
+    Promise.resolve(result.totalUsage).then(
+      () => {
+        if (!generatorStarted) {
+          finalizeOnce();
+        }
+      },
+      () => {
+        if (!generatorStarted) {
+          finalizeOnce();
+        }
+      }
+    );
+
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const self = this;
+    const combinedSdkStream = (async function* () {
+      generatorStarted = true;
+      let current = result;
+      let currentMessages = messages;
+      let rounds = 0;
+      try {
+        while (true) {
+          yield* self.guardStreamLiveness(current.fullStream, livenessController, modelString);
+          if (combinedAbortSignal.aborted || !params.drainInjectedContext || finalized) {
+            break;
+          }
+          if (rounds >= MAX_CONTINUATION_ROUNDS) {
+            // Don't drain what we can't absorb — the caller's settle reconciliation owns the rest.
+            self.logger.warn({
+              message: 'Boundary-note absorption hit the continuation cap; leaving remaining notes to settle',
+              obj: { rounds },
+            });
+            break;
+          }
+          const drained = (params.drainInjectedContext() ?? []).map((c) => String(c ?? '').trim()).filter(Boolean);
+          if (drained.length === 0) {
+            break;
+          }
+          const responseMessages = (await current.response).messages as ModelMessage[];
+          let nextMessages = [...currentMessages, ...responseMessages];
+          if (injectedContextSplices.length > 0) {
+            // Mid-loop splices were projected per step, never stored — materialize them into the
+            // transcript once (the anchors were recorded against exactly this raw shape), then
+            // clear so the follow-up call's prepareStep doesn't re-project them at stale anchors.
+            nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
+            injectedContextSplices.length = 0;
+          }
+          nextMessages = [
+            ...nextMessages,
+            ...drained.map((text) => ({ role: 'user', content: text }) as ModelMessage),
+          ];
+          self.logger.info({
+            message: 'Absorbing boundary notes into the same response',
+            obj: { noteCount: drained.length, round: rounds + 1 },
+          });
+          // The continuation's prose is a new paragraph, not a run-on of the draft's last
+          // sentence (consumers join consecutive text-deltas with nothing in between).
+          yield { type: 'text-delta', delta: '\n\n' };
+          current = startCall(nextMessages);
+          Promise.resolve(current.finishReason).catch(() => {});
+          Promise.resolve((current as any).rawFinishReason).catch(() => {});
+          Promise.resolve(current.response).catch(() => {});
+          roundResults.push(current);
+          liveResult = current;
+          currentMessages = nextMessages;
+          rounds++;
+        }
+      } finally {
+        finalizeOnce();
+      }
+    })();
 
     // IMPORTANT: We must NOT eagerly evaluate result.text, result.reasoning,
     // or result.sources here. In AI SDK v6, these getters trigger internal
@@ -460,14 +619,16 @@ export class Conversation {
     // promise is actually awaited (i.e. in generateResponse). The catch
     // handlers still prevent unhandled rejections on abort.
 
-    // Lazy promise factories — only trigger AI SDK stream consumption on access
+    // Lazy promise factories — only trigger AI SDK stream consumption on access. They read from
+    // liveResult (the newest continuation round) so post-completion consumers — e.g. the sources
+    // fallback that runs after the combined stream ends — see the final round's data.
     const lazySafeText = () =>
-      Promise.resolve(result.text).catch((err) => {
+      Promise.resolve(liveResult.text).catch((err) => {
         this.logger.error({ message: 'Error resolving text from stream', obj: { error: err?.message ?? err } });
         return '';
       });
     const lazySafeReasoning = () =>
-      Promise.resolve(result.reasoning)
+      Promise.resolve(liveResult.reasoning)
         .then((parts: ReasoningOutput[]) =>
           parts
             ? parts
@@ -478,7 +639,7 @@ export class Conversation {
         )
         .catch(() => '');
     const lazySafeSources = () =>
-      Promise.resolve(result.sources)
+      Promise.resolve(liveResult.sources)
         .then((s: LanguageModelV3Source[]) =>
           (s ?? []).map((source) => ({
             url: source.sourceType === 'url' ? source.url : undefined,
@@ -533,7 +694,9 @@ export class Conversation {
         // Reasoning is available via the promise after generation completes.
         // For real-time streaming, use fullStream instead.
       })(),
-      fullStream: this.mapFullStream(this.guardStreamLiveness(result.fullStream, livenessController, modelString)),
+      // Liveness is guarded per round INSIDE the combined stream (each continuation call gets its
+      // own guarded iteration; one idle window spans them via the shared controller).
+      fullStream: this.mapFullStream(combinedSdkStream),
       // Lazy getters: only start consuming the AI SDK stream when accessed.
       // This prevents dual-consumption when the caller uses fullStream instead.
       get text() {
@@ -2353,7 +2516,10 @@ export class Conversation {
    * Used by `buildAiSdkTools` so flow tool-progress events carry the same detail `mapFullStream`
    * surfaces on the non-flow streaming path. Best-effort: never throws.
    */
-  private async resolveToolTimelineDetail(toolName: string, input: unknown): Promise<string | undefined> {
+  private async resolveToolTimelineDetail(
+    toolName: string,
+    input: unknown
+  ): Promise<string | ToolTimelineDetail | undefined> {
     try {
       const fn = this.functions.find((f) => f.definition.name === toolName);
       if (fn?.getTimelineDetail) {
@@ -2455,7 +2621,7 @@ export class Conversation {
               const fn = functions.find((f) => f.definition.name === toolName);
               // Prefer the tool's own detail resolver (it can name an entity by
               // id); fall back to a generic detail derived from the input.
-              let detail: string | undefined;
+              let detail: string | ToolTimelineDetail | undefined;
               try {
                 if (fn?.getTimelineDetail) {
                   detail = (await fn.getTimelineDetail(part.input)) || undefined;

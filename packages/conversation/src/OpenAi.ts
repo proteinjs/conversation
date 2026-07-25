@@ -9,7 +9,7 @@ import {
 import { isInstanceOf } from '@proteinjs/util';
 import { LogLevel, Logger } from '@proteinjs/logger';
 import { MessageModerator } from './history/MessageModerator';
-import { Function } from './Function';
+import { Function, ToolTimelineDetail } from './Function';
 import { MessageHistory } from './history/MessageHistory';
 import { TiktokenModel } from 'tiktoken';
 import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
@@ -45,8 +45,11 @@ export type ToolInvocationStartEvent = {
   name: string;
   startedAt: Date;
   input: unknown;
-  /** Curated one-line timeline detail (e.g. the edited thought's title) from the tool's getTimelineDetail. */
-  detail?: string;
+  /**
+   * Curated one-line timeline detail (e.g. the edited thought's title) from the tool's
+   * getTimelineDetail. A `ToolTimelineDetail` object additionally carries a deep-link href.
+   */
+  detail?: string | ToolTimelineDetail;
 };
 
 export const isToolInvocationStartEvent = (event: ToolInvocationProgressEvent): event is ToolInvocationStartEvent =>
