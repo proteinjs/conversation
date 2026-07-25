@@ -385,68 +385,68 @@ export class Conversation {
         abortSignal: combinedAbortSignal,
         providerOptions,
         prepareStep: ({ messages: stepMessages }) => {
-        let next = stepMessages;
-        if (params.drainInjectedContext) {
-          for (const content of params.drainInjectedContext() ?? []) {
-            const text = String(content ?? '').trim();
-            if (!text) {
-              continue;
+          let next = stepMessages;
+          if (params.drainInjectedContext) {
+            for (const content of params.drainInjectedContext() ?? []) {
+              const text = String(content ?? '').trim();
+              if (!text) {
+                continue;
+              }
+              injectedContextSplices.push({
+                anchorIndex: stepMessages.length,
+                message: { role: 'user', content: text } as ModelMessage,
+              });
             }
-            injectedContextSplices.push({
-              anchorIndex: stepMessages.length,
-              message: { role: 'user', content: text } as ModelMessage,
-            });
+            if (injectedContextSplices.length > 0) {
+              next = Conversation.spliceInjectedContext(next, injectedContextSplices);
+            }
           }
-          if (injectedContextSplices.length > 0) {
-            next = Conversation.spliceInjectedContext(next, injectedContextSplices);
+          if (pendingImageInjections) {
+            next = this.injectPendingImageUserMessages(next, pendingImageInjections).messages;
           }
-        }
-        if (pendingImageInjections) {
-          next = this.injectPendingImageUserMessages(next, pendingImageInjections).messages;
-        }
-        if (this.params.toolImageRetention != null) {
-          next = Conversation.pruneStaleToolImages(next, this.params.toolImageRetention);
-        }
-        if (this.params.toolResultTokenBudget != null) {
-          next = Conversation.pruneToolResultsOverBudget(next, this.params.toolResultTokenBudget);
-        }
-        if (provider === 'anthropic') {
-          // Runs for every step including the first, so this is the single seam
-          // where outgoing Anthropic requests get cache breakpoints (after pruning —
-          // marks must land on the final per-step messages).
-          next = Conversation.applyAnthropicPromptCaching(next);
-        }
-        // Coerce non-object tool-call inputs LAST, so it sees the final per-step
-        // messages (after image inject/prune + cache marking).
-        const finalMessages = this.sanitizeToolCallInputs(next);
-        Conversation.dumpOutgoingRequest(finalMessages, allTools, modelString);
-        return { messages: finalMessages };
-      },
-      onStepFinish: params.onPartialUsageData
-        ? async (step) => {
-            const su = step.usage;
-            cumIn += su?.inputTokens ?? 0;
-            cumOut += su?.outputTokens ?? 0;
-            cumTotal += su?.totalTokens ?? (su?.inputTokens ?? 0) + (su?.outputTokens ?? 0);
-            cumCacheRead += su?.inputTokenDetails?.cacheReadTokens ?? 0;
-            cumCacheWrite += su?.inputTokenDetails?.cacheWriteTokens ?? 0;
-            cumReason += su?.outputTokenDetails?.reasoningTokens ?? 0;
-            cumSteps += 1;
-            const partial = this.mapSdkUsage(
-              {
-                inputTokens: cumIn,
-                outputTokens: cumOut,
-                totalTokens: cumTotal,
-                inputTokenDetails: { cacheReadTokens: cumCacheRead, cacheWriteTokens: cumCacheWrite },
-                outputTokenDetails: { reasoningTokens: cumReason },
-              } as LanguageModelUsage,
-              modelString,
-              Array.from({ length: cumSteps }, () => ({}))
-            );
-            await params.onPartialUsageData!(partial);
+          if (this.params.toolImageRetention != null) {
+            next = Conversation.pruneStaleToolImages(next, this.params.toolImageRetention);
           }
-        : undefined,
-    });
+          if (this.params.toolResultTokenBudget != null) {
+            next = Conversation.pruneToolResultsOverBudget(next, this.params.toolResultTokenBudget);
+          }
+          if (provider === 'anthropic') {
+            // Runs for every step including the first, so this is the single seam
+            // where outgoing Anthropic requests get cache breakpoints (after pruning —
+            // marks must land on the final per-step messages).
+            next = Conversation.applyAnthropicPromptCaching(next);
+          }
+          // Coerce non-object tool-call inputs LAST, so it sees the final per-step
+          // messages (after image inject/prune + cache marking).
+          const finalMessages = this.sanitizeToolCallInputs(next);
+          Conversation.dumpOutgoingRequest(finalMessages, allTools, modelString);
+          return { messages: finalMessages };
+        },
+        onStepFinish: params.onPartialUsageData
+          ? async (step) => {
+              const su = step.usage;
+              cumIn += su?.inputTokens ?? 0;
+              cumOut += su?.outputTokens ?? 0;
+              cumTotal += su?.totalTokens ?? (su?.inputTokens ?? 0) + (su?.outputTokens ?? 0);
+              cumCacheRead += su?.inputTokenDetails?.cacheReadTokens ?? 0;
+              cumCacheWrite += su?.inputTokenDetails?.cacheWriteTokens ?? 0;
+              cumReason += su?.outputTokenDetails?.reasoningTokens ?? 0;
+              cumSteps += 1;
+              const partial = this.mapSdkUsage(
+                {
+                  inputTokens: cumIn,
+                  outputTokens: cumOut,
+                  totalTokens: cumTotal,
+                  inputTokenDetails: { cacheReadTokens: cumCacheRead, cacheWriteTokens: cumCacheWrite },
+                  outputTokenDetails: { reasoningTokens: cumReason },
+                } as LanguageModelUsage,
+                modelString,
+                Array.from({ length: cumSteps }, () => ({}))
+              );
+              await params.onPartialUsageData!(partial);
+            }
+          : undefined,
+      });
 
     const result = startCall(messages);
 
@@ -482,12 +482,15 @@ export class Conversation {
         const settled = await Promise.allSettled(
           roundResults.map(async (r) => ({ usage: await r.totalUsage, steps: await r.steps }))
         );
-        const rounds = settled.filter((s): s is PromiseFulfilledResult<any> => s.status === 'fulfilled').map((s) => s.value);
+        const rounds = settled
+          .filter((s): s is PromiseFulfilledResult<any> => s.status === 'fulfilled')
+          .map((s) => s.value);
         const summed = rounds.reduce(
           (acc, { usage }) => ({
             inputTokens: acc.inputTokens + (usage?.inputTokens ?? 0),
             outputTokens: acc.outputTokens + (usage?.outputTokens ?? 0),
-            totalTokens: acc.totalTokens + (usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0)),
+            totalTokens:
+              acc.totalTokens + (usage?.totalTokens ?? (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0)),
             inputTokenDetails: {
               cacheReadTokens: acc.inputTokenDetails.cacheReadTokens + (usage?.inputTokenDetails?.cacheReadTokens ?? 0),
               cacheWriteTokens:
@@ -583,10 +586,7 @@ export class Conversation {
             nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
             injectedContextSplices.length = 0;
           }
-          nextMessages = [
-            ...nextMessages,
-            ...drained.map((text) => ({ role: 'user', content: text }) as ModelMessage),
-          ];
+          nextMessages = [...nextMessages, ...drained.map((text) => ({ role: 'user', content: text }) as ModelMessage)];
           self.logger.info({
             message: 'Absorbing boundary notes into the same response',
             obj: { noteCount: drained.length, round: rounds + 1 },
