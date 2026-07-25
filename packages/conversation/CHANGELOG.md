@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.11.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.10.0...@proteinjs/conversation@5.11.0) (2026-07-25)
+
+
+### Features
+
+* steering hold + linkable tool timeline details ([4408460](https://github.com/proteinjs/conversation/commit/4408460c71ca6f3fb9b62acdba52af814275f1ce))
+
+
+
+
+
 # [5.10.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.9.0...@proteinjs/conversation@5.10.0) (2026-07-24)
 
 
