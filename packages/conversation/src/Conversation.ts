@@ -113,6 +113,16 @@ export type GenerateStreamParams = {
    * the splice; the caller owns transport, durability, and any acknowledgment bookkeeping.
    */
   drainInjectedContext?: () => string[];
+  /**
+   * Absorb exit notes: when the model's FINAL generation finishes and `drainInjectedContext`
+   * still yields notes, extend the SAME call with continuation rounds (prior response messages +
+   * the spliced notes) instead of leaving the notes for the caller's settle path. Opt-in — this
+   * is the CHAT turn's zero-boundary steering hold. Callers with their own note-absorption
+   * machinery downstream of the model loop (the flow runner's boundary drains + turn rotation)
+   * must leave it off: their drain hooks carry side effects (artifact-izing, rotation events)
+   * that an exit-time drain would fire at the wrong seam.
+   */
+  absorbExitNotes?: boolean;
 
   // OpenAI-specific
   backgroundMode?: boolean;
@@ -562,7 +572,7 @@ export class Conversation {
       try {
         while (true) {
           yield* self.guardStreamLiveness(current.fullStream, livenessController, modelString);
-          if (combinedAbortSignal.aborted || !params.drainInjectedContext || finalized) {
+          if (combinedAbortSignal.aborted || !params.absorbExitNotes || !params.drainInjectedContext || finalized) {
             break;
           }
           if (rounds >= MAX_CONTINUATION_ROUNDS) {
