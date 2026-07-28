@@ -21,4 +21,21 @@ export interface Function {
   getTimelineDetail?(
     args: any
   ): string | ToolTimelineDetail | undefined | Promise<string | ToolTimelineDetail | undefined>;
+  /**
+   * Optional: outcome-aware re-labeling of the just-finished call's timeline node. The
+   * call-time node is named from the INPUT alone, so a call that ends up applying nothing
+   * (e.g. an edit refused by a freshness/lock fence) would still render as done — this hook
+   * inspects the RESULT and relabels. Best-effort: the framework swallows errors and keeps
+   * the call-time labeling. `name` REPLACES the node's tool name — use the `tool:variant`
+   * suffix convention (e.g. `editThoughts:deferred`) so presentation maps can target it;
+   * `detail` replaces the node's detail (omit to keep the call-time one). Return undefined
+   * (or an empty object) for no relabel.
+   */
+  getTimelineOutcome?(
+    args: any,
+    result: any
+  ):
+    | { name?: string; detail?: string | ToolTimelineDetail }
+    | undefined
+    | Promise<{ name?: string; detail?: string | ToolTimelineDetail } | undefined>;
 }

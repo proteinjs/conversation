@@ -36,6 +36,12 @@ export type ToolInvocationResult = {
   ok: boolean;
   data?: unknown; // tool return value (JSON-serializable)
   error?: { message: string; stack?: string };
+  /**
+   * Outcome-aware timeline relabel from the tool's `getTimelineOutcome` (e.g. a refused edit
+   * renders as deferred, not done). `name` replaces the call's timeline node name; `detail`
+   * replaces the call-time detail when present.
+   */
+  outcome?: { name?: string; detail?: string | ToolTimelineDetail };
 };
 
 /** Realtime progress hook for tool calls. */

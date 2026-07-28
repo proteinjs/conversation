@@ -156,6 +156,21 @@ export type StreamPart =
        * tools have no callback and are surfaced ONLY through this stream part.
        */
       providerDefined: boolean;
+    }
+  | {
+      /**
+       * Outcome-aware relabel of the just-finished call's timeline node, from the tool's
+       * `getTimelineOutcome` (e.g. an edit refused by a freshness/lock fence renders as
+       * deferred, not done). `toolName` is the ORIGINAL tool name (as the `tool-call` part
+       * carried it) so consumers can find the node; `name` replaces the node's tool name
+       * (the `tool:variant` suffix convention lets presentation maps target it); `detail`
+       * replaces the call-time detail when present. Emitted only for tools implementing
+       * the hook, and only when it returns something — zero churn for everything else.
+       */
+      type: 'tool-outcome';
+      toolName: string;
+      name?: string;
+      detail?: string | ToolTimelineDetail;
     };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
@@ -1275,6 +1290,21 @@ export class Conversation {
             onToolInvocation?.({ type: 'finished', result: failedInvocation });
             throw toolError;
           }
+          // Outcome-aware relabel: the result can rename the call's timeline node (e.g. a
+          // refused edit renders as deferred). Carried on the invocation so the flow lane's
+          // tool-progress events and recorded invocations see the same outcome mapFullStream
+          // surfaces on the streaming path. Best-effort — never let it break a tool call.
+          let outcome: { name?: string; detail?: string | ToolTimelineDetail } | undefined;
+          if (f.getTimelineOutcome) {
+            try {
+              const resolved = await f.getTimelineOutcome(args, result);
+              if (resolved && (resolved.name || resolved.detail)) {
+                outcome = resolved;
+              }
+            } catch {
+              // outcome is best-effort
+            }
+          }
           const okInvocation: ToolInvocationResult = {
             id: executionOptions.toolCallId,
             name: def.name,
@@ -1283,6 +1313,7 @@ export class Conversation {
             input: args,
             ok: true,
             data: result,
+            ...(outcome ? { outcome } : {}),
           };
           recordInvocation?.(okInvocation);
           onToolInvocation?.({ type: 'finished', result: okInvocation });
@@ -2663,6 +2694,28 @@ export class Conversation {
                 detail: detail ?? computerAction?.detail ?? deriveToolCallDetail(part.input),
                 providerDefined: !fn,
               };
+            } else if (part.type === 'tool-result') {
+              // The tool has RUN now (v6 tool-result parts carry toolName/input/output), so its
+              // result can relabel the call-time timeline node — e.g. an editThoughts refused by
+              // the freshness/lock fence renders as deferred, not done. Only tools implementing
+              // getTimelineOutcome ever yield a part here — zero churn for everything else.
+              const fn = functions.find((f) => f.definition.name === part.toolName);
+              if (fn?.getTimelineOutcome) {
+                let outcome: { name?: string; detail?: string | ToolTimelineDetail } | undefined;
+                try {
+                  outcome = (await fn.getTimelineOutcome(part.input, part.output)) || undefined;
+                } catch {
+                  // outcome is best-effort — never let it break the stream
+                }
+                if (outcome && (outcome.name || outcome.detail)) {
+                  yield {
+                    type: 'tool-outcome' as const,
+                    toolName: part.toolName,
+                    ...(outcome.name ? { name: outcome.name } : {}),
+                    ...(outcome.detail ? { detail: outcome.detail } : {}),
+                  };
+                }
+              }
             } else if (part.type === 'source') {
               yield {
                 type: 'source' as const,
