@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.13.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.12.0...@proteinjs/conversation@5.13.0) (2026-07-28)
+
+
+### Features
+
+* thinking-phase restart folds mid-turn notes into ONE re-planned answer ([598dca2](https://github.com/proteinjs/conversation/commit/598dca2ac0a8e2f5ee84d1e0656e1d916281707a))
+
+
+
+
+
 # [5.12.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.11.1...@proteinjs/conversation@5.12.0) (2026-07-28)
 
 
