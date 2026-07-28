@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.12.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.11.1...@proteinjs/conversation@5.12.0) (2026-07-28)
+
+
+### Features
+
+* outcome-aware timeline relabeling (Function.getTimelineOutcome) ([2455e1d](https://github.com/proteinjs/conversation/commit/2455e1d4eed663a911d2c2e30aacebac14584fa0))
+
+
+
+
+
 ## [5.11.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.11.0...@proteinjs/conversation@5.11.1) (2026-07-25)
 
 
