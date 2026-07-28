@@ -123,6 +123,18 @@ export type GenerateStreamParams = {
    * that an exit-time drain would fire at the wrong seam.
    */
   absorbExitNotes?: boolean;
+  /**
+   * Non-consuming peek at `drainInjectedContext`'s source. When provided, a note that arrives
+   * while the model is still THINKING — before the current round has streamed any user-material
+   * output (no text, no tool input) — RESTARTS the round: the in-flight call is aborted, the
+   * notes are drained and appended as user messages, and a fresh call re-plans with everything
+   * in hand. This is what turns a rapid second message into ONE reshaped answer instead of an
+   * already-composed answer with the note's answer appended. Once text has streamed or a tool
+   * has begun (visible content can't be unshown; tools have side effects), restarts stop and
+   * notes ride the step-boundary splice as usual. Only meaningful alongside
+   * `drainInjectedContext`.
+   */
+  peekInjectedContext?: () => boolean;
 
   // OpenAI-specific
   backgroundMode?: boolean;
@@ -394,7 +406,7 @@ export class Conversation {
     // assertInputWithinModelCap).
     this.assertInputWithinModelCap(messages, modelString);
 
-    const startCall = (callMessages: ModelMessage[]) =>
+    const startCall = (callMessages: ModelMessage[], roundSignal?: AbortSignal) =>
       streamText({
         model,
         messages: callMessages,
@@ -407,7 +419,9 @@ export class Conversation {
         // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer so
         // budgets don't stack multiplicatively.
         maxRetries: 0,
-        abortSignal: combinedAbortSignal,
+        // The per-round signal exists for the thinking-phase restart (peekInjectedContext): it
+        // aborts ONE round's call without touching the turn-level signal or the liveness guard.
+        abortSignal: roundSignal ? Conversation.anySignal([combinedAbortSignal, roundSignal]) : combinedAbortSignal,
         providerOptions,
         prepareStep: ({ messages: stepMessages }) => {
           let next = stepMessages;
@@ -473,7 +487,10 @@ export class Conversation {
           : undefined,
       });
 
-    const result = startCall(messages);
+    // Every round gets its own controller so the thinking-phase restart (peekInjectedContext)
+    // can abort ONE round without ending the turn.
+    let roundController = new AbortController();
+    const result = startCall(messages, roundController.signal);
 
     // ── Boundary-note absorption (the steering hold) ──
     // A note that arrives DURING the final generation step never meets prepareStep (it only runs
@@ -586,7 +603,78 @@ export class Conversation {
       let rounds = 0;
       try {
         while (true) {
-          yield* self.guardStreamLiveness(current.fullStream, livenessController, modelString);
+          // Consume the round part-by-part so a note that arrives while the model is still
+          // THINKING can restart it (see peekInjectedContext). `roundMaterial` flips at the
+          // first user-material part: tool parts BEFORE the restart check (input streaming
+          // means execution is imminent — never abort into a side effect), text AFTER it (the
+          // first text-delta hasn't been yielded yet, so restarting right at it shows nothing).
+          let roundMaterial = false;
+          let restartRequested = false;
+          try {
+            for await (const part of self.guardStreamLiveness(current.fullStream, livenessController, modelString)) {
+              const partType = (part as { type?: string }).type;
+              if (partType === 'tool-input-start' || partType === 'tool-call' || partType === 'tool-result') {
+                roundMaterial = true;
+              }
+              if (
+                !roundMaterial &&
+                params.peekInjectedContext?.() &&
+                params.drainInjectedContext &&
+                rounds < MAX_CONTINUATION_ROUNDS &&
+                !combinedAbortSignal.aborted
+              ) {
+                restartRequested = true;
+                roundController.abort();
+                break;
+              }
+              if (partType === 'text-delta') {
+                roundMaterial = true;
+              }
+              yield part;
+            }
+          } catch (error) {
+            if (!restartRequested) {
+              throw error;
+            }
+            // The abort WE fired surfacing through the stream — swallowed; the restart below owns
+            // the round.
+          }
+          if (restartRequested) {
+            // Nothing user-material streamed: re-plan the SAME response with the notes in hand —
+            // one reshaped answer instead of a composed answer with the note's answer appended.
+            // The aborted round's promises reject with the abort; finalizeAcrossRounds already
+            // tolerates rejected rounds (allSettled).
+            Promise.resolve(current.totalUsage).catch(() => {});
+            Promise.resolve(current.response).catch(() => {});
+            Promise.resolve(current.finishReason).catch(() => {});
+            Promise.resolve((current as any).rawFinishReason).catch(() => {});
+            const drained = (params.drainInjectedContext!() ?? []).map((c) => String(c ?? '').trim()).filter(Boolean);
+            let nextMessages = [...currentMessages];
+            if (injectedContextSplices.length > 0) {
+              // Splices projected by the aborted round's prepareStep — materialize them once
+              // (anchors were recorded against this raw shape), same as the continuation path.
+              nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
+              injectedContextSplices.length = 0;
+            }
+            nextMessages = [
+              ...nextMessages,
+              ...drained.map((text) => ({ role: 'user', content: text }) as ModelMessage),
+            ];
+            self.logger.info({
+              message: 'Restarting thinking-phase round with mid-turn notes',
+              obj: { noteCount: drained.length, round: rounds + 1 },
+            });
+            roundController = new AbortController();
+            current = startCall(nextMessages, roundController.signal);
+            Promise.resolve(current.finishReason).catch(() => {});
+            Promise.resolve((current as any).rawFinishReason).catch(() => {});
+            Promise.resolve(current.response).catch(() => {});
+            roundResults.push(current);
+            liveResult = current;
+            currentMessages = nextMessages;
+            rounds++;
+            continue;
+          }
           if (combinedAbortSignal.aborted || !params.absorbExitNotes || !params.drainInjectedContext || finalized) {
             break;
           }
@@ -619,7 +707,8 @@ export class Conversation {
           // The continuation's prose is a new paragraph, not a run-on of the draft's last
           // sentence (consumers join consecutive text-deltas with nothing in between).
           yield { type: 'text-delta', delta: '\n\n' };
-          current = startCall(nextMessages);
+          roundController = new AbortController();
+          current = startCall(nextMessages, roundController.signal);
           Promise.resolve(current.finishReason).catch(() => {});
           Promise.resolve((current as any).rawFinishReason).catch(() => {});
           Promise.resolve(current.response).catch(() => {});
