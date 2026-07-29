@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [5.13.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.13.0...@proteinjs/conversation@5.13.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* turn-scoped restart eligibility + per-step finish vocabulary ([36956c9](https://github.com/proteinjs/conversation/commit/36956c950dffb8b711b6f661f43cb0a56b39fa5c))
+
+
+
+
+
 # [5.13.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.12.0...@proteinjs/conversation@5.13.0) (2026-07-28)
 
 
