@@ -183,6 +183,18 @@ export type StreamPart =
       toolName: string;
       name?: string;
       detail?: string | ToolTimelineDetail;
+    }
+  | {
+      /**
+       * A STEP (one model request in the agentic loop) finished. `finishReason` is the SDK's
+       * provider-normalized reason: 'tool-calls' means more work follows this step (any text it
+       * streamed was working narration), 'stop' means this step's text was the final response.
+       * This is the single deterministic delimiter that classifies text per-step at the
+       * producer (plans/SINGLE_OWNER_TURN_STREAM.md) — previously dropped by mapFullStream,
+       * which forced every consumer to re-derive the answer by position heuristics.
+       */
+      type: 'step-finish';
+      finishReason: string;
     };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
@@ -601,23 +613,29 @@ export class Conversation {
       let current = result;
       let currentMessages = messages;
       let rounds = 0;
+      // TURN-scoped (2026-07-29 lost-response fix): once ANY round has streamed user-material
+      // (text shown, or a tool side effect begun), no later round may restart — including
+      // CONTINUATION rounds after exit-note absorption. This was round-scoped before, so a
+      // continuation round reset it and could restart AFTER the answer had already streamed;
+      // the restarted round's tool call then made the saver's position-based split file the
+      // entire streamed answer as a timeline reasoning node and persist content=''.
+      let turnMaterial = false;
       try {
         while (true) {
           // Consume the round part-by-part so a note that arrives while the model is still
-          // THINKING can restart it (see peekInjectedContext). `roundMaterial` flips at the
+          // THINKING can restart it (see peekInjectedContext). `turnMaterial` flips at the
           // first user-material part: tool parts BEFORE the restart check (input streaming
           // means execution is imminent — never abort into a side effect), text AFTER it (the
           // first text-delta hasn't been yielded yet, so restarting right at it shows nothing).
-          let roundMaterial = false;
           let restartRequested = false;
           try {
             for await (const part of self.guardStreamLiveness(current.fullStream, livenessController, modelString)) {
               const partType = (part as { type?: string }).type;
               if (partType === 'tool-input-start' || partType === 'tool-call' || partType === 'tool-result') {
-                roundMaterial = true;
+                turnMaterial = true;
               }
               if (
-                !roundMaterial &&
+                !turnMaterial &&
                 params.peekInjectedContext?.() &&
                 params.drainInjectedContext &&
                 rounds < MAX_CONTINUATION_ROUNDS &&
@@ -628,7 +646,7 @@ export class Conversation {
                 break;
               }
               if (partType === 'text-delta') {
-                roundMaterial = true;
+                turnMaterial = true;
               }
               yield part;
             }
@@ -644,6 +662,10 @@ export class Conversation {
             // one reshaped answer instead of a composed answer with the note's answer appended.
             // The aborted round's promises reject with the abort; finalizeAcrossRounds already
             // tolerates rejected rounds (allSettled).
+            // Close any reasoning block the abort cut mid-stream: without this, downstream
+            // consumers never see the discarded round's reasoning-end and merge its thinking
+            // into the restarted round's (one run-together reasoningSteps entry).
+            yield { type: 'reasoning-end' };
             Promise.resolve(current.totalUsage).catch(() => {});
             Promise.resolve(current.response).catch(() => {});
             Promise.resolve(current.finishReason).catch(() => {});
@@ -2742,6 +2764,13 @@ export class Conversation {
               }
             } else if (part.type === 'reasoning-end') {
               yield { type: 'reasoning-end' as const };
+            } else if (part.type === 'finish-step') {
+              // The step delimiter (SDK-normalized finishReason: 'tool-calls' = more work
+              // follows, 'stop' = this step's text was the final response). AI SDK v6 shapes
+              // it as { finishReason: { unified, raw } } in some paths and a bare string in
+              // others — normalize to the unified string.
+              const finishReason = part.finishReason?.unified ?? part.finishReason ?? 'unknown';
+              yield { type: 'step-finish' as const, finishReason: String(finishReason) };
             } else if (part.type === 'tool-call') {
               const toolName = part.toolName ?? 'unknown';
               // A custom function tool resolves to one of our `functions`; a

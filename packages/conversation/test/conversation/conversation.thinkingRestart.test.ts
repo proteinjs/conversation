@@ -45,7 +45,7 @@ const messageText = (msg: { content: unknown }): string => {
   }
   if (Array.isArray(msg.content)) {
     return msg.content
-      .map((part: { type?: string; text?: string }) => (part?.type === 'text' ? part.text ?? '' : ''))
+      .map((part: { type?: string; text?: string }) => (part?.type === 'text' ? (part.text ?? '') : ''))
       .join('');
   }
   return '';
@@ -162,6 +162,73 @@ describe('Conversation.generateStream — thinking-phase restart (peekInjectedCo
       expect(text).toBe('FIRST ANSWER\n\nFOLDED IN');
       const round2 = capturedPrompts[1];
       expect(round2.filter((m) => m.role === 'user' && messageText(m).includes(NOTE))).toHaveLength(1);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'a note during a CONTINUATION round does NOT restart once the turn has streamed text (2026-07-29 lost-response class)',
+    async () => {
+      // The lost-response interleaving: round 1 streams the visible answer; note 1 rides
+      // exit-note absorption into continuation round 2; note 2 lands while round 2 is still
+      // REASONING. Restart eligibility was round-scoped, so round 2 restarted AFTER the answer
+      // had streamed — and the restarted round's tool use made the saver file the whole
+      // streamed answer as timeline reasoning with content=''. Eligibility is turn-scoped now:
+      // once ANY round streamed text, notes only ever continue, never restart.
+      const NOTE_1 = 'Also mention costs.';
+      const NOTE_2 = 'And name a vendor.';
+      const inbox: string[] = [];
+      const capturedPrompts: Array<Array<{ role: string; content: unknown }>> = [];
+
+      let call = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: { prompt: Array<{ role: string; content: unknown }> }) => {
+          capturedPrompts.push(options.prompt);
+          call++;
+          if (call === 2) {
+            // Note 2 lands before round 2's first part reaches the restart check — the exact
+            // window where round-scoped eligibility used to abort the continuation.
+            inbox.push(NOTE_2);
+            return { stream: reasoningThenTextStep('re-thinking with the note', 'ADDENDUM') };
+          }
+          return { stream: call === 1 ? textStep('MAIN ANSWER') : textStep('SECOND ADDENDUM') };
+        },
+      });
+
+      const conversation = new Conversation({
+        name: 'continuation-no-restart-test',
+        logLevel: 'error',
+        limits: { enforceLimits: false },
+      });
+
+      const result = await conversation.generateStream({
+        messages: ['compare sql and nosql'],
+        model: model as never,
+        drainInjectedContext: () => inbox.splice(0, inbox.length),
+        peekInjectedContext: () => inbox.length > 0,
+        absorbExitNotes: true,
+      });
+
+      let text = '';
+      let note1Pushed = false;
+      for await (const part of result.fullStream as AsyncIterable<{ type: string }>) {
+        if (part.type === 'text-delta') {
+          text += (part as { textDelta?: string }).textDelta ?? '';
+          if (!note1Pushed && text.includes('MAIN ANSWER')) {
+            note1Pushed = true;
+            inbox.push(NOTE_1);
+          }
+        }
+      }
+
+      // Round 2 was NOT aborted: its answer streamed in full, and note 2 continued into round 3.
+      // (Pre-fix, round 2 restarted and 'ADDENDUM' never streamed.)
+      expect(capturedPrompts).toHaveLength(3);
+      expect(text).toBe('MAIN ANSWER\n\nADDENDUM\n\nSECOND ADDENDUM');
+      const round2 = capturedPrompts[1];
+      expect(round2.filter((m) => m.role === 'user' && messageText(m).includes(NOTE_1))).toHaveLength(1);
+      const round3 = capturedPrompts[2];
+      expect(round3.filter((m) => m.role === 'user' && messageText(m).includes(NOTE_2))).toHaveLength(1);
     },
     TIMEOUT
   );
