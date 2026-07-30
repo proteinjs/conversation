@@ -1,6 +1,7 @@
 import type { LanguageModelV3, LanguageModelV3StreamPart, LanguageModelV3StreamResult } from '@ai-sdk/provider';
 import { APICallError, wrapLanguageModel } from 'ai';
 import { Logger } from '@proteinjs/logger';
+import { TransientProviderError } from './TransientProviderError';
 
 export type LlmTransportRetryOptions = {
   /** Total wall-clock budget for one logical call, including backoff sleeps. Default 90s. */
@@ -14,11 +15,22 @@ export type LlmTransportRetryRunOptions = {
 };
 
 /**
+ * What to do with a failed attempt's error:
+ * - `retry` — transient and within budget; the backoff sleep already happened.
+ * - `surface` — semantic (or abort): rethrow the ORIGINAL error untouched.
+ * - `surface-transient` — TRANSIENT but the retry budget is exhausted: surface it wrapped as
+ *   `TransientProviderError`, so outer layers see "the provider is down", not "the request is bad".
+ */
+type RetryVerdict = 'retry' | 'surface' | 'surface-transient';
+
+/**
  * Invisible, bounded retries for TRANSIENT LLM transport failures (429s, 5xx, network drops) — the
  * model and the user never see them. Semantic errors (4xx requests the provider rejected) are never
- * retried. Exhaustion throws the last transport error so the OUTER, visible layers take over
- * (FlowRunner's task-attempt retry → the blocker-ask): one retry owner per layer, no stacking — the
- * AI/OpenAI SDKs' built-in retries are disabled where this wraps them.
+ * retried. Exhaustion throws the last transport error WRAPPED as `TransientProviderError` — this is
+ * the single choke point with ground truth on the transient/semantic distinction, so it tags the
+ * error once and the OUTER, visible layers route on the type (FlowRunner's provider-wait park vs
+ * task-attempt retry → blocker-ask): one retry owner per layer, no stacking — the AI/OpenAI SDKs'
+ * built-in retries are disabled where this wraps them. Non-transient errors rethrow untouched.
  *
  * Streams get the same treatment for failures that surface BEFORE any output: providers can accept
  * a stream and then deliver e.g. a `server_error` part before emitting a single delta — to the user
@@ -104,8 +116,9 @@ export class LlmTransportRetry {
       try {
         return await fn();
       } catch (error: unknown) {
-        if (!(await this.shouldRetryAfterBackoff(error, attempt, startedAt, options))) {
-          throw error;
+        const verdict = await this.verdictAfterBackoff(error, attempt, startedAt, options);
+        if (verdict !== 'retry') {
+          throw LlmTransportRetry.surfaced(verdict, error);
         }
       }
     }
@@ -125,15 +138,16 @@ export class LlmTransportRetry {
     const startedAt = Date.now();
     let attempt = 0;
     const options: LlmTransportRetryRunOptions = { abortSignal, isRetryable: LlmTransportRetry.isStreamRetryable };
-    const shouldRetry = (error: unknown) => this.shouldRetryAfterBackoff(error, attempt++, startedAt, options);
+    const verdictOf = (error: unknown) => this.verdictAfterBackoff(error, attempt++, startedAt, options);
 
     const initiate = async (): Promise<LanguageModelV3StreamResult> => {
       for (;;) {
         try {
           return await doStream();
         } catch (error: unknown) {
-          if (!(await shouldRetry(error))) {
-            throw error;
+          const verdict = await verdictOf(error);
+          if (verdict !== 'retry') {
+            throw LlmTransportRetry.surfaced(verdict, error);
           }
         }
       }
@@ -166,11 +180,15 @@ export class LlmTransportRetry {
           try {
             read = await reader.read();
           } catch (error: unknown) {
-            if (!outputStarted && (await shouldRetry(error))) {
+            if (outputStarted) {
+              throw error;
+            }
+            const verdict = await verdictOf(error);
+            if (verdict === 'retry') {
               await restart();
               continue;
             }
-            throw error;
+            throw LlmTransportRetry.surfaced(verdict, error);
           }
           if (read.done) {
             flushPreamble(controller);
@@ -183,14 +201,18 @@ export class LlmTransportRetry {
             return;
           }
           if (part.type === 'error') {
-            if (await shouldRetry(part.error)) {
+            const verdict = await verdictOf(part.error);
+            if (verdict === 'retry') {
               await restart();
               continue;
             }
-            // Semantic or budget-exhausted: surface exactly what an unwrapped stream would.
+            // Semantic or budget-exhausted: surface as a stream part exactly like an unwrapped
+            // stream would — but a budget-exhausted TRANSIENT error carries the type tag.
             outputStarted = true;
             flushPreamble(controller);
-            controller.enqueue(part);
+            controller.enqueue(
+              verdict === 'surface-transient' ? { ...part, error: TransientProviderError.wrap(part.error) } : part
+            );
             return;
           }
           if (!LlmTransportRetry.OUTPUT_PART_TYPES.has(part.type)) {
@@ -211,34 +233,39 @@ export class LlmTransportRetry {
     return { ...current, stream };
   }
 
-  /** Decide whether `error` retries, sleeping the backoff when it does. One decision point for all paths. */
-  private async shouldRetryAfterBackoff(
+  /** Decide what to do with `error`, sleeping the backoff on `retry`. One decision point for all paths. */
+  private async verdictAfterBackoff(
     error: unknown,
     attempt: number,
     startedAt: number,
     options: LlmTransportRetryRunOptions
-  ): Promise<boolean> {
+  ): Promise<RetryVerdict> {
     if (options.abortSignal?.aborted || LlmTransportRetry.isAbortError(error)) {
-      return false;
+      return 'surface';
     }
     if (!options.isRetryable(error)) {
-      return false;
+      return 'surface';
     }
     const delayMs = this.nextDelayMs(attempt, error);
     if (Date.now() - startedAt + delayMs > this.budgetMs) {
       this.logger.error({
-        message: 'LLM transport retry budget exhausted; surfacing the error',
+        message: 'LLM transport retry budget exhausted; surfacing as TransientProviderError',
         obj: { attempt: attempt + 1, budgetMs: this.budgetMs },
         error: error as Error,
       });
-      return false;
+      return 'surface-transient';
     }
     this.logger.warn({
       message: 'Transient LLM transport failure — retrying',
       obj: { attempt: attempt + 1, delayMs, error: String((error as Error)?.message ?? error) },
     });
     await LlmTransportRetry.sleepWithAbort(delayMs, options.abortSignal);
-    return !options.abortSignal?.aborted;
+    return options.abortSignal?.aborted ? 'surface' : 'retry';
+  }
+
+  /** The error a non-retry verdict throws: the original, tagged only when classified transient. */
+  private static surfaced(verdict: RetryVerdict, error: unknown): unknown {
+    return verdict === 'surface-transient' ? TransientProviderError.wrap(error) : error;
   }
 
   /** The AI SDK's own classification: provider-marked transient (429/5xx/network) and nothing else. */

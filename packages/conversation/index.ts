@@ -19,6 +19,7 @@ export * from './src/UsageData';
 export * from './src/OpenAiResponses';
 export * from './src/resolveModel';
 export * from './src/LlmTransportRetry';
+export * from './src/TransientProviderError';
 
 // Conversation modules
 export * from './src/fs/conversation_fs/ConversationFsSkill';

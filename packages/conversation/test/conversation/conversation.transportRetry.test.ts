@@ -2,6 +2,7 @@ import { APICallError } from 'ai';
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation } from '../../src/Conversation';
 import { LlmTransportRetry } from '../../src/LlmTransportRetry';
+import { TransientProviderError } from '../../src/TransientProviderError';
 
 /**
  * Transport-retry layer tests — no network, no API keys. A MockLanguageModelV3 stands in as the
@@ -385,6 +386,139 @@ describe('LlmTransportRetry.run', () => {
         )
       ).rejects.toThrow('boom');
       expect(calls).toBe(1);
+    },
+    TIMEOUT
+  );
+});
+
+/**
+ * Budget exhaustion of a TRANSIENT-classified error surfaces a typed `TransientProviderError` (the
+ * flow runner's provider-outage taxonomy routes on it); semantic errors and aborts surface the
+ * ORIGINAL error untouched. Classification happens exactly once, here — the layer with ground truth.
+ */
+describe('LlmTransportRetry — budget-exhausted transient errors surface typed', () => {
+  const overloadedError = () =>
+    new APICallError({
+      message: 'Overloaded',
+      url: 'https://api.anthropic.test',
+      requestBodyValues: {},
+      statusCode: 529,
+      responseHeaders: {},
+      responseBody: '{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+    });
+
+  test(
+    'doGenerate: a 529 that outlives the budget rejects with TransientProviderError carrying the original',
+    async () => {
+      const model = new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw overloadedError();
+        },
+      });
+
+      // budget of 0ms can't fit any backoff delay → exactly one attempt, surfaced typed.
+      const wrapped = new LlmTransportRetry({ budgetMs: 0 }).wrap(model as never);
+      let caught: unknown;
+      try {
+        await wrapped.doGenerate({ prompt: [] });
+      } catch (error: unknown) {
+        caught = error;
+      }
+      expect(TransientProviderError.isInstance(caught)).toBe(true);
+      const typed = caught as TransientProviderError;
+      expect(typed.statusCode).toBe(529);
+      expect(typed.message).toContain('Overloaded');
+      expect(APICallError.isInstance(typed.cause)).toBe(true);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'doGenerate: a semantic 400 surfaces the ORIGINAL error — never wrapped',
+    async () => {
+      const model = new MockLanguageModelV3({
+        doGenerate: async () => {
+          throw semanticError();
+        },
+      });
+
+      const wrapped = new LlmTransportRetry({ budgetMs: 0 }).wrap(model as never);
+      let caught: unknown;
+      try {
+        await wrapped.doGenerate({ prompt: [] });
+      } catch (error: unknown) {
+        caught = error;
+      }
+      expect(TransientProviderError.isInstance(caught)).toBe(false);
+      expect(APICallError.isInstance(caught)).toBe(true);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'doStream: a budget-exhausted transient error PART carries the type tag on the surfaced part',
+    async () => {
+      const model = new MockLanguageModelV3({
+        doStream: async () => ({
+          stream: convertArrayToReadableStream([
+            { type: 'stream-start' as const, warnings: [] },
+            openAiServerErrorPart(),
+          ]),
+        }),
+      });
+
+      const wrapped = new LlmTransportRetry({ budgetMs: 0 }).wrap(model as never);
+      const { stream } = await wrapped.doStream({ prompt: [] });
+      const reader = stream.getReader();
+      const parts: Array<{ type: string; error?: unknown }> = [];
+      for (;;) {
+        const result = await reader.read();
+        if (result.done) {
+          break;
+        }
+        parts.push(result.value as { type: string; error?: unknown });
+      }
+
+      const errorPart = parts.find((p) => p.type === 'error');
+      expect(errorPart).toBeTruthy();
+      expect(TransientProviderError.isInstance(errorPart!.error)).toBe(true);
+      // The original raw provider payload rides along as the cause.
+      expect((errorPart!.error as TransientProviderError).cause).toEqual(openAiServerErrorPart().error);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'run(): budget exhaustion wraps; an abort surfaces the original untouched',
+    async () => {
+      let caught: unknown;
+      try {
+        await new LlmTransportRetry({ budgetMs: 1 }).run(
+          async () => {
+            throw overloadedError();
+          },
+          { isRetryable: () => true }
+        );
+      } catch (error: unknown) {
+        caught = error;
+      }
+      expect(TransientProviderError.isInstance(caught)).toBe(true);
+
+      const controller = new AbortController();
+      let abortCaught: unknown;
+      try {
+        await new LlmTransportRetry({ budgetMs: 1 }).run(
+          async () => {
+            controller.abort();
+            throw overloadedError();
+          },
+          { abortSignal: controller.signal, isRetryable: () => true }
+        );
+      } catch (error: unknown) {
+        abortCaught = error;
+      }
+      expect(TransientProviderError.isInstance(abortCaught)).toBe(false);
+      expect(APICallError.isInstance(abortCaught)).toBe(true);
     },
     TIMEOUT
   );
