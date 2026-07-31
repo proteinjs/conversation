@@ -21,12 +21,15 @@ export class TransientProviderError extends Error {
   readonly statusCode?: number;
   /** The original error exactly as the transport surfaced it. */
   readonly cause: unknown;
+  /** The failing model's id when the transport knew it — lets any surface name WHO is down. */
+  readonly modelId?: string;
 
-  constructor(args: { message: string; cause: unknown; statusCode?: number }) {
+  constructor(args: { message: string; cause: unknown; statusCode?: number; modelId?: string }) {
     super(args.message);
     this.name = 'TransientProviderError';
     this.cause = args.cause;
     this.statusCode = args.statusCode;
+    this.modelId = args.modelId;
     Object.defineProperty(this, MARKER, { value: true, enumerable: false });
   }
 
@@ -35,7 +38,7 @@ export class TransientProviderError extends Error {
   }
 
   /** Wrap the transport's original error (idempotent), preserving its message and HTTP status. */
-  static wrap(error: unknown): TransientProviderError {
+  static wrap(error: unknown, modelId?: string): TransientProviderError {
     if (TransientProviderError.isInstance(error)) {
       return error;
     }
@@ -46,6 +49,48 @@ export class TransientProviderError extends Error {
       message: `Model provider unavailable (transient failure persisted past the retry budget): ${message}`,
       cause: error,
       ...(typeof statusCode === 'number' ? { statusCode } : {}),
+      ...(modelId ? { modelId } : {}),
     });
   }
+}
+
+/**
+ * The provider's everyday name from a model id — user-facing outage copy names WHO is down
+ * ("Anthropic is having trouble"), not "the model provider". Undefined for unknown families so
+ * callers fall back to the generic phrase deliberately. Lives beside the typed error because the
+ * error is the cross-surface carrier: every consumer that catches it needs the same mapping.
+ */
+export function providerDisplayName(modelId: string | undefined): string | undefined {
+  const id = (modelId ?? '').toLowerCase();
+  if (!id) {
+    return undefined;
+  }
+  if (id.includes('claude')) {
+    return 'Anthropic';
+  }
+  if (id.includes('gpt') || id.includes('openai') || /(^|[^a-z])o\d/.test(id)) {
+    return 'OpenAI';
+  }
+  if (id.includes('gemini')) {
+    return 'Google';
+  }
+  return undefined;
+}
+
+/**
+ * Everyday-words cause for user-facing outage copy ("their systems are overloaded"); the raw
+ * error text stays on records/logs. One mapping for every surface that renders the typed error.
+ */
+export function describeTransientCause(args: { message?: string; statusCode?: number }): string {
+  const text = `${args.message ?? ''} ${args.statusCode ?? ''}`.toLowerCase();
+  if (text.includes('overload') || text.includes('529')) {
+    return 'their systems are overloaded';
+  }
+  if (text.includes('rate') && text.includes('limit')) {
+    return "they're rate-limiting requests";
+  }
+  if (text.includes('unavailable') || text.includes('timeout') || text.includes('timed out') || text.includes('503')) {
+    return "their service isn't responding";
+  }
+  return "they're having service trouble";
 }

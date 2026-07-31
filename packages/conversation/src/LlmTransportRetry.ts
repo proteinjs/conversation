@@ -12,6 +12,9 @@ export type LlmTransportRetryRunOptions = {
   abortSignal?: AbortSignal;
   /** Classify an error as a transient transport failure (retry) vs semantic (throw immediately). */
   isRetryable: (error: unknown) => boolean;
+  /** The model behind the call when known — rides the surfaced TransientProviderError so any
+   *  consumer can name the provider in user-facing copy. */
+  modelId?: string;
 };
 
 /**
@@ -98,13 +101,18 @@ export class LlmTransportRetry {
    * stream has emitted output a failure is not replayable and must propagate to the visible layers.
    */
   wrap(model: LanguageModelV3): LanguageModelV3 {
+    const modelId = model.modelId;
     return wrapLanguageModel({
       model,
       middleware: {
         specificationVersion: 'v3',
         wrapGenerate: ({ doGenerate, params }) =>
-          this.run(doGenerate, { abortSignal: params.abortSignal, isRetryable: LlmTransportRetry.isSdkRetryable }),
-        wrapStream: ({ doStream, params }) => this.streamWithRetry(doStream, params.abortSignal),
+          this.run(doGenerate, {
+            abortSignal: params.abortSignal,
+            isRetryable: LlmTransportRetry.isSdkRetryable,
+            modelId,
+          }),
+        wrapStream: ({ doStream, params }) => this.streamWithRetry(doStream, params.abortSignal, modelId),
       },
     });
   }
@@ -118,7 +126,7 @@ export class LlmTransportRetry {
       } catch (error: unknown) {
         const verdict = await this.verdictAfterBackoff(error, attempt, startedAt, options);
         if (verdict !== 'retry') {
-          throw LlmTransportRetry.surfaced(verdict, error);
+          throw LlmTransportRetry.surfaced(verdict, error, options.modelId);
         }
       }
     }
@@ -133,11 +141,16 @@ export class LlmTransportRetry {
    */
   private async streamWithRetry(
     doStream: () => PromiseLike<LanguageModelV3StreamResult>,
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    modelId?: string
   ): Promise<LanguageModelV3StreamResult> {
     const startedAt = Date.now();
     let attempt = 0;
-    const options: LlmTransportRetryRunOptions = { abortSignal, isRetryable: LlmTransportRetry.isStreamRetryable };
+    const options: LlmTransportRetryRunOptions = {
+      abortSignal,
+      isRetryable: LlmTransportRetry.isStreamRetryable,
+      modelId,
+    };
     const verdictOf = (error: unknown) => this.verdictAfterBackoff(error, attempt++, startedAt, options);
 
     const initiate = async (): Promise<LanguageModelV3StreamResult> => {
@@ -147,7 +160,7 @@ export class LlmTransportRetry {
         } catch (error: unknown) {
           const verdict = await verdictOf(error);
           if (verdict !== 'retry') {
-            throw LlmTransportRetry.surfaced(verdict, error);
+            throw LlmTransportRetry.surfaced(verdict, error, modelId);
           }
         }
       }
@@ -188,7 +201,7 @@ export class LlmTransportRetry {
               await restart();
               continue;
             }
-            throw LlmTransportRetry.surfaced(verdict, error);
+            throw LlmTransportRetry.surfaced(verdict, error, modelId);
           }
           if (read.done) {
             flushPreamble(controller);
@@ -211,7 +224,9 @@ export class LlmTransportRetry {
             outputStarted = true;
             flushPreamble(controller);
             controller.enqueue(
-              verdict === 'surface-transient' ? { ...part, error: TransientProviderError.wrap(part.error) } : part
+              verdict === 'surface-transient'
+                ? { ...part, error: TransientProviderError.wrap(part.error, modelId) }
+                : part
             );
             return;
           }
@@ -264,8 +279,8 @@ export class LlmTransportRetry {
   }
 
   /** The error a non-retry verdict throws: the original, tagged only when classified transient. */
-  private static surfaced(verdict: RetryVerdict, error: unknown): unknown {
-    return verdict === 'surface-transient' ? TransientProviderError.wrap(error) : error;
+  private static surfaced(verdict: RetryVerdict, error: unknown, modelId?: string): unknown {
+    return verdict === 'surface-transient' ? TransientProviderError.wrap(error, modelId) : error;
   }
 
   /** The AI SDK's own classification: provider-marked transient (429/5xx/network) and nothing else. */
