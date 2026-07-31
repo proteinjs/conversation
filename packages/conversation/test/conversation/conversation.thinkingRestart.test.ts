@@ -45,7 +45,7 @@ const messageText = (msg: { content: unknown }): string => {
   }
   if (Array.isArray(msg.content)) {
     return msg.content
-      .map((part: { type?: string; text?: string }) => (part?.type === 'text' ? part.text ?? '' : ''))
+      .map((part: { type?: string; text?: string }) => (part?.type === 'text' ? (part.text ?? '') : ''))
       .join('');
   }
   return '';
@@ -162,6 +162,53 @@ describe('Conversation.generateStream — thinking-phase restart (peekInjectedCo
       expect(text).toBe('FIRST ANSWER\n\nFOLDED IN');
       const round2 = capturedPrompts[1];
       expect(round2.filter((m) => m.role === 'user' && messageText(m).includes(NOTE))).toHaveLength(1);
+    },
+    TIMEOUT
+  );
+
+  test(
+    "a round cut off by the output limit ('length') auto-continues seamlessly — no separator, bounded (2026-07-29: truncated answers are never acceptable)",
+    async () => {
+      const capturedPrompts: Array<Array<{ role: string; content: unknown }>> = [];
+      let call = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: { prompt: Array<{ role: string; content: unknown }> }) => {
+          capturedPrompts.push(options.prompt);
+          call++;
+          if (call === 1) {
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                { type: 'text-start' as const, id: 't1' },
+                { type: 'text-delta' as const, id: 't1', delta: 'The answer begins' },
+                { type: 'text-end' as const, id: 't1' },
+                { type: 'finish' as const, finishReason: { unified: 'length' as const, raw: 'max_tokens' }, usage },
+              ]),
+            };
+          }
+          return { stream: textStep(' and here it ends.') };
+        },
+      });
+
+      const conversation = new Conversation({
+        name: 'length-auto-continue-test',
+        logLevel: 'error',
+        limits: { enforceLimits: false },
+      });
+
+      const result = await conversation.generateStream({
+        messages: ['write something long'],
+        model: model as never,
+      });
+      const text = await collectText(result.fullStream as AsyncIterable<{ type: string }>);
+
+      // Seamless: the continuation flows on from the cut — NO paragraph separator injected.
+      expect(capturedPrompts).toHaveLength(2);
+      expect(text).toBe('The answer begins and here it ends.');
+      const round2 = capturedPrompts[1];
+      // The continuation call carries the partial assistant text and the continue instruction.
+      expect(round2.some((m) => m.role === 'assistant' && messageText(m).includes('The answer begins'))).toBe(true);
+      expect(messageText(round2[round2.length - 1] as never)).toContain('cut off by the output limit');
     },
     TIMEOUT
   );

@@ -620,6 +620,10 @@ export class Conversation {
       // the restarted round's tool call then made the saver's position-based split file the
       // entire streamed answer as a timeline reasoning node and persist content=''.
       let turnMaterial = false;
+      // Output-limit continuations used this turn (bounded — a runaway generator must still
+      // terminate). Distinct from `rounds`: note absorption and length continuation are
+      // different budgets.
+      let lengthContinuations = 0;
       try {
         while (true) {
           // Consume the round part-by-part so a note that arrives while the model is still
@@ -696,6 +700,46 @@ export class Conversation {
             currentMessages = nextMessages;
             rounds++;
             continue;
+          }
+          // A round cut off by the OUTPUT LIMIT ('length') is not an answer — it stops
+          // mid-sentence. Continue the same response automatically (bounded): resend the
+          // transcript incl. the partial assistant message plus a continue instruction, and
+          // join with NO separator so the text flows on from where it stopped. The user never
+          // sees a truncated reply; if the bound is exhausted, the partial persists honestly
+          // and the client's manual Continue affordance remains the fallback.
+          if (!combinedAbortSignal.aborted && !finalized && lengthContinuations < 2) {
+            const roundFinish = String((await Promise.resolve(current.finishReason).catch(() => '')) ?? '');
+            if (roundFinish === 'length') {
+              lengthContinuations++;
+              const responseMessages = (await current.response).messages as ModelMessage[];
+              let nextMessages = [...currentMessages, ...responseMessages];
+              if (injectedContextSplices.length > 0) {
+                nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
+                injectedContextSplices.length = 0;
+              }
+              nextMessages = [
+                ...nextMessages,
+                {
+                  role: 'user',
+                  content:
+                    'Your previous message was cut off by the output limit. Continue EXACTLY where it left off — no preamble, no repetition, no restarted sentences; resume mid-sentence if needed, preserving any open markdown or code structure.',
+                } as ModelMessage,
+              ];
+              self.logger.warn({
+                message: 'Round finished at the output limit — auto-continuing the response',
+                obj: { lengthContinuations, round: rounds + 1 },
+              });
+              roundController = new AbortController();
+              current = startCall(nextMessages, roundController.signal);
+              Promise.resolve(current.finishReason).catch(() => {});
+              Promise.resolve((current as any).rawFinishReason).catch(() => {});
+              Promise.resolve(current.response).catch(() => {});
+              roundResults.push(current);
+              liveResult = current;
+              currentMessages = nextMessages;
+              rounds++;
+              continue;
+            }
           }
           if (combinedAbortSignal.aborted || !params.absorbExitNotes || !params.drainInjectedContext || finalized) {
             break;
@@ -1042,7 +1086,7 @@ export class Conversation {
       // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer.
       maxRetries: 0,
       abortSignal: Conversation.anySignal(loopSignals),
-      maxOutputTokens: params.maxTokens,
+      maxOutputTokens: params.maxTokens ?? Conversation.defaultMaxOutputTokens(args.provider, args.modelString),
       temperature: params.temperature,
       topP: params.topP,
       providerOptions: this.buildProviderOptions(args.provider, params, args.modelString),
@@ -2700,6 +2744,48 @@ export class Conversation {
    * default window is generous and env-tunable via CONVERSATION_STREAM_IDLE_TIMEOUT_MS.
    */
   /** `AbortSignal.any` exists at runtime (node ≥ 20.3) but not in this TS lib target. */
+  /**
+   * The output ceiling to request when the caller didn't set one — ALWAYS the model's real
+   * maximum, never an artificial cap. This exists because Anthropic's SDK adapter silently
+   * defaults max_tokens to 4096 when unset, and extended THINKING shares that budget — a long
+   * adaptive think left almost nothing for the answer and finished 'length' mid-sentence
+   * (2026-07-29: a 1m+ think truncated a 4.8k-char answer; the truncation then persisted as an
+   * empty body). Requesting the max costs nothing — billing is for generated tokens, the limit
+   * is just a ceiling — while requesting ABOVE a model's max is a hard API error, hence the
+   * per-model map. OpenAI and Google default to the model max when unset, so they stay unset.
+   * Bump entries as Anthropic raises model maxima (verify in their model docs first — an
+   * over-ask 400s every turn).
+   */
+  private static defaultMaxOutputTokens(provider: string, modelString?: string): number | undefined {
+    if (provider !== 'anthropic') {
+      return undefined;
+    }
+    // Verified against platform.claude.com/docs/en/about-claude/models/overview (2026-07-29).
+    // The Models API also exposes `max_tokens` per model programmatically — if this map ever
+    // chafes, replace it with a cached Models API lookup rather than growing it heuristically.
+    const model = (modelString ?? '').toLowerCase();
+    if (/fable|mythos/.test(model)) {
+      return 128_000;
+    }
+    if (/opus-5|opus-4-8|opus-4-7|opus-4-6/.test(model)) {
+      return 128_000;
+    }
+    if (/sonnet-5|sonnet-4-6/.test(model)) {
+      return 128_000;
+    }
+    if (/opus-4-5|sonnet/.test(model)) {
+      return 64_000; // Opus 4.5, Sonnet 4.5 and earlier Sonnet 4.x
+    }
+    if (/haiku-3/.test(model)) {
+      return 8_192;
+    }
+    if (/haiku/.test(model)) {
+      return 64_000; // Haiku 4.5
+    }
+    // Unknown/legacy (e.g. Opus 4.1 at 32k): the safe floor — over-asking is a hard API error.
+    return 32_000;
+  }
+
   private static anySignal(signals: AbortSignal[]): AbortSignal {
     return (AbortSignal as unknown as { any(signals: AbortSignal[]): AbortSignal }).any(signals);
   }
