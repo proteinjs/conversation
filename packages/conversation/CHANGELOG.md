@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.15.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.14.1...@proteinjs/conversation@5.15.0) (2026-07-31)
+
+
+### Features
+
+* provider identity on TransientProviderError + shared outage-copy helpers ([07eca09](https://github.com/proteinjs/conversation/commit/07eca095ddd575f39ac934e809ef864585d034a6))
+
+
+
+
+
 # [5.14.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.13.1...@proteinjs/conversation@5.14.0) (2026-07-30)
 
 
