@@ -30,12 +30,18 @@ export interface Function {
    * suffix convention (e.g. `editThoughts:deferred`) so presentation maps can target it;
    * `detail` replaces the node's detail (omit to keep the call-time one). Return undefined
    * (or an empty object) for no relabel.
+   *
+   * `ok: false` marks the call SETTLED-FAILED for the timeline's status lifecycle: tools that
+   * report failure by RETURNING an error message to the model (the LLM-friendly convention —
+   * the SDK sees a successful result either way) use it so their node settles `errored`
+   * instead of rendering as done, and a follow-up same-tool call is treated as the retry of
+   * the same intent. Purely presentational — it never changes what the model receives.
    */
   getTimelineOutcome?(
     args: any,
     result: any
   ):
-    | { name?: string; detail?: string | ToolTimelineDetail }
+    | { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean }
     | undefined
-    | Promise<{ name?: string; detail?: string | ToolTimelineDetail } | undefined>;
+    | Promise<{ name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined>;
 }

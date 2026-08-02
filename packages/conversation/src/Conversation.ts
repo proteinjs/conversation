@@ -153,6 +153,11 @@ export type StreamPart =
       type: 'tool-call';
       toolName: string;
       /**
+       * The attempt's tool-call id (the SDK's `toolCallId`) — pairs this call-start part with
+       * its `tool-settled` part so timeline consumers can update the call's node in place.
+       */
+      id: string;
+      /**
        * A short, human-meaningful subject for the call when one can be derived
        * from the tool input (e.g. a web-search query, a created space/thought
        * title) — used to personalize the call's node in the thinking timeline.
@@ -168,6 +173,20 @@ export type StreamPart =
        * tools have no callback and are surfaced ONLY through this stream part.
        */
       providerDefined: boolean;
+    }
+  | {
+      /**
+       * The call `id` SETTLED: `ok: true` on a tool result (unless the tool's own
+       * `getTimelineOutcome` declared the result a failure via `ok: false` — the LLM-friendly
+       * error-string convention means the SDK sees success either way), `ok: false` on a
+       * thrown/invalid tool call (the SDK's `tool-error` part). Emitted for every call that
+       * produces a result/error part, right before any `tool-outcome` relabel, so timeline
+       * consumers settle the node's status first and relabel second.
+       */
+      type: 'tool-settled';
+      id: string;
+      toolName: string;
+      ok: boolean;
     }
   | {
       /**
@@ -1446,14 +1465,15 @@ export class Conversation {
             throw toolError;
           }
           // Outcome-aware relabel: the result can rename the call's timeline node (e.g. a
-          // refused edit renders as deferred). Carried on the invocation so the flow lane's
-          // tool-progress events and recorded invocations see the same outcome mapFullStream
-          // surfaces on the streaming path. Best-effort — never let it break a tool call.
-          let outcome: { name?: string; detail?: string | ToolTimelineDetail } | undefined;
+          // refused edit renders as deferred) and/or declare it settled-failed (`ok: false`).
+          // Carried on the invocation so the flow lane's tool-progress events and recorded
+          // invocations see the same outcome mapFullStream surfaces on the streaming path.
+          // Best-effort — never let it break a tool call.
+          let outcome: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined;
           if (f.getTimelineOutcome) {
             try {
               const resolved = await f.getTimelineOutcome(args, result);
-              if (resolved && (resolved.name || resolved.detail)) {
+              if (resolved && (resolved.name || resolved.detail || resolved.ok === false)) {
                 outcome = resolved;
               }
             } catch {
@@ -2895,31 +2915,53 @@ export class Conversation {
                   : editorOp && editorOp !== 'view'
                     ? `${toolName}:edit`
                     : toolName,
+                id: String(part.toolCallId ?? ''),
                 detail: detail ?? computerAction?.detail ?? deriveToolCallDetail(part.input),
                 providerDefined: !fn,
               };
             } else if (part.type === 'tool-result') {
-              // The tool has RUN now (v6 tool-result parts carry toolName/input/output), so its
-              // result can relabel the call-time timeline node — e.g. an editThoughts refused by
-              // the freshness/lock fence renders as deferred, not done. Only tools implementing
-              // getTimelineOutcome ever yield a part here — zero churn for everything else.
+              // The tool has RUN now (v6 tool-result parts carry toolName/input/output). Two
+              // consumers of that fact, in order:
+              //   1. the call SETTLES — every result part yields a `tool-settled` so the
+              //      call-time timeline node stops rendering as in-progress. A tool whose
+              //      `getTimelineOutcome` declares the result a failure (`ok: false` — the
+              //      error-string convention, where the SDK sees success) settles errored;
+              //   2. the result can RELABEL the node (e.g. an editThoughts refused by the
+              //      freshness/lock fence renders as deferred, not done) — only for tools
+              //      implementing the hook and returning a name/detail.
               const fn = functions.find((f) => f.definition.name === part.toolName);
+              let outcome: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined;
               if (fn?.getTimelineOutcome) {
-                let outcome: { name?: string; detail?: string | ToolTimelineDetail } | undefined;
                 try {
                   outcome = (await fn.getTimelineOutcome(part.input, part.output)) || undefined;
                 } catch {
                   // outcome is best-effort — never let it break the stream
                 }
-                if (outcome && (outcome.name || outcome.detail)) {
-                  yield {
-                    type: 'tool-outcome' as const,
-                    toolName: part.toolName,
-                    ...(outcome.name ? { name: outcome.name } : {}),
-                    ...(outcome.detail ? { detail: outcome.detail } : {}),
-                  };
-                }
               }
+              yield {
+                type: 'tool-settled' as const,
+                id: String(part.toolCallId ?? ''),
+                toolName: part.toolName,
+                ok: outcome?.ok !== false,
+              };
+              if (outcome && (outcome.name || outcome.detail)) {
+                yield {
+                  type: 'tool-outcome' as const,
+                  toolName: part.toolName,
+                  ...(outcome.name ? { name: outcome.name } : {}),
+                  ...(outcome.detail ? { detail: outcome.detail } : {}),
+                };
+              }
+            } else if (part.type === 'tool-error') {
+              // The tool THREW (or the call was invalid): the SDK hands the error to the model
+              // as the tool result and the loop continues — settle the node errored so the
+              // failure is visible in the timeline instead of silently rendering as done.
+              yield {
+                type: 'tool-settled' as const,
+                id: String(part.toolCallId ?? ''),
+                toolName: String(part.toolName ?? 'unknown'),
+                ok: false,
+              };
             } else if (part.type === 'source') {
               yield {
                 type: 'source' as const,

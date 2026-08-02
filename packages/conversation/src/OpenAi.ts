@@ -39,9 +39,10 @@ export type ToolInvocationResult = {
   /**
    * Outcome-aware timeline relabel from the tool's `getTimelineOutcome` (e.g. a refused edit
    * renders as deferred, not done). `name` replaces the call's timeline node name; `detail`
-   * replaces the call-time detail when present.
+   * replaces the call-time detail when present; `ok: false` declares the call settled-failed
+   * for the timeline status lifecycle (error-string tool results the SDK counts as success).
    */
-  outcome?: { name?: string; detail?: string | ToolTimelineDetail };
+  outcome?: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean };
 };
 
 /** Realtime progress hook for tool calls. */
