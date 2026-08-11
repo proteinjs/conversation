@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.17.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.16.0...@proteinjs/conversation@5.17.0) (2026-08-11)
+
+
+### Features
+
+* tool timeline details accept a serializable glyph ([19f50b4](https://github.com/proteinjs/conversation/commit/19f50b4f817987f7935fd87999b0683deb5765ec))
+* tool-call stream parts carry the full argument object ([0d7e495](https://github.com/proteinjs/conversation/commit/0d7e495c19fee7109888fc3bf63ada1c83836b41))
+
+
+
+
+
 # [5.15.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.14.1...@proteinjs/conversation@5.15.0) (2026-07-31)
 
 
