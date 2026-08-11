@@ -4,8 +4,16 @@ import { ChatCompletionFunctionTool } from 'openai/resources/chat';
  * A tool call's timeline subject: display text plus an optional app deep-link href that lets the
  * rendering layer make the timeline detail clickable (e.g. `thought://nav?...` opens the edited
  * document). Plain-string details remain valid — most tools have nothing to link to.
+ *
+ * `glyph` carries the acted-on entity's TYPE identity as a serializable FontAwesome
+ * string-lookup icon plus its canonical hue (e.g. a thought's ThoughtType record icon/color),
+ * so rendering layers can show typed identity without importing the producing domain's code.
  */
-export type ToolTimelineDetail = { text: string; href?: string };
+export type ToolTimelineDetail = {
+  text: string;
+  href?: string;
+  glyph?: { icon: string; style?: 'solid' | 'regular' | 'light'; color?: string };
+};
 
 export interface Function {
   definition: ChatCompletionFunctionTool['function'];
