@@ -166,6 +166,13 @@ export type StreamPart =
        */
       detail?: string | ToolTimelineDetail;
       /**
+       * The call's FULL input arguments, verbatim as executed (the audit trail — a bash call's
+       * exact multi-line command, never the one-line `detail` summary). Present whenever the
+       * SDK part carried a non-empty argument object; consumers persist it at full fidelity
+       * and clamp only at display time.
+       */
+      input?: Record<string, unknown>;
+      /**
        * True when this is a provider-defined tool (e.g. Anthropic's native
        * `text_editor` / `bash`) rather than a custom function tool. Custom tools
        * surface through the `onToolInvocation` callback, so stream consumers that
@@ -2917,6 +2924,12 @@ export class Conversation {
                     : toolName,
                 id: String(part.toolCallId ?? ''),
                 detail: detail ?? computerAction?.detail ?? deriveToolCallDetail(part.input),
+                // Full argument fidelity for the audit trail — `detail` above is a one-line
+                // SUMMARY (whitespace collapsed), so the exact executed input rides beside it.
+                // Guarded to plain objects: a malformed call's part can carry unparsed input.
+                ...(typeof input === 'object' && !Array.isArray(input) && Object.keys(input).length > 0
+                  ? { input }
+                  : {}),
                 providerDefined: !fn,
               };
             } else if (part.type === 'tool-result') {
