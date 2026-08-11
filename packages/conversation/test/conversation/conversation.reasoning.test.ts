@@ -44,7 +44,8 @@ const REASONING_MODELS: ReasoningCase[] = [
     model: 'claude-opus-5',
     keyEnv: 'ANTHROPIC_API_KEY',
     effort: 'high',
-    prompt: 'Prove that the sum of the first n odd numbers is n squared. Reason it out, then state the result in one sentence.',
+    prompt:
+      'Prove that the sum of the first n odd numbers is n squared. Reason it out, then state the result in one sentence.',
   },
   { provider: 'anthropic', model: 'claude-sonnet-4-6', keyEnv: 'ANTHROPIC_API_KEY' },
   { provider: 'openai', model: 'gpt-5.5', keyEnv: 'OPENAI_API_KEY' },
