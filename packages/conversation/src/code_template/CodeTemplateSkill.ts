@@ -48,7 +48,7 @@ export class CodeTemplateSkill implements ConversationSkill {
 //   const args = [codePath];
 //   const commandLog = `${command} ` + args.join(' ');
 //   console.info(`Running command: ${commandLog}`);
-//   await cmd(command, args, {OPENAI_API_KEY: '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'});
+//   await cmd(command, args, {OPENAI_API_KEY: process.env.OPENAI_API_KEY});
 //   console.info(`Ran command: ${commandLog}`);
 //   console.info(`Generated code from template: ${codePath}`);
 // }
