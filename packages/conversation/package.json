@@ -1,6 +1,6 @@
 {
   "name": "@proteinjs/conversation",
-  "version": "5.17.1",
+  "version": "5.17.2",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {

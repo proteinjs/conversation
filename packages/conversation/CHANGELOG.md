@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [5.17.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.17.1...@proteinjs/conversation@5.17.2) (2026-08-15)
+
+
+### Bug Fixes
+
+* scrub hardcoded API key from commented example — env reference instead ([dc103e9](https://github.com/proteinjs/conversation/commit/dc103e9a82430a375703947e37ab234ce217a2f3))
+
+
+
+
+
 ## [5.17.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.17.0...@proteinjs/conversation@5.17.1) (2026-08-13)
 
 **Note:** Version bump only for package @proteinjs/conversation
