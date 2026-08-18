@@ -94,6 +94,17 @@ export type GenerateStreamParams = {
   abortSignal?: AbortSignal;
   maxToolCalls?: number;
   /**
+   * Token ceiling for THIS call's whole tool loop: usage is checked at every step boundary
+   * (the same stop-condition seam as `maxToolCalls`), and once the steps' cumulative total
+   * tokens reach the ceiling the loop stops scheduling further steps — the call wraps up
+   * cleanly and returns what it has. A budget guardrail for unattended callers (scheduled
+   * routine ticks), not a meter: the step that crosses the ceiling completes, so actual usage
+   * can exceed the ceiling by up to one step. Callers detect a breach by comparing the final
+   * usage against the ceiling they passed. Streaming loop only (the background/polling path
+   * has no step loop to stop).
+   */
+  maxTotalTokens?: number;
+  /**
    * Tool names that END the loop when called: the step the tool is called in
    * is the last step, by construction. For turn-ending tools (e.g. a flow's
    * `askQuestion`) — instructions alone don't stop a model from continuing to
@@ -307,6 +318,21 @@ export type GenerateResponseResult = {
 const DEFAULT_MODEL = 'gpt-4o' as TiktokenModel;
 const DEFAULT_TOKEN_LIMIT = 50_000;
 
+/**
+ * Stop condition for `GenerateStreamParams.maxTotalTokens`: true once the completed steps'
+ * cumulative total tokens reach `budget` — the loop stops scheduling further steps at that
+ * boundary (the AI SDK `stopWhen` seam, alongside `stepCountIs`). Exported for tests.
+ */
+export function totalTokensReach(budget: number): (opts: { steps: Array<{ usage?: LanguageModelUsage }> }) => boolean {
+  return ({ steps }) => {
+    let total = 0;
+    for (const step of steps) {
+      total += step.usage?.totalTokens ?? (step.usage?.inputTokens ?? 0) + (step.usage?.outputTokens ?? 0);
+    }
+    return total >= budget;
+  };
+}
+
 // ────────────────────────────────────────────────────────────────
 // Conversation class
 // ────────────────────────────────────────────────────────────────
@@ -453,6 +479,7 @@ export class Conversation {
         stopWhen: [
           stepCountIs(params.maxToolCalls ?? 50),
           ...(params.stopOnToolCalls ?? []).map((name) => hasToolCall(name)),
+          ...(params.maxTotalTokens ? [totalTokensReach(params.maxTotalTokens)] : []),
         ],
         // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer so
         // budgets don't stack multiplicatively.
