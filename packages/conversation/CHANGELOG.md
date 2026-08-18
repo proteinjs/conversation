@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.18.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.17.2...@proteinjs/conversation@5.18.0) (2026-08-18)
+
+
+### Features
+
+* maxTotalTokens — a loop-seam token ceiling for unattended callers ([26fe9ed](https://github.com/proteinjs/conversation/commit/26fe9ed4f54570cf1fd000ee68ec6f786d7cc1f9))
+
+
+
+
+
 ## [5.17.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.17.1...@proteinjs/conversation@5.17.2) (2026-08-15)
 
 
