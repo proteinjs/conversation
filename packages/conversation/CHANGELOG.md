@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [5.18.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.18.0...@proteinjs/conversation@5.18.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* generateObject tool loop — prompt caching + streamed dispatch ([6f92caa](https://github.com/proteinjs/conversation/commit/6f92caae3df386ba22e24184e00a3ee96ef42412))
+
+
+
+
+
 # [5.18.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.17.2...@proteinjs/conversation@5.18.0) (2026-08-18)
 
 
