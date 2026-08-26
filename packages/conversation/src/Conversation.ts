@@ -1,7 +1,7 @@
 import type { LanguageModel, ToolSet, LanguageModelUsage, ReasoningOutput, ModelMessage } from 'ai';
 import type { ImagePart, TextPart, FilePart } from '@ai-sdk/provider-utils';
 import type { LanguageModelV3Source } from '@ai-sdk/provider';
-import { streamText, generateText, generateObject as aiGenerateObject, jsonSchema, stepCountIs, hasToolCall } from 'ai';
+import { streamText, generateObject as aiGenerateObject, jsonSchema, stepCountIs, hasToolCall } from 'ai';
 import { SdkContentParts } from './sdkContentParts';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
@@ -511,20 +511,7 @@ export class Conversation {
           if (this.params.toolImageRetention != null) {
             next = Conversation.pruneStaleToolImages(next, this.params.toolImageRetention);
           }
-          if (this.params.toolResultTokenBudget != null) {
-            next = Conversation.pruneToolResultsOverBudget(next, this.params.toolResultTokenBudget);
-          }
-          if (provider === 'anthropic') {
-            // Runs for every step including the first, so this is the single seam
-            // where outgoing Anthropic requests get cache breakpoints (after pruning —
-            // marks must land on the final per-step messages).
-            next = Conversation.applyAnthropicPromptCaching(next);
-          }
-          // Coerce non-object tool-call inputs LAST, so it sees the final per-step
-          // messages (after image inject/prune + cache marking).
-          const finalMessages = this.sanitizeToolCallInputs(next);
-          Conversation.dumpOutgoingRequest(finalMessages, allTools, modelString);
-          return { messages: finalMessages };
+          return { messages: this.projectOutgoingStepMessages(next, { provider, tools: allTools, modelString }) };
         },
         onStepFinish: params.onPartialUsageData
           ? async (step) => {
@@ -1059,8 +1046,8 @@ export class Conversation {
 
   /**
    * The investigate-then-answer object path (see `GenerateObjectParams.maxToolCalls`): an agentic
-   * `generateText` loop over the conversation's tools plus a `submit_result` tool whose input IS
-   * the requested schema. The loop stops when the model submits (or the step budget runs out —
+   * streamed tool loop (`streamText`) over the conversation's tools plus a `submit_result` tool
+   * whose input IS the requested schema. The loop stops when the model submits (or the step budget runs out —
    * an error, surfaced to the caller's retry handling). The submitted input arrives validated:
    * the SDK enforces the tool's inputSchema before `execute` runs.
    */
@@ -1126,33 +1113,70 @@ export class Conversation {
     // long — but bounded, so a silently dead connection can't wedge the loop forever.
     const loopTimeoutMs = Number(process.env.CONVERSATION_TOOL_LOOP_TIMEOUT_MS || 1_200_000);
     const loopSignals = [AbortSignal.timeout(loopTimeoutMs), ...(params.abortSignal ? [params.abortSignal] : [])];
+    const loopAbortSignal = Conversation.anySignal(loopSignals);
 
     // Loud pre-dispatch failure when a hard-capped model's input would overflow (see
     // assertInputWithinModelCap).
     this.assertInputWithinModelCap(loopMessages, args.modelString);
 
-    const result = await generateText({
+    // Streamed call shape: the previous non-streaming `generateText` held each step's whole
+    // response server-side until completion — a large step (e.g. a fresh review context on a
+    // big model) took minutes before the FIRST response byte and died on undici's Headers
+    // Timeout, burning the transport retry budget (observed live: 5-min stall → Headers
+    // Timeout). Streaming returns headers at first byte, retiring that failure class; loop
+    // semantics (stopWhen, tool execution, the submit contract) are unchanged.
+    const result = streamText({
       model: args.model,
       messages: loopMessages,
       tools,
       stopWhen: [stepCountIs(params.maxToolCalls ?? 50), hasToolCall('submit_result')],
       // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer.
       maxRetries: 0,
-      abortSignal: Conversation.anySignal(loopSignals),
+      abortSignal: loopAbortSignal,
       maxOutputTokens: params.maxTokens ?? Conversation.defaultMaxOutputTokens(args.provider, args.modelString),
       temperature: params.temperature,
       topP: params.topP,
       providerOptions: this.buildProviderOptions(args.provider, params, args.modelString),
+      // The shared per-step projection — most importantly the Anthropic cache breakpoints.
+      // Without this every step re-sent the entire accumulated context (gather context +
+      // all prior tool results) at full input price: review-shaped gates measured 0% cache
+      // reads, the dominant cost of a dev-skill implement leg.
+      prepareStep: ({ messages: stepMessages }) => ({
+        messages: this.projectOutgoingStepMessages(stepMessages, {
+          provider: args.provider,
+          tools,
+          modelString: args.modelString,
+        }),
+      }),
     });
 
-    const usage = this.processAiSdkUsage({ usage: result.totalUsage }, args.modelString);
+    // Drain the stream. `streamText` never rejects — terminal failures arrive as `error`
+    // parts (same contract the writer loop's mapFullStream handles), so rethrow them here
+    // to preserve the non-streaming shape's error/retry semantics for callers.
+    for await (const part of result.fullStream) {
+      if (part.type === 'error') {
+        const cause = (part as { error?: unknown }).error;
+        throw cause instanceof Error
+          ? cause
+          : new Error(String((cause as { message?: string })?.message ?? cause ?? 'LLM stream error'));
+      }
+      if (part.type === 'abort') {
+        // The non-streaming shape rejected with the signal's reason (timeout/caller abort) —
+        // keep that visible instead of falling through to a bogus "no submit_result" error.
+        const reason = loopAbortSignal.aborted ? loopAbortSignal.reason : undefined;
+        throw reason instanceof Error ? reason : new Error('generateObject tool loop aborted');
+      }
+    }
+    const [steps, totalUsage, reasoningParts] = await Promise.all([result.steps, result.totalUsage, result.reasoning]);
+
+    const usage = this.processAiSdkUsage({ usage: totalUsage }, args.modelString);
     if (params.onUsageData) {
       await params.onUsageData(usage);
     }
 
     if (submitted === undefined) {
       throw new Error(
-        `No object generated: the model finished the tool loop without calling submit_result (steps: ${result.steps?.length ?? 0}).`
+        `No object generated: the model finished the tool loop without calling submit_result (steps: ${steps?.length ?? 0}).`
       );
     }
 
@@ -1167,7 +1191,7 @@ export class Conversation {
     return {
       object: submitted,
       usage,
-      reasoning: this.extractReasoningFromResult(result) || undefined,
+      reasoning: this.extractReasoningFromResult({ reasoning: reasoningParts }) || undefined,
       toolInvocations: capturedInvocations,
     };
   }
@@ -1865,6 +1889,36 @@ export class Conversation {
       Conversation.toolResultEncoder = encoding_for_model('gpt-4o');
     }
     return Conversation.toolResultEncoder.encode_ordinary(text).length;
+  }
+
+  /**
+   * The shared final projection every tool-loop step passes through immediately before
+   * dispatch — the ONE seam where outgoing per-step requests get tool-result budget
+   * pruning, Anthropic cache breakpoints, tool-call input sanitization, and the
+   * outgoing-request dump. Both loops (`generateStream`'s writer loop and
+   * `generateObjectViaToolLoop`) MUST route their `prepareStep` through this: the
+   * generateObject loop ran without it for months and every review-shaped gate re-sent
+   * its full context uncached (0% cache reads at ~10x the input price).
+   */
+  private projectOutgoingStepMessages(
+    stepMessages: ModelMessage[],
+    args: { provider: string; tools: ToolSet; modelString: string }
+  ): ModelMessage[] {
+    let next = stepMessages;
+    if (this.params.toolResultTokenBudget != null) {
+      next = Conversation.pruneToolResultsOverBudget(next, this.params.toolResultTokenBudget);
+    }
+    if (args.provider === 'anthropic') {
+      // Runs for every step including the first, so this is the single seam
+      // where outgoing Anthropic requests get cache breakpoints (after pruning —
+      // marks must land on the final per-step messages).
+      next = Conversation.applyAnthropicPromptCaching(next);
+    }
+    // Coerce non-object tool-call inputs LAST, so it sees the final per-step
+    // messages (after pruning + cache marking).
+    const finalMessages = this.sanitizeToolCallInputs(next);
+    Conversation.dumpOutgoingRequest(finalMessages, args.tools, args.modelString);
+    return finalMessages;
   }
 
   /**
