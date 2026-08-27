@@ -17,6 +17,7 @@ export * from './src/sdkContentParts';
 export { AssistantResponseStreamChunk } from './src/OpenAiStreamProcessor';
 export * from './src/UsageData';
 export * from './src/OpenAiResponses';
+export * from './src/OpenAiCitationMarkers';
 export * from './src/resolveModel';
 export * from './src/LlmTransportRetry';
 export * from './src/TransientProviderError';
