@@ -5,6 +5,7 @@ import type { ConversationSkill } from './ConversationSkill';
 import type { Function } from './Function';
 import { UsageData, UsageDataAccumulator } from './UsageData';
 import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
+import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
 import { LlmTransportRetry } from './LlmTransportRetry';
 import type { GenerateResponseReturn, ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import { TiktokenModel } from 'tiktoken';
@@ -1178,16 +1179,16 @@ export class OpenAiResponses {
       }
     }
 
-    if (lastJoined) {
-      return lastJoined;
-    }
-
     const direct = typeof response.output_text === 'string' ? response.output_text.trim() : '';
-    if (direct) {
-      return direct;
+    const raw = lastJoined || direct;
+    if (!raw) {
+      return '';
     }
 
-    return '';
+    // Web-search output embeds PUA-delimited citation-marker runs in the text itself
+    // (the url_citation annotations ride out-of-band); strip them here so every
+    // buffered read of Responses text emerges clean — see OpenAiCitationMarkers.
+    return OpenAiCitationMarkers.strip(raw);
   }
 
   // -----------------------------------------

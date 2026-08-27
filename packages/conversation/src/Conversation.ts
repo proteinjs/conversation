@@ -14,6 +14,7 @@ import { resolveModel, inferProvider } from './resolveModel';
 import { LlmTransportRetry } from './LlmTransportRetry';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
+import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { TiktokenModel, Tiktoken, encoding_for_model } from 'tiktoken';
 
@@ -843,10 +844,15 @@ export class Conversation {
     // liveResult (the newest continuation round) so post-completion consumers — e.g. the sources
     // fallback that runs after the combined stream ends — see the final round's data.
     const lazySafeText = () =>
-      Promise.resolve(liveResult.text).catch((err) => {
-        this.logger.error({ message: 'Error resolving text from stream', obj: { error: err?.message ?? err } });
-        return '';
-      });
+      Promise.resolve(liveResult.text)
+        // OpenAI web-search output embeds PUA-delimited citation-marker runs in the
+        // text itself; strip them at this egress so buffered consumers (generateResponse)
+        // see the same clean text the streaming egress emits — see OpenAiCitationMarkers.
+        .then((t: string) => (provider === 'openai' ? OpenAiCitationMarkers.strip(t) : t))
+        .catch((err) => {
+          this.logger.error({ message: 'Error resolving text from stream', obj: { error: err?.message ?? err } });
+          return '';
+        });
     const lazySafeReasoning = () =>
       Promise.resolve(liveResult.reasoning)
         .then((parts: ReasoningOutput[]) =>
@@ -909,14 +915,17 @@ export class Conversation {
     Promise.resolve(result.response).catch(() => {});
 
     return {
-      textStream: result.textStream,
+      // OpenAI's Responses text embeds PUA-delimited citation-marker runs when web
+      // search runs; every text egress of this result is stripped at the same owner
+      // (OpenAiCitationMarkers) so no read path leaks them.
+      textStream: provider === 'openai' ? OpenAiCitationMarkers.stripStream(result.textStream) : result.textStream,
       reasoningStream: (async function* () {
         // Reasoning is available via the promise after generation completes.
         // For real-time streaming, use fullStream instead.
       })(),
       // Liveness is guarded per round INSIDE the combined stream (each continuation call gets its
       // own guarded iteration; one idle window spans them via the shared controller).
-      fullStream: this.mapFullStream(combinedSdkStream),
+      fullStream: this.mapFullStream(combinedSdkStream, provider),
       // Lazy getters: only start consuming the AI SDK stream when accessed.
       // This prevents dual-consumption when the caller uses fullStream instead.
       get text() {
@@ -2931,9 +2940,13 @@ export class Conversation {
     }
   }
 
-  private mapFullStream(aiSdkFullStream: AsyncIterable<any>): AsyncIterable<StreamPart> {
+  private mapFullStream(aiSdkFullStream: AsyncIterable<any>, provider: string): AsyncIterable<StreamPart> {
     const logger = this.logger;
     const functions = this.functions;
+    // OpenAI's Responses text embeds PUA-delimited citation-marker runs when web search
+    // runs; one stateful instance per stream strips them across chunk boundaries — see
+    // OpenAiCitationMarkers. Other providers' text passes through untouched.
+    const citationMarkers = provider === 'openai' ? new OpenAiCitationMarkers() : undefined;
     return {
       async *[Symbol.asyncIterator]() {
         const partCounts: Record<string, number> = {};
@@ -2945,8 +2958,9 @@ export class Conversation {
             if (part.type === 'text-delta') {
               // AI SDK v6 emits text-delta with `delta` or `text` property (not `textDelta`)
               const textContent = part.textDelta ?? part.delta ?? part.text;
-              if (textContent) {
-                yield { type: 'text-delta' as const, textDelta: textContent };
+              const emitText = citationMarkers && textContent ? citationMarkers.push(textContent) : textContent;
+              if (emitText) {
+                yield { type: 'text-delta' as const, textDelta: emitText };
               }
             } else if (part.type === 'reasoning-start') {
               yield { type: 'reasoning-start' as const };
