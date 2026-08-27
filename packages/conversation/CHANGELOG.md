@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.19.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.18.2...@proteinjs/conversation@5.19.0) (2026-08-27)
+
+
+### Features
+
+* surface stripped OpenAI citation runs as house source entries (url_citation -> sources, deduped by url) ([a80a325](https://github.com/proteinjs/conversation/commit/a80a325bed5563a3b3e579adc2b66899b26d09a1))
+
+
+
+
+
 ## [5.18.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.18.1...@proteinjs/conversation@5.18.2) (2026-08-27)
 
 
