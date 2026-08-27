@@ -67,3 +67,65 @@ describe('OpenAiCitationMarkers.stripStream', () => {
     expect(out).toEqual(['Hello.', ' World.']);
   });
 });
+
+describe('OpenAiCitationMarkers.sourcesFromUrlCitations', () => {
+  test('mints url+title entries from url_citation annotations, deduped by url with the first winning', () => {
+    expect(
+      OpenAiCitationMarkers.sourcesFromUrlCitations([
+        { type: 'url_citation', url: 'https://a.example', title: 'A', start_index: 0, end_index: 1 },
+        { type: 'url_citation', url: 'https://b.example', title: 'B', start_index: 2, end_index: 3 },
+        { type: 'url_citation', url: 'https://a.example', title: 'A (again)', start_index: 4, end_index: 5 },
+      ])
+    ).toEqual([
+      { url: 'https://a.example', title: 'A' },
+      { url: 'https://b.example', title: 'B' },
+    ]);
+  });
+
+  test('ignores non-url annotation types and entries without a url; empty title is omitted', () => {
+    expect(
+      OpenAiCitationMarkers.sourcesFromUrlCitations([
+        { type: 'file_citation', file_id: 'f1', filename: 'notes.txt', index: 0 },
+        { type: 'url_citation', title: 'No url' },
+        { type: 'url_citation', url: 'https://c.example', title: '' },
+        null,
+        'not-an-annotation',
+      ])
+    ).toEqual([{ url: 'https://c.example' }]);
+  });
+
+  test('returns [] for an empty annotations list', () => {
+    expect(OpenAiCitationMarkers.sourcesFromUrlCitations([])).toEqual([]);
+  });
+});
+
+describe('OpenAiCitationMarkers.dedupeSourcesByUrl', () => {
+  test('first occurrence per url wins; url-less entries pass through', () => {
+    expect(
+      OpenAiCitationMarkers.dedupeSourcesByUrl([
+        { url: 'https://a.example', title: 'A' },
+        { title: 'no url 1' },
+        { url: 'https://a.example', title: 'A later' },
+        { title: 'no url 2' },
+        { url: 'https://b.example' },
+      ])
+    ).toEqual([
+      { url: 'https://a.example', title: 'A' },
+      { title: 'no url 1' },
+      { title: 'no url 2' },
+      { url: 'https://b.example' },
+    ]);
+  });
+});
+
+describe('OpenAiCitationMarkers admitSource (streaming state)', () => {
+  test('admits a url once per stream instance, independent of marker-run state', () => {
+    const markers = new OpenAiCitationMarkers();
+    // Mid-run: the SDK mints source parts while a marker run straddles chunks.
+    expect(markers.push('Claim.\uE200cite\uE202turn0')).toBe('Claim.');
+    expect(markers.admitSource('https://a.example')).toBe(true);
+    expect(markers.push('search1\uE201 Done.')).toBe(' Done.');
+    expect(markers.admitSource('https://a.example')).toBe(false);
+    expect(markers.admitSource('https://b.example')).toBe(true);
+  });
+});

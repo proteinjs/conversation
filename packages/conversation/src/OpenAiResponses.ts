@@ -5,7 +5,7 @@ import type { ConversationSkill } from './ConversationSkill';
 import type { Function } from './Function';
 import { UsageData, UsageDataAccumulator } from './UsageData';
 import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
-import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
+import { OpenAiCitationMarkers, type CitationSource } from './OpenAiCitationMarkers';
 import { LlmTransportRetry } from './LlmTransportRetry';
 import type { GenerateResponseReturn, ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import { TiktokenModel } from 'tiktoken';
@@ -327,6 +327,7 @@ export class OpenAiResponses {
         }
         return {
           message,
+          sources: this.extractSourceCitations(response),
           usagedata: usage.usageData,
           toolInvocations,
           serviceTier: response.service_tier ? response.service_tier : undefined,
@@ -1189,6 +1190,44 @@ export class OpenAiResponses {
     // (the url_citation annotations ride out-of-band); strip them here so every
     // buffered read of Responses text emerges clean — see OpenAiCitationMarkers.
     return OpenAiCitationMarkers.strip(raw);
+  }
+
+  /**
+   * Collect the response's `url_citation` annotations as house source entries (url + title),
+   * deduped by url. The annotations ride out-of-band on the assistant message's `output_text`
+   * parts — the in-band PUA marker runs that reference them are stripped by
+   * `extractAssistantText` (see OpenAiCitationMarkers), so this is where the citation
+   * information survives to the buffered egress instead of being dropped with the markers.
+   */
+  private extractSourceCitations(response: { output?: unknown[] }): CitationSource[] {
+    const out = Array.isArray(response.output) ? response.output : [];
+    const annotations: unknown[] = [];
+
+    for (const item of out) {
+      if (!item || typeof item !== 'object') {
+        continue;
+      }
+      const rec = item as Record<string, unknown>;
+      if (rec.type !== 'message' || rec.role !== 'assistant') {
+        continue;
+      }
+      const contentRaw = rec.content;
+      if (!Array.isArray(contentRaw)) {
+        continue;
+      }
+      for (const c of contentRaw) {
+        if (!c || typeof c !== 'object') {
+          continue;
+        }
+        const part = c as Record<string, unknown>;
+        if (part.type !== 'output_text' || !Array.isArray(part.annotations)) {
+          continue;
+        }
+        annotations.push(...part.annotations);
+      }
+    }
+
+    return OpenAiCitationMarkers.sourcesFromUrlCitations(annotations);
   }
 
   // -----------------------------------------
