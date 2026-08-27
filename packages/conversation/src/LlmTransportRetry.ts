@@ -8,6 +8,41 @@ export type LlmTransportRetryOptions = {
   budgetMs?: number;
 };
 
+/**
+ * Live visibility into the retry loop, for surfaces that render the wait (e.g. the chat turn's
+ * thinking-timeline provider-wait node). Purely observational — emission never alters retry
+ * semantics, and the default (no listener) keeps retries invisible exactly as before.
+ *
+ * - `retrying` — a transient failure was absorbed and the next attempt is scheduled after
+ *   `delayMs`. Emitted BEFORE the backoff sleep, so the wait can render while it happens.
+ * - `recovered` — a later attempt proved out: the call resolved, or the retried stream produced
+ *   output (or completed). The wait is over and the response is flowing.
+ * - `gave-up` — no further attempt follows a `retrying`: the budget exhausted (the error
+ *   surfaces as `TransientProviderError`), or an abort/semantic error arrived after retries had
+ *   begun. Emitted only when at least one `retrying` preceded it, so consumers can treat it as
+ *   the settle of the wait they began.
+ */
+export type LlmTransportRetryActivity =
+  | {
+      phase: 'retrying';
+      /** 1-based count of transient failures absorbed so far (1 = first retry scheduled). */
+      attempt: number;
+      /** The backoff sleep before the next attempt. */
+      delayMs: number;
+      modelId?: string;
+      /** HTTP status of the absorbed failure when known (429, 500, 529, …). */
+      statusCode?: number;
+      /** The transport error's message — for cause classification, never rendered raw. */
+      message: string;
+    }
+  | { phase: 'recovered'; modelId?: string }
+  | { phase: 'gave-up'; modelId?: string; statusCode?: number; message: string };
+
+export type LlmTransportRetryWrapOptions = {
+  /** See {@link LlmTransportRetryActivity}. */
+  onRetryActivity?: (activity: LlmTransportRetryActivity) => void;
+};
+
 export type LlmTransportRetryRunOptions = {
   abortSignal?: AbortSignal;
   /** Classify an error as a transient transport failure (retry) vs semantic (throw immediately). */
@@ -15,6 +50,8 @@ export type LlmTransportRetryRunOptions = {
   /** The model behind the call when known — rides the surfaced TransientProviderError so any
    *  consumer can name the provider in user-facing copy. */
   modelId?: string;
+  /** See {@link LlmTransportRetryActivity}. */
+  onRetryActivity?: (activity: LlmTransportRetryActivity) => void;
 };
 
 /**
@@ -100,8 +137,9 @@ export class LlmTransportRetry {
    * (`doGenerate` / `doStream`) and, for streams, errors that surface BEFORE any output part. Once a
    * stream has emitted output a failure is not replayable and must propagate to the visible layers.
    */
-  wrap(model: LanguageModelV3): LanguageModelV3 {
+  wrap(model: LanguageModelV3, options: LlmTransportRetryWrapOptions = {}): LanguageModelV3 {
     const modelId = model.modelId;
+    const onRetryActivity = options.onRetryActivity;
     return wrapLanguageModel({
       model,
       middleware: {
@@ -111,8 +149,10 @@ export class LlmTransportRetry {
             abortSignal: params.abortSignal,
             isRetryable: LlmTransportRetry.isSdkRetryable,
             modelId,
+            onRetryActivity,
           }),
-        wrapStream: ({ doStream, params }) => this.streamWithRetry(doStream, params.abortSignal, modelId),
+        wrapStream: ({ doStream, params }) =>
+          this.streamWithRetry(doStream, params.abortSignal, modelId, onRetryActivity),
       },
     });
   }
@@ -122,7 +162,11 @@ export class LlmTransportRetry {
     const startedAt = Date.now();
     for (let attempt = 0; ; attempt++) {
       try {
-        return await fn();
+        const value = await fn();
+        if (attempt > 0) {
+          options.onRetryActivity?.({ phase: 'recovered', modelId: options.modelId });
+        }
+        return value;
       } catch (error: unknown) {
         const verdict = await this.verdictAfterBackoff(error, attempt, startedAt, options);
         if (verdict !== 'retry') {
@@ -142,7 +186,8 @@ export class LlmTransportRetry {
   private async streamWithRetry(
     doStream: () => PromiseLike<LanguageModelV3StreamResult>,
     abortSignal?: AbortSignal,
-    modelId?: string
+    modelId?: string,
+    onRetryActivity?: (activity: LlmTransportRetryActivity) => void
   ): Promise<LanguageModelV3StreamResult> {
     const startedAt = Date.now();
     let attempt = 0;
@@ -150,8 +195,19 @@ export class LlmTransportRetry {
       abortSignal,
       isRetryable: LlmTransportRetry.isStreamRetryable,
       modelId,
+      onRetryActivity,
     };
     const verdictOf = (error: unknown) => this.verdictAfterBackoff(error, attempt++, startedAt, options);
+    // The retried stream proved out (first output part, or a clean end): the wait is over.
+    // Emitted at most once per logical call — post-output failures are not replayable, so a
+    // stream never re-enters the retry loop after this.
+    let recoveredEmitted = false;
+    const emitRecoveredIfRetried = () => {
+      if (attempt > 0 && !recoveredEmitted) {
+        recoveredEmitted = true;
+        onRetryActivity?.({ phase: 'recovered', modelId });
+      }
+    };
 
     const initiate = async (): Promise<LanguageModelV3StreamResult> => {
       for (;;) {
@@ -204,6 +260,7 @@ export class LlmTransportRetry {
             throw LlmTransportRetry.surfaced(verdict, error, modelId);
           }
           if (read.done) {
+            emitRecoveredIfRetried();
             flushPreamble(controller);
             controller.close();
             return;
@@ -221,6 +278,9 @@ export class LlmTransportRetry {
             }
             // Semantic or budget-exhausted: surface as a stream part exactly like an unwrapped
             // stream would — but a budget-exhausted TRANSIENT error carries the type tag.
+            // The episode SETTLED as a failure (verdictAfterBackoff emitted any gave-up): the
+            // stream's trailing done-read must not report a recovery.
+            recoveredEmitted = true;
             outputStarted = true;
             flushPreamble(controller);
             controller.enqueue(
@@ -236,6 +296,7 @@ export class LlmTransportRetry {
           }
           // First output part — the attempt proved out; release the preamble and go passthrough.
           outputStarted = true;
+          emitRecoveredIfRetried();
           flushPreamble(controller);
           controller.enqueue(part);
           return;
@@ -255,10 +316,23 @@ export class LlmTransportRetry {
     startedAt: number,
     options: LlmTransportRetryRunOptions
   ): Promise<RetryVerdict> {
+    // A surface verdict after retries had begun settles the observer's wait (`gave-up`); a
+    // surface with no prior retry emitted nothing, so there is no wait to settle.
+    const emitGaveUpIfRetried = () => {
+      if (attempt > 0) {
+        options.onRetryActivity?.({
+          phase: 'gave-up',
+          modelId: options.modelId,
+          ...LlmTransportRetry.errorInfo(error),
+        });
+      }
+    };
     if (options.abortSignal?.aborted || LlmTransportRetry.isAbortError(error)) {
+      emitGaveUpIfRetried();
       return 'surface';
     }
     if (!options.isRetryable(error)) {
+      emitGaveUpIfRetried();
       return 'surface';
     }
     const delayMs = this.nextDelayMs(attempt, error);
@@ -268,14 +342,39 @@ export class LlmTransportRetry {
         obj: { attempt: attempt + 1, budgetMs: this.budgetMs },
         error: error as Error,
       });
+      emitGaveUpIfRetried();
       return 'surface-transient';
     }
     this.logger.warn({
       message: 'Transient LLM transport failure — retrying',
       obj: { attempt: attempt + 1, delayMs, error: String((error as Error)?.message ?? error) },
     });
+    options.onRetryActivity?.({
+      phase: 'retrying',
+      attempt: attempt + 1,
+      delayMs,
+      modelId: options.modelId,
+      ...LlmTransportRetry.errorInfo(error),
+    });
     await LlmTransportRetry.sleepWithAbort(delayMs, options.abortSignal);
-    return options.abortSignal?.aborted ? 'surface' : 'retry';
+    if (options.abortSignal?.aborted) {
+      // The abort landed during the backoff sleep — the retry we announced never runs.
+      options.onRetryActivity?.({
+        phase: 'gave-up',
+        modelId: options.modelId,
+        ...LlmTransportRetry.errorInfo(error),
+      });
+      return 'surface';
+    }
+    return 'retry';
+  }
+
+  /** The failure's status/message as the observer sees them — mirror of TransientProviderError.wrap's extraction. */
+  private static errorInfo(error: unknown): { statusCode?: number; message: string } {
+    const message =
+      error instanceof Error ? error.message : typeof error === 'string' ? error : JSON.stringify(error ?? null);
+    const statusCode = (error as { statusCode?: unknown } | null | undefined)?.statusCode;
+    return { message, ...(typeof statusCode === 'number' ? { statusCode } : {}) };
   }
 
   /** The error a non-retry verdict throws: the original, tagged only when classified transient. */

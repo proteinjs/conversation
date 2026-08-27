@@ -11,7 +11,7 @@ import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
 import { UsageData, UsageDataAccumulator, TokenUsage } from './UsageData';
 import { resolveModel, inferProvider } from './resolveModel';
-import { LlmTransportRetry } from './LlmTransportRetry';
+import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
 import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
@@ -92,6 +92,14 @@ export type GenerateStreamParams = {
    * multi-step requests — a single-step request fires this once, at the end.
    */
   onPartialUsageData?: (usageData: UsageData) => Promise<void>;
+  /**
+   * Live transport-retry visibility for THIS call (see {@link LlmTransportRetryActivity}): every
+   * transient provider failure the transport layer absorbs — at the initial request and at every
+   * tool-loop step — reports here (`retrying` → `recovered`/`gave-up`), so callers can render
+   * the wait (e.g. the chat turn's provider wait node in the thinking timeline). Observational
+   * only; retry ownership stays with the one transport layer (LlmTransportRetry).
+   */
+  onTransportRetry?: (activity: LlmTransportRetryActivity) => void;
   abortSignal?: AbortSignal;
   maxToolCalls?: number;
   /**
@@ -380,7 +388,7 @@ export class Conversation {
   async generateStream(params: GenerateStreamParams): Promise<StreamResult> {
     await this.ensureSkillsProcessed();
 
-    const model = this.resolveModelInstance(params.model);
+    const model = this.resolveModelInstance(params.model, params.onTransportRetry);
     const modelString = this.getModelString(params.model);
     const provider = inferProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
 
@@ -2598,11 +2606,15 @@ export class Conversation {
   // Model resolution
   // ────────────────────────────────────────────────────────────
 
-  private resolveModelInstance(model?: LanguageModel | string): LanguageModel {
+  private resolveModelInstance(
+    model?: LanguageModel | string,
+    onRetryActivity?: (activity: LlmTransportRetryActivity) => void
+  ): LanguageModel {
     const m = model ?? this.params.defaultModel ?? DEFAULT_MODEL;
     // The single transport choke point: streamText, generateObject, and every per-step tool-loop
     // request run through the wrapped model, so transient provider failures retry invisibly here.
-    return this.transportRetry.wrap(resolveModel(m) as never);
+    // `onRetryActivity` (when the caller passed one) observes those retries without owning them.
+    return this.transportRetry.wrap(resolveModel(m) as never, { onRetryActivity });
   }
 
   private getModelString(model?: LanguageModel | string): string {
