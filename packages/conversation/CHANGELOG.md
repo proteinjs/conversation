@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [5.18.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.18.1...@proteinjs/conversation@5.18.2) (2026-08-27)
+
+
+### Bug Fixes
+
+* strip OpenAI Responses in-band citation markers from every assistant-text egress ([45fb134](https://github.com/proteinjs/conversation/commit/45fb134af48afe7214f5c917f6e9929e06b630ff))
+
+
+
+
+
 ## [5.18.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.18.0...@proteinjs/conversation@5.18.1) (2026-08-26)
 
 
