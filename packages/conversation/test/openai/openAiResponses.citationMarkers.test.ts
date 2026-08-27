@@ -57,6 +57,16 @@ function createMarkedResponseFixture() {
                 start_index: MARKED_TEXT.indexOf(PROSE_2) + PROSE_2.length,
                 end_index: MARKED_TEXT.indexOf(PROSE_2) + PROSE_2.length + 1,
               },
+              // The same page cited at a second claim — the API mints a SECOND annotation for
+              // the same url (different title text is possible); sources must dedupe by url
+              // with the first entry winning.
+              {
+                type: 'url_citation',
+                url: 'https://example.com/paris-guide',
+                title: 'Paris travel guide (mirror)',
+                start_index: MARKED_TEXT.length,
+                end_index: MARKED_TEXT.length,
+              },
             ],
           },
         ],
@@ -64,6 +74,12 @@ function createMarkedResponseFixture() {
     ],
   };
 }
+
+/** What the fixture's annotations must emerge as: one entry per cited url, first title wins. */
+const EXPECTED_SOURCES = [
+  { url: 'https://example.com/paris-guide', title: 'Paris travel guide' },
+  { url: 'https://example.com/louvre-hours', title: 'Louvre visiting hours' },
+];
 
 /**
  * The OpenAI SDK client is constructed in the OpenAiResponses constructor and
@@ -117,5 +133,43 @@ describe('OpenAiResponses citation markers (buffered read path)', () => {
     expect(result.message).not.toMatch(MARKER_ID_RE);
     expect(result.message).toContain(PROSE_1);
     expect(result.message).toContain(PROSE_2);
+  });
+});
+
+/**
+ * The stripped runs' information must not be dropped: each url_citation annotation riding
+ * out-of-band on the content part surfaces as a house source entry (url + title), deduped
+ * by url — the buffered counterpart of the AI-SDK streaming path's source parts.
+ */
+describe('OpenAiResponses citation sources (buffered read path)', () => {
+  test('generateText surfaces url_citation annotations as source entries deduped by url', async () => {
+    const adapter = createAdapterWithFakeClient(createMarkedResponseFixture());
+
+    const result = await adapter.generateText({ messages: ['Tell me about Paris.'] });
+
+    expect(result.sources).toEqual(EXPECTED_SOURCES);
+  });
+
+  test('generateText yields zero sources when the response carries no annotations', async () => {
+    const fixture = createMarkedResponseFixture();
+    (fixture.output[0].content[0] as { annotations: unknown[] }).annotations = [];
+    const adapter = createAdapterWithFakeClient(fixture);
+
+    const result = await adapter.generateText({ messages: ['Tell me about Paris.'] });
+
+    expect(result.sources).toEqual([]);
+  });
+
+  test('generateText yields zero sources on the direct output_text fallback path (no parts, no annotations)', async () => {
+    const adapter = createAdapterWithFakeClient({
+      id: 'resp_citation_fixture_direct',
+      status: 'completed',
+      output: [],
+      output_text: MARKED_TEXT,
+    });
+
+    const result = await adapter.generateText({ messages: ['Tell me about Paris.'] });
+
+    expect(result.sources).toEqual([]);
   });
 });

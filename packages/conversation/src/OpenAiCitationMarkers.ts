@@ -22,6 +22,14 @@
  * text when unterminated — and is removed whole; everything inside is marker
  * payload, never prose. Any other U+E200–U+E2FF char outside a run is a stray
  * marker glyph and is dropped alone. Surrounding prose is preserved exactly.
+ *
+ * The stripped runs' information is not dropped: the out-of-band `url_citation`
+ * annotations they reference surface as house source entries (url + title),
+ * deduped by url. This class owns that side too — `sourcesFromUrlCitations`
+ * mints the entries on the buffered path (`OpenAiResponses`), and the same
+ * per-stream instance that carries marker-run state carries the seen-url set
+ * (`admitSource`) so the streaming egress collapses the one-part-per-annotation
+ * repeats the AI-SDK OpenAI adapter emits for a url cited at several claims.
  */
 export class OpenAiCitationMarkers {
   /** Strip all marker runs and stray marker glyphs from a complete text. */
@@ -38,6 +46,51 @@ export class OpenAiCitationMarkers {
         yield cleaned;
       }
     }
+  }
+
+  /**
+   * Mint house source entries from a Responses content part's `annotations`: every
+   * `url_citation` (the SDK's `ResponseOutputText.URLCitation` — url + title ride the
+   * annotation itself) becomes `{ url, title }`, deduped by url with the first entry
+   * winning. Non-url annotation types (`file_citation`, `container_file_citation`,
+   * `file_path`) carry no web source and are ignored.
+   */
+  static sourcesFromUrlCitations(annotations: readonly unknown[]): CitationSource[] {
+    const sources: CitationSource[] = [];
+    for (const annotation of annotations) {
+      if (!annotation || typeof annotation !== 'object') {
+        continue;
+      }
+      const rec = annotation as Record<string, unknown>;
+      if (rec.type !== 'url_citation' || typeof rec.url !== 'string' || rec.url.length === 0) {
+        continue;
+      }
+      sources.push({
+        url: rec.url,
+        ...(typeof rec.title === 'string' && rec.title.length > 0 ? { title: rec.title } : {}),
+      });
+    }
+    return OpenAiCitationMarkers.dedupeSourcesByUrl(sources);
+  }
+
+  /**
+   * Dedupe a sources list by url — the first occurrence wins; entries without a url pass
+   * through untouched. The house contract for citation-derived source lists: one entry per
+   * cited web page.
+   */
+  static dedupeSourcesByUrl<T extends { url?: string }>(sources: readonly T[]): T[] {
+    const seen = new Set<string>();
+    const out: T[] = [];
+    for (const source of sources) {
+      if (typeof source.url === 'string' && source.url.length > 0) {
+        if (seen.has(source.url)) {
+          continue;
+        }
+        seen.add(source.url);
+      }
+      out.push(source);
+    }
+    return out;
   }
 
   /**
@@ -73,6 +126,21 @@ export class OpenAiCitationMarkers {
     return out;
   }
 
+  /**
+   * Per-stream source admission: true the first time a url is seen on this stream, false on
+   * repeats. The streaming counterpart of `dedupeSourcesByUrl` — the AI-SDK OpenAI adapter
+   * mints one `source` part per `url_citation` annotation, so a url cited at several claims
+   * arrives several times; the same stateful instance that carries marker-run state across
+   * chunk boundaries carries the seen-url set across parts.
+   */
+  admitSource(url: string): boolean {
+    if (this.seenSourceUrls.has(url)) {
+      return false;
+    }
+    this.seenSourceUrls.add(url);
+    return true;
+  }
+
   /** U+E200 — opens a marker run. */
   private static readonly RUN_OPEN = 0xe200;
   /** U+E201 — closes a marker run. */
@@ -84,4 +152,14 @@ export class OpenAiCitationMarkers {
   private static readonly MARKER_CHAR = /[\uE200-\uE2FF]/;
 
   private inMarkerRun = false;
+  private readonly seenSourceUrls = new Set<string>();
 }
+
+/**
+ * A source citation minted from a `url_citation` annotation — the house sources-entry shape
+ * (what `StreamSource` consumers and per-message source lists render as pills).
+ */
+export type CitationSource = {
+  url: string;
+  title?: string;
+};

@@ -872,6 +872,10 @@ export class Conversation {
             title: source.sourceType === 'url' ? source.title : undefined,
           }))
         )
+        // OpenAI mints one source entry per url_citation annotation — a url cited at several
+        // claims arrives several times; the buffered read of sources emerges deduped like the
+        // streaming egress (see mapFullStream's source branch).
+        .then((mapped) => (provider === 'openai' ? OpenAiCitationMarkers.dedupeSourcesByUrl(mapped) : mapped))
         .catch(() => [] as StreamSource[]);
 
     const safeUsage = usagePromise.catch(
@@ -2488,6 +2492,11 @@ export class Conversation {
     const text = result.message;
     const usage = result.usagedata;
     const toolInvocations = result.toolInvocations;
+    // Web-search url_citation annotations minted by OpenAiResponses (deduped by url) surface
+    // through both sources channels of the fabricated stream — source parts on fullStream
+    // (what per-message source lists downstream consume) and the sources promise — matching
+    // what the live streaming path emits for the same citations.
+    const sources: StreamSource[] = result.sources.map((s) => ({ url: s.url, title: s.title }));
 
     return {
       textStream: (async function* () {
@@ -2498,10 +2507,13 @@ export class Conversation {
       })(),
       fullStream: (async function* () {
         yield { type: 'text-delta' as const, textDelta: text };
+        for (const source of sources) {
+          yield { type: 'source' as const, source };
+        }
       })(),
       text: Promise.resolve(text),
       reasoning: Promise.resolve(''),
-      sources: Promise.resolve([]),
+      sources: Promise.resolve(sources),
       usage: Promise.resolve(usage),
       toolInvocations: Promise.resolve(toolInvocations),
     };
@@ -3071,10 +3083,19 @@ export class Conversation {
                 ok: false,
               };
             } else if (part.type === 'source') {
+              const url = part.sourceType === 'url' ? part.url : undefined;
+              // The OpenAI adapter mints one source part per url_citation annotation, so a
+              // url cited at several claims arrives several times; the per-stream citation
+              // state collapses the repeats so per-message source lists downstream stay
+              // unique by url. Non-OpenAI providers pass through untouched — their citation
+              // semantics are not this owner's.
+              if (citationMarkers && typeof url === 'string' && url.length > 0 && !citationMarkers.admitSource(url)) {
+                continue;
+              }
               yield {
                 type: 'source' as const,
                 source: {
-                  url: part.sourceType === 'url' ? part.url : undefined,
+                  url,
                   title: part.sourceType === 'url' ? part.title : undefined,
                 },
               };

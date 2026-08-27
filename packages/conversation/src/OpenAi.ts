@@ -16,6 +16,7 @@ import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamF
 import { Stream } from 'openai/streaming';
 import { Readable } from 'stream';
 import { OpenAiStreamProcessor } from './OpenAiStreamProcessor';
+import type { CitationSource } from './OpenAiCitationMarkers';
 import { UsageData, UsageDataAccumulator } from './UsageData';
 import { UsageDataAccumulatorContext } from './UsageDataContext';
 
@@ -85,6 +86,12 @@ export type GenerateResponseParams = {
 /** @deprecated Use `GenerateResponseResult` from `Conversation` instead. */
 export type GenerateResponseReturn = {
   message: string;
+  /**
+   * Source citations backing this message — web-search `url_citation` annotations minted as
+   * house source entries (url + title), deduped by url. The Responses path (`OpenAiResponses`)
+   * populates these; the deprecated Chat Completions path carries none.
+   */
+  sources: CitationSource[];
   usagedata: UsageData;
   /** Structured ledger of tool calls executed while producing this message. */
   toolInvocations: ToolInvocationResult[];
@@ -263,7 +270,8 @@ export class OpenAi {
       }
 
       this.history.push([responseMessage]);
-      return { message: responseText, usagedata: resolvedUsageDataAccumulator.usageData, toolInvocations };
+      // The deprecated Chat Completions path carries no citation annotations.
+      return { message: responseText, sources: [], usagedata: resolvedUsageDataAccumulator.usageData, toolInvocations };
     };
 
     // Only wrap in context if this is the first call
