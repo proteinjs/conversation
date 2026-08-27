@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.20.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.19.0...@proteinjs/conversation@5.20.0) (2026-08-27)
+
+
+### Features
+
+* transport-retry activity observer — LlmTransportRetry reports retrying/recovered/gave-up per wrapped call and generateStream exposes onTransportRetry, so visible surfaces (the chat turn's provider wait node) can render the transient-overload retries the transport layer absorbs; observational only — retry semantics, budgets, and typed exhaustion are unchanged ([3ceff7d](https://github.com/proteinjs/conversation/commit/3ceff7dbf5b4a027b72bdca528c526523e9584f2))
+
+
+
+
+
 # [5.19.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.18.2...@proteinjs/conversation@5.19.0) (2026-08-27)
 
 
