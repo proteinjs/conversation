@@ -333,6 +333,10 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
     outputUsdPer1M: 75.0,
   },
   'claude-opus-4.1': { inputUsdPer1M: 15.0, cachedInputUsdPer1M: 1.5, cacheWriteUsdPer1M: 18.75, outputUsdPer1M: 75.0 },
+  // Sonnet 5: $2/$10 — the launch intro pricing made permanent (pricing page, verified
+  // 2026-09-01); standard cache multipliers (reads 0.1x = $0.20, writes 1.25x = $2.50).
+  // Cheaper than Sonnet 4.6's $3/$15.
+  'claude-sonnet-5': { inputUsdPer1M: 2.0, cachedInputUsdPer1M: 0.2, cacheWriteUsdPer1M: 2.5, outputUsdPer1M: 10.0 },
   'claude-sonnet-4-6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
   'claude-sonnet-4.6': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
   'claude-sonnet-4-5': { inputUsdPer1M: 3.0, cachedInputUsdPer1M: 0.3, cacheWriteUsdPer1M: 3.75, outputUsdPer1M: 15.0 },
