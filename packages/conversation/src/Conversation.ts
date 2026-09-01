@@ -442,6 +442,16 @@ export class Conversation {
 
     const allTools = { ...tools, ...webSearchTools, ...skillProviderTools };
 
+    // Names of tools WE execute in-process (they carry an execute()) — the liveness guard
+    // suspends its idle race while one of these is outstanding, because the SDK emits no
+    // stream parts while awaiting local execution (see guardStreamLiveness). Provider
+    // server-executed tools (e.g. Anthropic web_search) carry no execute and stay guarded.
+    const locallyExecutedToolNames: ReadonlySet<string> = new Set(
+      Object.entries(allTools)
+        .filter(([, t]) => typeof (t as { execute?: unknown }).execute === 'function')
+        .map(([name]) => name)
+    );
+
     // When the user toggles search on, force the search tool on the first
     // step so the toggle has a consistent "guarantee a search this turn"
     // meaning across providers. After step 1 the model returns to default
@@ -682,7 +692,12 @@ export class Conversation {
           // first text-delta hasn't been yielded yet, so restarting right at it shows nothing).
           let restartRequested = false;
           try {
-            for await (const part of self.guardStreamLiveness(current.fullStream, livenessController, modelString)) {
+            for await (const part of self.guardStreamLiveness(
+              current.fullStream,
+              livenessController,
+              modelString,
+              locallyExecutedToolNames
+            )) {
               const partType = (part as { type?: string }).type;
               if (partType === 'tool-input-start' || partType === 'tool-call' || partType === 'tool-result') {
                 turnMaterial = true;
@@ -2883,6 +2898,14 @@ export class Conversation {
    * SDK call and the iterator throws an HONEST error, handing the failure to the existing
    * retry / blocker-ask machinery. Long thinking pauses are legitimate (adaptive Opus) — the
    * default window is generous and env-tunable via CONVERSATION_STREAM_IDLE_TIMEOUT_MS.
+   *
+   * Liveness means MODEL-stream liveness only (2026-09-01, root-caused live on the R5 estate):
+   * the fullStream also goes quiet while the SDK awaits a LOCALLY-EXECUTED tool's execute() —
+   * there is no model connection to guard in that window, and a legitimate long tool run
+   * (editThoughts queued behind a live editor lease, a dev tool running a build) used to be
+   * aborted at exactly the idle window as a fake "silent connection loss". The guard now
+   * suspends the idle race while a local tool call is outstanding (tool-call seen, final
+   * tool-result/tool-error not yet) and re-arms the moment it settles.
    */
   /** `AbortSignal.any` exists at runtime (node ≥ 20.3) but not in this TS lib target. */
   /**
@@ -2934,31 +2957,68 @@ export class Conversation {
   private async *guardStreamLiveness(
     aiSdkFullStream: AsyncIterable<any>,
     livenessController: AbortController,
-    modelString: string
+    modelString: string,
+    locallyExecutedToolNames?: ReadonlySet<string>
   ): AsyncIterable<any> {
     const idleTimeoutMs = Number(process.env.CONVERSATION_STREAM_IDLE_TIMEOUT_MS || 300_000);
     const iterator = aiSdkFullStream[Symbol.asyncIterator]();
+    // Tool calls the SDK is executing LOCALLY right now (a `tool-call` part arrived; its
+    // `tool-result`/`tool-error` hasn't). While any are outstanding, the quiet window is OUR
+    // OWN execute() running — an editThoughts queued behind a live editor lease
+    // (AgentLockFence queue ceiling: 10 min), a dev tool running a build — not model silence,
+    // so the idle race is SUSPENDED (2026-09-01, root-caused live on the R5 estate: every
+    // tool execution that outlived the window was aborted at exactly 300s as a fake "silent
+    // connection loss", killing the whole leg). Tool-execution time is bounded by the tool's
+    // own machinery, never by this guard. Provider server-executed tools (e.g. Anthropic
+    // web_search) never enter the set: their results stream over the live connection, which
+    // stays guarded. If the connection dies while a local tool runs, the guard re-arms on the
+    // first await after the tool settles — detected late, never missed.
+    const executingLocalTools = new Map<string, { toolName: string; sinceMs: number }>();
     while (true) {
-      let idleTimer: ReturnType<typeof setTimeout> | undefined;
-      const idle = new Promise<never>((_, reject) => {
-        idleTimer = setTimeout(() => {
-          livenessController.abort();
-          reject(
-            new Error(
-              `Model stream stalled: no parts from ${modelString} for ${Math.round(idleTimeoutMs / 1000)}s (silent connection loss); aborted for retry.`
-            )
-          );
-        }, idleTimeoutMs);
-        idleTimer.unref?.();
-      });
       let step: IteratorResult<any>;
-      try {
-        step = await Promise.race([iterator.next(), idle]);
-      } finally {
-        clearTimeout(idleTimer);
+      if (executingLocalTools.size > 0) {
+        step = await iterator.next();
+      } else {
+        let idleTimer: ReturnType<typeof setTimeout> | undefined;
+        const idle = new Promise<never>((_, reject) => {
+          idleTimer = setTimeout(() => {
+            livenessController.abort();
+            reject(
+              new Error(
+                `Model stream stalled: no parts from ${modelString} for ${Math.round(idleTimeoutMs / 1000)}s (silent connection loss); aborted for retry.`
+              )
+            );
+          }, idleTimeoutMs);
+          idleTimer.unref?.();
+        });
+        try {
+          step = await Promise.race([iterator.next(), idle]);
+        } finally {
+          clearTimeout(idleTimer);
+        }
       }
       if (step.done) {
         return;
+      }
+      const part = step.value as { type?: string; toolCallId?: unknown; toolName?: string; preliminary?: boolean };
+      if (part?.type === 'tool-call' && part.toolName && locallyExecutedToolNames?.has(part.toolName)) {
+        executingLocalTools.set(String(part.toolCallId), { toolName: part.toolName, sinceMs: Date.now() });
+      } else if (
+        (part?.type === 'tool-result' || part?.type === 'tool-error') &&
+        // v6 streaming tools emit preliminary tool-result parts mid-execution — only the
+        // final (non-preliminary) part settles the call.
+        !part.preliminary &&
+        executingLocalTools.has(String(part.toolCallId))
+      ) {
+        const entry = executingLocalTools.get(String(part.toolCallId))!;
+        executingLocalTools.delete(String(part.toolCallId));
+        const heldMs = Date.now() - entry.sinceMs;
+        if (heldMs > idleTimeoutMs) {
+          this.logger.info({
+            message: 'Local tool execution outlived the stream idle window (liveness guard suspended for it)',
+            obj: { toolName: entry.toolName, heldMs },
+          });
+        }
       }
       yield step.value;
     }
