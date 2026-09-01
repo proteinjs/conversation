@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.22.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.21.0...@proteinjs/conversation@5.22.0) (2026-09-01)
+
+
+### Features
+
+* claude-fable-5-1 support — pricing + the forced-tool-choice gate ([fff361d](https://github.com/proteinjs/conversation/commit/fff361d3a8e61625a2d8147df6f4512fa88ab6fe))
+
+
+
+
+
 # [5.21.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.20.0...@proteinjs/conversation@5.21.0) (2026-09-01)
 
 
