@@ -446,7 +446,7 @@ export class Conversation {
     // step so the toggle has a consistent "guarantee a search this turn"
     // meaning across providers. After step 1 the model returns to default
     // (auto) tool choice for subsequent steps.
-    const webSearchToolChoice = this.getWebSearchToolChoice(provider, webSearchTools, params.webSearch);
+    const webSearchToolChoice = this.getWebSearchToolChoice(provider, modelString, webSearchTools, params.webSearch);
 
     // Mid-call injected context (see GenerateStreamParams.drainInjectedContext): notes drained at a
     // step boundary are recorded here with the raw step-message count at drain time as their anchor,
@@ -2407,8 +2407,18 @@ export class Conversation {
    * - Toggle off, or tool unavailable (e.g. Haiku/nano excluded models):
    *   return `undefined` so the SDK falls back to its default (auto).
    */
+  /**
+   * Model-id prefixes that REJECT forced tool_choice — the API 400s the whole request
+   * ('tool_choice: type "tool" and "any" are not supported for this model'; observed live
+   * 2026-09-01 on claude-fable-5-1 — Fable 5 and Opus 5 accept forcing). For these models
+   * the search tool still attaches and the toggle softens from "guarantee a search this
+   * turn" to "search strongly available": forcing would kill the turn outright.
+   */
+  private static readonly FORCED_TOOL_CHOICE_UNSUPPORTED_MODEL_PREFIXES = ['claude-fable-5-1'];
+
   private getWebSearchToolChoice(
     provider: string,
+    modelString: string,
     webSearchTools: ToolSet,
     webSearchRequested?: boolean
   ): { type: 'tool'; toolName: string } | undefined {
@@ -2423,6 +2433,13 @@ export class Conversation {
     const toolName = Object.keys(webSearchTools)[0];
     if (!toolName) {
       // Model class doesn't have a search tool wired (e.g. nano/haiku).
+      return undefined;
+    }
+    // Match on the model id — after any `provider:` prefix (the assertInputWithinModelCap
+    // convention), so a prefixed model string can't defeat the gate.
+    const colonIdx = modelString.indexOf(':');
+    const modelId = colonIdx > 0 ? modelString.slice(colonIdx + 1) : modelString;
+    if (Conversation.FORCED_TOOL_CHOICE_UNSUPPORTED_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix))) {
       return undefined;
     }
     return { type: 'tool', toolName };

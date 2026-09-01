@@ -310,6 +310,15 @@ export const MODEL_API_COST_USD_PER_1M_TOKENS_STANDARD: Record<string, ModelApiC
   // cacheWriteUsdPer1M = 1.25x input — the 5-minute ephemeral cache write rate
   // (N3XA writes default ephemeral caches via applyAnthropicPromptCaching, no
   // explicit ttl). cachedInputUsdPer1M is the cache-READ rate (0.1x input).
+  // Fable 5.1 (released 2026-08-28): same base rates as Fable 5, but cache READS are
+  // 0.025x input ($0.25/MTok) — the first sub-0.1x cache-read tier (pricing page,
+  // verified 2026-09-01). The write rate stays 1.25x.
+  'claude-fable-5-1': {
+    inputUsdPer1M: 10.0,
+    cachedInputUsdPer1M: 0.25,
+    cacheWriteUsdPer1M: 12.5,
+    outputUsdPer1M: 50.0,
+  },
   'claude-fable-5': { inputUsdPer1M: 10.0, cachedInputUsdPer1M: 1.0, cacheWriteUsdPer1M: 12.5, outputUsdPer1M: 50.0 },
   // Opus 5 (launched 2026-07-24): same rates as Opus 4.8 per the published pricing page.
   'claude-opus-5': { inputUsdPer1M: 5.0, cachedInputUsdPer1M: 0.5, cacheWriteUsdPer1M: 6.25, outputUsdPer1M: 25.0 },

@@ -67,6 +67,23 @@ describe('calculateUsageCostUsd', () => {
     expect(allCached.totalUsd).toBeLessThan(allFresh.totalUsd);
   });
 
+  it('prices claude-fable-5-1 cache reads at the 0.025x tier ($0.25/MTok — not the standard 0.1x)', () => {
+    // Fable 5.1 (2026-08-28): base $10/$50 like Fable 5, but cache reads bill at 0.025x
+    // input — 1M all-cached input = $0.25, vs $1.00 on Fable 5. Pins the row exists AND
+    // carries the new rate (an unpriced id would fall back to $0; a copy-pasted 0.1x row
+    // would read $1.00).
+    const cached51 = calculateUsageCostUsd(
+      'claude-fable-5-1',
+      tokens({ inputTokens: 1_000_000, cachedInputTokens: 1_000_000, totalTokens: 1_000_000 })
+    );
+    expect(cached51.totalUsd).toBeCloseTo(0.25, 5);
+    const cached5 = calculateUsageCostUsd(
+      'claude-fable-5',
+      tokens({ inputTokens: 1_000_000, cachedInputTokens: 1_000_000, totalTokens: 1_000_000 })
+    );
+    expect(cached5.totalUsd).toBeCloseTo(1.0, 5);
+  });
+
   it('excludes reasoning from the total (reasoning tokens are already inside output_tokens)', () => {
     const withReasoning = calculateUsageCostUsd(
       MODEL,
