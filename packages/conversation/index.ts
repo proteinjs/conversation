@@ -21,6 +21,7 @@ export * from './src/OpenAiCitationMarkers';
 export * from './src/resolveModel';
 export * from './src/LlmTransportRetry';
 export * from './src/TransientProviderError';
+export * from './src/ProviderBillingError';
 
 // Conversation modules
 export * from './src/fs/conversation_fs/ConversationFsSkill';

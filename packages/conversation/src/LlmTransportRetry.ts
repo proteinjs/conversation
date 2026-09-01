@@ -2,6 +2,7 @@ import type { LanguageModelV3, LanguageModelV3StreamPart, LanguageModelV3StreamR
 import { APICallError, wrapLanguageModel } from 'ai';
 import { Logger } from '@proteinjs/logger';
 import { TransientProviderError } from './TransientProviderError';
+import { ProviderBillingError, classifyProviderBillingError } from './ProviderBillingError';
 
 export type LlmTransportRetryOptions = {
   /** Total wall-clock budget for one logical call, including backoff sleeps. Default 90s. */
@@ -60,8 +61,14 @@ export type LlmTransportRetryRunOptions = {
  * - `surface` — semantic (or abort): rethrow the ORIGINAL error untouched.
  * - `surface-transient` — TRANSIENT but the retry budget is exhausted: surface it wrapped as
  *   `TransientProviderError`, so outer layers see "the provider is down", not "the request is bad".
+ * - `surface-billing` — a BILLING/CREDIT failure (dead wallet, spend limit): surface immediately
+ *   wrapped as `ProviderBillingError`, never retried — nothing about a billing state heals in a
+ *   20-second backoff. Detected BEFORE the retryable check, because two of the shapes ride HTTP
+ *   429 (OpenAI `insufficient_quota` et al.; Anthropic's spend-cap `rate_limit_error` with
+ *   `details.error_code: enforced_spend_limit_reached`) and would otherwise be mis-binned as
+ *   rate limits and retried forever against an empty account.
  */
-type RetryVerdict = 'retry' | 'surface' | 'surface-transient';
+type RetryVerdict = 'retry' | 'surface' | 'surface-transient' | 'surface-billing';
 
 /**
  * Invisible, bounded retries for TRANSIENT LLM transport failures (429s, 5xx, network drops) — the
@@ -276,18 +283,16 @@ export class LlmTransportRetry {
               await restart();
               continue;
             }
-            // Semantic or budget-exhausted: surface as a stream part exactly like an unwrapped
-            // stream would — but a budget-exhausted TRANSIENT error carries the type tag.
+            // Semantic, billing, or budget-exhausted: surface as a stream part exactly like an
+            // unwrapped stream would — but a budget-exhausted TRANSIENT error carries the type
+            // tag, and a BILLING error carries its own (same rule as the thrown path).
             // The episode SETTLED as a failure (verdictAfterBackoff emitted any gave-up): the
             // stream's trailing done-read must not report a recovery.
             recoveredEmitted = true;
             outputStarted = true;
             flushPreamble(controller);
-            controller.enqueue(
-              verdict === 'surface-transient'
-                ? { ...part, error: TransientProviderError.wrap(part.error, modelId) }
-                : part
-            );
+            const surfacedError = LlmTransportRetry.surfaced(verdict, part.error, modelId);
+            controller.enqueue(surfacedError === part.error ? part : { ...part, error: surfacedError });
             return;
           }
           if (!LlmTransportRetry.OUTPUT_PART_TYPES.has(part.type)) {
@@ -330,6 +335,17 @@ export class LlmTransportRetry {
     if (options.abortSignal?.aborted || LlmTransportRetry.isAbortError(error)) {
       emitGaveUpIfRetried();
       return 'surface';
+    }
+    // Billing detection runs BEFORE the retryable check (see the verdict's doc): the billing
+    // shapes that ride 429 must never enter the retry loop at all.
+    if (classifyProviderBillingError(error) !== undefined) {
+      this.logger.error({
+        message: 'Provider billing/credit failure — surfacing as ProviderBillingError (never retried)',
+        obj: { attempt: attempt + 1 },
+        error: error as Error,
+      });
+      emitGaveUpIfRetried();
+      return 'surface-billing';
     }
     if (!options.isRetryable(error)) {
       emitGaveUpIfRetried();
@@ -377,9 +393,15 @@ export class LlmTransportRetry {
     return { message, ...(typeof statusCode === 'number' ? { statusCode } : {}) };
   }
 
-  /** The error a non-retry verdict throws: the original, tagged only when classified transient. */
+  /** The error a non-retry verdict throws: the original, tagged only when classified transient/billing. */
   private static surfaced(verdict: RetryVerdict, error: unknown, modelId?: string): unknown {
-    return verdict === 'surface-transient' ? TransientProviderError.wrap(error, modelId) : error;
+    if (verdict === 'surface-transient') {
+      return TransientProviderError.wrap(error, modelId);
+    }
+    if (verdict === 'surface-billing') {
+      return ProviderBillingError.wrap(error, classifyProviderBillingError(error) ?? 'billing_error', modelId);
+    }
+    return error;
   }
 
   /** The AI SDK's own classification: provider-marked transient (429/5xx/network) and nothing else. */
