@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.23.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.22.0...@proteinjs/conversation@5.23.0) (2026-09-01)
+
+
+### Features
+
+* price claude-sonnet-5 — $2/$10, the launch intro pricing made permanent ([221cf6c](https://github.com/proteinjs/conversation/commit/221cf6cb782642b9e614c9c278c0bcbf27ba0d04))
+
+
+
+
+
 # [5.22.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.21.0...@proteinjs/conversation@5.22.0) (2026-09-01)
 
 
