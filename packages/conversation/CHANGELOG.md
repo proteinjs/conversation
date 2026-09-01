@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [5.21.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.20.0...@proteinjs/conversation@5.21.0) (2026-09-01)
+
+
+### Features
+
+* ProviderBillingError — the billing/credit class typed at the transport choke point (FLOW_RESILIENCE wave D, D1). Detection runs BEFORE the retryable check, because the worst shapes ride HTTP 429 and were mis-binned as rate limits and retried against a dead wallet: OpenAI's insufficient_quota family (error.code credit_balance_exhausted / organization_spend_limit_exceeded / project_spend_limit_exceeded / organization_usage_limit_exceeded, legacy billing_hard_limit_reached kept) and Anthropic's tier spend cap (rate_limit_error whose only discriminator is error.details.error_code enforced_spend_limit_reached, no retry-after). Every detection row was verified against the LIVE vendor docs at build (2026-08-31) and corrected the memorized lore: Anthropic billing_error is HTTP 402 (was remembered as 403; any 402 is categorically billing), the credit-balance and self-set spend-limit messages ride 400 invalid_request_error and are message-sniffed with the documented prefixes (named fragile-by-necessity), and Google's 429 RESOURCE_EXHAUSTED stays TRANSIENT unless QuotaFailure details name a PerDay/FreeTier quota — a bare mis-flag would fire a false billing alert on an ordinary rate limit. Never retried (nothing about a billing state heals inside a backoff), wrapped as ProviderBillingError (Symbol.for cross-copy marker, carries providerErrorType/statusCode/modelId/cause) on both transport paths — thrown calls and pre-output stream error parts; unknown billing-ish shapes stay semantic/terminal, never silently parked; no schema strictification anywhere (optional-field walks only). Outer layers route the type to the credit park (flow wave D D2). 10 outcome tests red-first (8 red at pre-fix code: the 429 shapes observably RETRIED; the Anthropic 400 surfaced as a bare semantic error); bites verified red then restored: the 402 row (which exposed a missing bare-402 case — added), the message sniffs, the Google quota guard inverted (a bare rate limit mis-billed), and the stream-part wrap; pre-existing transport suites 20/20 green, conversation folder 148 green (35 key-gated skips). ([2a2d54d](https://github.com/proteinjs/conversation/commit/2a2d54d532b0b59ab1c1ff0d94b4518c1abbedd6))
+
+
+
+
+
 # [5.20.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.19.0...@proteinjs/conversation@5.20.0) (2026-08-27)
 
 
