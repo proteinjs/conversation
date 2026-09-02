@@ -70,12 +70,9 @@ describe('Conversation stream liveness guard', () => {
     controller: AbortController,
     localTools?: ReadonlySet<string>
   ): AsyncIterable<any> =>
-    (new Conversation({ modelData: fixtureModelData, name: 'liveness-test' }) as unknown as GuardInternals).guardStreamLiveness(
-      stream,
-      controller,
-      'test-model',
-      localTools
-    );
+    (
+      new Conversation({ modelData: fixtureModelData, name: 'liveness-test' }) as unknown as GuardInternals
+    ).guardStreamLiveness(stream, controller, 'test-model', localTools);
 
   test('a local tool execution outliving the idle window does NOT abort the stream (the R5 stall repro)', async () => {
     const parts = [
@@ -89,9 +86,7 @@ describe('Conversation stream liveness guard', () => {
       { type: 'finish' },
     ];
     const controller = new AbortController();
-    const collected = await collect(
-      guard(streamWithGap(parts, 4, OUTLIVE_MS), controller, new Set(['editThoughts']))
-    );
+    const collected = await collect(guard(streamWithGap(parts, 4, OUTLIVE_MS), controller, new Set(['editThoughts'])));
     expect(collected.map((p) => p.type)).toEqual(parts.map((p) => p.type));
     expect(controller.signal.aborted).toBe(false);
   });
@@ -149,9 +144,7 @@ describe('Conversation stream liveness guard', () => {
       { type: 'finish' },
     ];
     const controller = new AbortController();
-    const collected = await collect(
-      guard(streamWithGap(parts, 3, OUTLIVE_MS), controller, new Set(['editThoughts']))
-    );
+    const collected = await collect(guard(streamWithGap(parts, 3, OUTLIVE_MS), controller, new Set(['editThoughts'])));
     expect(collected).toHaveLength(parts.length);
     expect(controller.signal.aborted).toBe(false);
   });
