@@ -1,4 +1,5 @@
 import { Conversation } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Integration tests for Google Gemini reasoning text + web search grounding.
@@ -31,7 +32,7 @@ describeIfKey('Conversation.generateStream — Gemini reasoning + grounded searc
   test(
     'streams reasoning text for gemini-3.5-flash when reasoningEffort is set',
     async () => {
-      const conversation = new Conversation({ name: 'test-gemini-reasoning' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-gemini-reasoning' });
 
       const result = await conversation.generateStream({
         messages: [
@@ -62,7 +63,7 @@ describeIfKey('Conversation.generateStream — Gemini reasoning + grounded searc
   test(
     'grounds responses with sources when webSearch: true',
     async () => {
-      const conversation = new Conversation({ name: 'test-gemini-grounded' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-gemini-grounded' });
 
       // A recency question — should force the grounding tool to consult
       // current web content.
@@ -89,7 +90,7 @@ describeIfKey('Conversation.generateStream — Gemini reasoning + grounded searc
   test(
     'does NOT ground responses when webSearch: false (the gate works)',
     async () => {
-      const conversation = new Conversation({ name: 'test-gemini-no-grounding' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-gemini-no-grounding' });
 
       // A pure-reasoning question that should not pull in web sources when
       // grounding is gated off.

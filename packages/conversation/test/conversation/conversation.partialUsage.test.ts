@@ -4,6 +4,7 @@ import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
 import type { UsageData } from '../../src/UsageData';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Per-step live-usage contract, per provider. `onPartialUsageData` fires after
@@ -69,7 +70,11 @@ describe('Conversation.generateStream — onPartialUsageData fires per step and 
     testIfKey(
       `${provider}/${model}: per-step partial usage climbs and reconciles to the final`,
       async () => {
-        const conversation = new Conversation({ name: `test-partial-${model}`, skills: [geoSkill()] });
+        const conversation = new Conversation({
+          modelData: fixtureModelData,
+          name: `test-partial-${model}`,
+          skills: [geoSkill()],
+        });
 
         const partials: UsageData[] = [];
         const result = await conversation.generateStream({

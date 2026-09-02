@@ -4,6 +4,7 @@ import { Conversation } from '../../src/Conversation';
 import { LlmTransportRetry } from '../../src/LlmTransportRetry';
 import { TransientProviderError } from '../../src/TransientProviderError';
 import { ProviderBillingError, classifyProviderBillingError } from '../../src/ProviderBillingError';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * D1 (plans/FLOW_RESILIENCE.md §9.2): the BILLING class at the transport choke point. Every
@@ -344,7 +345,12 @@ describe('LlmTransportRetry — billing failures are never retried and surface t
 
 describe('Conversation wiring — billing surfaces through the real middleware, generate and stream', () => {
   const newConversation = () =>
-    new Conversation({ name: 'transport-billing-test', logLevel: 'error', limits: { enforceLimits: false } });
+    new Conversation({
+      modelData: fixtureModelData,
+      name: 'transport-billing-test',
+      logLevel: 'error',
+      limits: { enforceLimits: false },
+    });
 
   const usage = {
     inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },

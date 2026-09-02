@@ -1,5 +1,6 @@
 import { Conversation } from '../../src/Conversation';
 import { OpenAiResponses } from '../../src/OpenAiResponses';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * OpenAI Responses web-search output embeds in-band citation-marker runs in
@@ -24,7 +25,10 @@ type ConversationInternals = {
 };
 
 function internals(): ConversationInternals {
-  return new Conversation({ name: 'test-citationMarkers' }) as unknown as ConversationInternals;
+  return new Conversation({
+    modelData: fixtureModelData,
+    name: 'test-citationMarkers',
+  }) as unknown as ConversationInternals;
 }
 
 async function* fakeSdkStream(parts: unknown[]): AsyncIterable<unknown> {
@@ -250,7 +254,7 @@ function createAdapterWithFakeClient(fixture: unknown): OpenAiResponses {
   const prevKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key-never-used';
   try {
-    const adapter = new OpenAiResponses();
+    const adapter = new OpenAiResponses({ modelData: fixtureModelData });
     (adapter as unknown as { client: unknown }).client = {
       responses: {
         create: async () => fixture,
@@ -270,7 +274,7 @@ function createAdapterWithFakeClient(fixture: unknown): OpenAiResponses {
 
 describe('Conversation citation sources (background-polling path)', () => {
   test('url_citation annotations surface as source parts and sources, deduped by url, beside clean text', async () => {
-    const conversation = new Conversation({ name: 'test-citationSources' });
+    const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-citationSources' });
     (conversation as unknown as { createOpenAiResponses: () => OpenAiResponses }).createOpenAiResponses = () =>
       createAdapterWithFakeClient(createPollingResponseFixture());
 
@@ -302,7 +306,7 @@ describe('Conversation citation sources (background-polling path)', () => {
   test('a response without annotations yields zero source parts and empty sources', async () => {
     const fixture = createPollingResponseFixture();
     (fixture.output[0].content[0] as { annotations: unknown[] }).annotations = [];
-    const conversation = new Conversation({ name: 'test-citationSources' });
+    const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-citationSources' });
     (conversation as unknown as { createOpenAiResponses: () => OpenAiResponses }).createOpenAiResponses = () =>
       createAdapterWithFakeClient(fixture);
 

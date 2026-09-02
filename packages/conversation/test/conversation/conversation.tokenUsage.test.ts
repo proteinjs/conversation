@@ -1,4 +1,5 @@
 import { Conversation } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Provider-agnostic USAGE contract: every model we ship must report sane token
@@ -42,7 +43,7 @@ describe('Conversation.generateResponse — every shipped model reports token us
     testIfKey(
       `${provider}/${model}: populates token counts and resolves a price`,
       async () => {
-        const conversation = new Conversation({ name: `test-usage-${model}` });
+        const conversation = new Conversation({ modelData: fixtureModelData, name: `test-usage-${model}` });
 
         const result = await conversation.generateResponse({ messages: [PROMPT], model });
 

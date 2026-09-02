@@ -1,5 +1,6 @@
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * `GenerateStreamParams.peekInjectedContext` — the thinking-phase restart. A note that arrives
@@ -85,6 +86,7 @@ describe('Conversation.generateStream — thinking-phase restart (peekInjectedCo
       });
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'thinking-restart-test',
         logLevel: 'error',
         limits: { enforceLimits: false },
@@ -130,6 +132,7 @@ describe('Conversation.generateStream — thinking-phase restart (peekInjectedCo
       });
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'thinking-restart-after-text-test',
         logLevel: 'error',
         limits: { enforceLimits: false },
@@ -191,6 +194,7 @@ describe('Conversation.generateStream — thinking-phase restart (peekInjectedCo
       });
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'length-auto-continue-test',
         logLevel: 'error',
         limits: { enforceLimits: false },
@@ -243,6 +247,7 @@ describe('Conversation.generateStream — thinking-phase restart (peekInjectedCo
       });
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'continuation-no-restart-test',
         logLevel: 'error',
         limits: { enforceLimits: false },

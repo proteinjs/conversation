@@ -2,6 +2,7 @@ import { Conversation } from '../../src/Conversation';
 import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Integration tests for Conversation.generateResponse (non-streaming convenience).
@@ -32,7 +33,7 @@ describeIfKey('Conversation.generateResponse', () => {
   test(
     'returns a complete text response with usage',
     async () => {
-      const conversation = new Conversation({ name: 'test-response' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-response' });
       const result = await conversation.generateResponse({
         messages: ['Say "hello" and nothing else.'],
         model: TEST_MODEL,
@@ -75,6 +76,7 @@ describeIfKey('Conversation.generateResponse', () => {
       };
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'test-multi-tool',
         skills: [
           createTestSkill(
@@ -115,6 +117,7 @@ describeIfKey('Conversation.generateResponse', () => {
     'handles conversation skills with system messages',
     async () => {
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'test-system-msg',
         skills: [createTestSkill('You are a pirate. Always respond in pirate speak.', [])],
       });

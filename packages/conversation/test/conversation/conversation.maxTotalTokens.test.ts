@@ -3,6 +3,7 @@ import { Conversation, totalTokensReach } from '../../src/Conversation';
 import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * `GenerateStreamParams.maxTotalTokens` — the loop-seam token ceiling (a budget guardrail for
@@ -70,6 +71,7 @@ function buildScriptedModel(toolSteps: number): { model: MockLanguageModelV3; ca
 
 function buildConversation(): Conversation {
   return new Conversation({
+    modelData: fixtureModelData,
     name: 'max-total-tokens-test',
     logLevel: 'error',
     limits: { enforceLimits: false },

@@ -1,4 +1,5 @@
 import { Conversation } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Integration tests for xAI Grok reasoning text + Live Search.
@@ -35,7 +36,7 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
   test(
     'grok-4.3 passes through the SDK and returns a usable response',
     async () => {
-      const conversation = new Conversation({ name: 'test-grok-4.3-passthrough' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-grok-4.3-passthrough' });
 
       const result = await conversation.generateStream({
         messages: ['Reply with just the number: what is 2 + 2?'],
@@ -63,7 +64,7 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
   test(
     'grok-4.3 streams reasoning text on a non-trivial prompt',
     async () => {
-      const conversation = new Conversation({ name: 'test-grok-4.3-reasoning' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-grok-4.3-reasoning' });
 
       const result = await conversation.generateStream({
         messages: [
@@ -92,7 +93,7 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
   test(
     'grok-4-1-fast-reasoning accepts reasoningEffort and streams reasoning',
     async () => {
-      const conversation = new Conversation({ name: 'test-grok-fast-reasoning' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-grok-fast-reasoning' });
 
       const result = await conversation.generateStream({
         messages: ['What is 12 × 8? Briefly explain.'],
@@ -119,7 +120,7 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
       // With xAI on Responses, the webSearch tool is always attached (like
       // OpenAI/Anthropic). An explicit "search the web for X" prompt should
       // make Grok invoke it and return sources.
-      const conversation = new Conversation({ name: 'test-grok-text-asks-search' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-grok-text-asks-search' });
 
       const result = await conversation.generateStream({
         messages: [
@@ -145,7 +146,7 @@ describeIfKey('Conversation.generateStream — xAI Grok reasoning + Live Search'
     'a non-search prompt does NOT trigger search (the tool is opt-in for the model)',
     async () => {
       // Pure-knowledge question — model shouldn't pay the search latency.
-      const conversation = new Conversation({ name: 'test-grok-no-search' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-grok-no-search' });
 
       const result = await conversation.generateStream({
         messages: ['What is the capital of France? One word.'],

@@ -3,6 +3,7 @@ import { Conversation } from '../../src/Conversation';
 import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * `GenerateStreamParams.drainInjectedContext` — mid-call user context spliced at step boundaries.
@@ -99,6 +100,7 @@ describe('Conversation.generateStream — drainInjectedContext step splice', () 
       };
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'injected-context-splice-test',
         logLevel: 'error',
         limits: { enforceLimits: false },
@@ -163,6 +165,7 @@ describe('Conversation.generateStream — drainInjectedContext step splice', () 
       };
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'injected-context-empty-test',
         logLevel: 'error',
         limits: { enforceLimits: false },

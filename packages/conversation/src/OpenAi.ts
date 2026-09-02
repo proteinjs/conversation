@@ -18,6 +18,7 @@ import { Readable } from 'stream';
 import { OpenAiStreamProcessor } from './OpenAiStreamProcessor';
 import type { CitationSource } from './OpenAiCitationMarkers';
 import { UsageData, UsageDataAccumulator } from './UsageData';
+import type { ModelDataResolver } from './ModelData';
 import { UsageDataAccumulatorContext } from './UsageDataContext';
 
 function delay(ms: number) {
@@ -114,6 +115,13 @@ type GenerateResponseHelperParams = GenerateStreamingResponseParams & {
 
 /** @deprecated Use `ConversationParams` from `Conversation` instead. */
 export type OpenAiParams = {
+  /**
+   * Pricing data for the models this client bills — see {@link ModelDataResolver}.
+   * Required (same seam as `ConversationParams.modelData`): usage accounting
+   * runs on every request, and a client without pricing data would silently
+   * record $0.
+   */
+  modelData: ModelDataResolver;
   model?: TiktokenModel;
   history?: MessageHistory;
   functions?: Omit<Function, 'instructions'>[];
@@ -142,6 +150,7 @@ export const DEFAULT_MAX_FUNCTION_CALLS = 50;
  * - `openAi.generateList({ messages })` → `conversation.generateObject({ messages, schema })`
  */
 export class OpenAi {
+  private modelData: ModelDataResolver;
   private model: TiktokenModel;
   private history: MessageHistory;
   private functions?: Omit<Function, 'instructions'>[];
@@ -150,13 +159,15 @@ export class OpenAi {
   private logLevel?: LogLevel;
 
   constructor({
+    modelData,
     model = DEFAULT_MODEL,
     history = new MessageHistory(),
     functions,
     messageModerators,
     maxFunctionCalls = DEFAULT_MAX_FUNCTION_CALLS,
     logLevel,
-  }: OpenAiParams = {}) {
+  }: OpenAiParams) {
+    this.modelData = modelData;
     this.model = model;
     this.history = history;
     this.functions = functions;
@@ -201,7 +212,9 @@ export class OpenAi {
     const context = new UsageDataAccumulatorContext();
     const contextDataUsageAccumulator = context.getUsageDataAccumulator(model);
     const resolvedUsageDataAccumulator =
-      usageDataAccumulator ?? contextDataUsageAccumulator ?? new UsageDataAccumulator({ model });
+      usageDataAccumulator ??
+      contextDataUsageAccumulator ??
+      new UsageDataAccumulator({ model, modelData: this.modelData });
     const executeInContext = !contextDataUsageAccumulator;
 
     const execute = async () => {

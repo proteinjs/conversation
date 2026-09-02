@@ -2,6 +2,7 @@ import { Conversation } from '../../src/Conversation';
 import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Integration tests for Conversation.generateStream.
@@ -75,7 +76,7 @@ describeIfKey('Conversation.generateStream', () => {
   test(
     'streams a text response and resolves usage data',
     async () => {
-      const conversation = new Conversation({ name: 'test-stream' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-stream' });
 
       const result = await conversation.generateStream({
         messages: ['What is 2+2? Reply with just the number.'],
@@ -111,6 +112,7 @@ describeIfKey('Conversation.generateStream', () => {
       const { fn: addTool, calls } = createAddTool();
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'test-tool-call',
         skills: [createTestSkill('You are a calculator. Use the addNumbers tool to compute sums.', [addTool])],
       });
@@ -150,6 +152,7 @@ describeIfKey('Conversation.generateStream', () => {
       const { fn: noParamTool, callCount } = createNoParamTool();
 
       const conversation = new Conversation({
+        modelData: fixtureModelData,
         name: 'test-no-param-tool',
         skills: [
           createTestSkill('You have access to a getServerTime tool. When the user asks for the time, call it.', [

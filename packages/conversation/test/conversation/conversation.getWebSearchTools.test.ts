@@ -1,4 +1,5 @@
 import { Conversation } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Unit tests for the web-search tool dispatcher.
@@ -15,7 +16,7 @@ import { Conversation } from '../../src/Conversation';
  *   so search tools are dropped for them.
  */
 
-const conv = new Conversation({ name: 'test-getWebSearchTools' });
+const conv = new Conversation({ modelData: fixtureModelData, name: 'test-getWebSearchTools' });
 
 const callGetWebSearchTools = (provider: string, modelString: string, webSearchRequested?: boolean) => {
   // Private method; cast keeps prod surface narrow.

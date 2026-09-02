@@ -3,6 +3,7 @@ import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation, GenerateStreamParams } from '../../src/Conversation';
 import { LlmTransportRetry, LlmTransportRetryActivity } from '../../src/LlmTransportRetry';
 import { TransientProviderError } from '../../src/TransientProviderError';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Transport-retry ACTIVITY tests: the observer hook that lets visible surfaces (the chat turn's
@@ -19,7 +20,12 @@ import { TransientProviderError } from '../../src/TransientProviderError';
 const TIMEOUT = 30_000;
 
 const newConversation = () =>
-  new Conversation({ name: 'transport-retry-activity-test', logLevel: 'error', limits: { enforceLimits: false } });
+  new Conversation({
+    modelData: fixtureModelData,
+    name: 'transport-retry-activity-test',
+    logLevel: 'error',
+    limits: { enforceLimits: false },
+  });
 
 /** Anthropic's 529 capacity overload as the AI SDK surfaces it at request initiation. */
 const overloadedError = () =>

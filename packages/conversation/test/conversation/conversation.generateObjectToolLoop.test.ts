@@ -1,6 +1,7 @@
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation } from '../../src/Conversation';
 import { Function } from '../../src/Function';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * The generateObject tool loop (`generateObjectViaToolLoop`) — request-shape pins.
@@ -115,6 +116,7 @@ function buildScriptedModel(modelId: string) {
 
 function runLoop(model: MockLanguageModelV3) {
   const conversation = new Conversation({
+    modelData: fixtureModelData,
     name: 'generate-object-tool-loop-test',
     logLevel: 'error',
     limits: { enforceLimits: false },
