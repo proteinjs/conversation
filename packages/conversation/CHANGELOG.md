@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.0.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.0.0...@proteinjs/conversation@6.0.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* abort-tagged gave-up — the stop verdict rides the transport retry activity (prod 2026-09-02, the unstoppable-spinner defect's transport leg). An abort that lands mid-retry (pre-verdict, or during the backoff sleep — the announced attempt never runs) now reports gave-up with aborted: true, so wait-rendering consumers settle the provider wait with STOP words instead of the bogus provider-outage verdict ('didn't recover' for an end the user chose); a budget-exhausted gave-up stays untagged (the counter-pin keeps the discriminator honest). Retry semantics unchanged — the abort exits, budgets, and typed exhaustion are exactly as before; this is the observability contract growing one field. New suite conversation.transportRetryAbort.test.ts pins the one-act-stop contract at this layer across all four legs: stream initiation (thrown 529), mid-stream error part, the tool-loop continuation call, and run()/doGenerate — no attempt after the abort, prompt stream settle, abort-tagged gave-up. RED stated: the suite fails at the pre-fix contract (the aborted field does not exist — compile-red at every tag pin). Bites verified red then restored: abort wiring dropped from the verdict path (options.abortSignal nulled) reddened all four abort pins (retries continued past the stop; streams timed out); the aborted tag dropped from the post-sleep emit reddened the four tag pins. Transport estate green: transportRetry + transportRetryActivity + transportBilling + the new suite, 35 tests; full test/conversation folder 158 passed / 35 key-gated skips; tsc clean; eslint + prettier clean on touched files. ([6412ce3](https://github.com/proteinjs/conversation/commit/6412ce31f1bf138caccc1d0321638f5823778ccb))
+
+
+
+
+
 # [6.0.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.23.0...@proteinjs/conversation@6.0.0) (2026-09-02)
 
 
