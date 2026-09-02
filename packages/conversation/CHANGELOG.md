@@ -3,6 +3,25 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.0.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.23.0...@proteinjs/conversation@6.0.0) (2026-09-02)
+
+
+* feat!: pricing tables leave the transport — ConversationParams requires a ModelDataResolver (model-catalog-as-data step 1) ([8d82fa9](https://github.com/proteinjs/conversation/commit/8d82fa9d2964a0a50470e9ef1fda83759a6082fd))
+
+
+### BREAKING CHANGES
+
+* ConversationParams (and OpenAiResponsesParams,
+OpenAiParams, CodegenConversation's constructor,
+UsageDataAccumulatorParams) now require modelData: ModelDataResolver,
+and the pricing tables + isModelPriced are no longer exported — pass the
+platform's resolver (n3xa: modelDataResolver from @n3xah/chat-common) or
+your own.
+
+
+
+
+
 # [5.23.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@5.22.0...@proteinjs/conversation@5.23.0) (2026-09-01)
 
 
