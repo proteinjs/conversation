@@ -21,7 +21,9 @@ export type LlmTransportRetryOptions = {
  * - `gave-up` — no further attempt follows a `retrying`: the budget exhausted (the error
  *   surfaces as `TransientProviderError`), or an abort/semantic error arrived after retries had
  *   begun. Emitted only when at least one `retrying` preceded it, so consumers can treat it as
- *   the settle of the wait they began.
+ *   the settle of the wait they began. `aborted: true` marks the gave-up as ABORT-driven (the
+ *   call's abort signal fired — the pending retry was cancelled, not exhausted): consumers that
+ *   render the wait can settle it with stop words instead of a bogus provider-outage verdict.
  */
 export type LlmTransportRetryActivity =
   | {
@@ -37,7 +39,7 @@ export type LlmTransportRetryActivity =
       message: string;
     }
   | { phase: 'recovered'; modelId?: string }
-  | { phase: 'gave-up'; modelId?: string; statusCode?: number; message: string };
+  | { phase: 'gave-up'; modelId?: string; statusCode?: number; message: string; aborted?: true };
 
 export type LlmTransportRetryWrapOptions = {
   /** See {@link LlmTransportRetryActivity}. */
@@ -323,17 +325,21 @@ export class LlmTransportRetry {
   ): Promise<RetryVerdict> {
     // A surface verdict after retries had begun settles the observer's wait (`gave-up`); a
     // surface with no prior retry emitted nothing, so there is no wait to settle.
-    const emitGaveUpIfRetried = () => {
+    const emitGaveUpIfRetried = (aborted?: true) => {
       if (attempt > 0) {
         options.onRetryActivity?.({
           phase: 'gave-up',
           modelId: options.modelId,
+          ...(aborted ? { aborted } : {}),
           ...LlmTransportRetry.errorInfo(error),
         });
       }
     };
     if (options.abortSignal?.aborted || LlmTransportRetry.isAbortError(error)) {
-      emitGaveUpIfRetried();
+      // Abort-tagged: the retry episode ended because the CALL was aborted (user stop, liveness
+      // guard), not because the provider stayed down — the wait's settle words must not claim a
+      // provider verdict the transport never reached.
+      emitGaveUpIfRetried(true);
       return 'surface';
     }
     // Billing detection runs BEFORE the retryable check (see the verdict's doc): the billing
@@ -374,10 +380,13 @@ export class LlmTransportRetry {
     });
     await LlmTransportRetry.sleepWithAbort(delayMs, options.abortSignal);
     if (options.abortSignal?.aborted) {
-      // The abort landed during the backoff sleep — the retry we announced never runs.
+      // The abort landed during the backoff sleep — the retry we announced never runs. The
+      // gave-up is unconditional here (a `retrying` for this attempt was just announced) and
+      // abort-tagged so wait renderers settle with stop words, not a provider-outage verdict.
       options.onRetryActivity?.({
         phase: 'gave-up',
         modelId: options.modelId,
+        aborted: true,
         ...LlmTransportRetry.errorInfo(error),
       });
       return 'surface';
