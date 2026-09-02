@@ -1,6 +1,7 @@
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation } from '../../src/Conversation';
 import { Function } from '../../src/Function';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Hard input-cap guard tests — no network, no API keys. The guard runs BEFORE dispatch at
@@ -19,7 +20,12 @@ const OVER_CAP_TEXT = 'the quick brown fox jumps over the lazy dog. '.repeat(25_
 const GUARD_MESSAGE = /route this call to a 1M-context model/;
 
 const newConversation = () =>
-  new Conversation({ name: 'input-cap-guard-test', logLevel: 'error', limits: { enforceLimits: false } });
+  new Conversation({
+    modelData: fixtureModelData,
+    name: 'input-cap-guard-test',
+    logLevel: 'error',
+    limits: { enforceLimits: false },
+  });
 
 const usage = {
   inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },

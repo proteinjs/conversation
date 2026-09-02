@@ -4,6 +4,7 @@ import { Logger, LogLevel } from '@proteinjs/logger';
 import type { ConversationSkill } from './ConversationSkill';
 import type { Function } from './Function';
 import { UsageData, UsageDataAccumulator } from './UsageData';
+import type { ModelDataResolver } from './ModelData';
 import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
 import { OpenAiCitationMarkers, type CitationSource } from './OpenAiCitationMarkers';
 import { LlmTransportRetry } from './LlmTransportRetry';
@@ -26,6 +27,12 @@ const DEFAULT_CANCEL_TIMEOUT_MS = 10_000;
 export type OpenAiServiceTier = 'auto' | 'default' | 'flex' | 'priority' | (string & {});
 
 export type OpenAiResponsesParams = {
+  /**
+   * Pricing data for the models this adapter bills — see {@link ModelDataResolver}.
+   * Required: usage accounting runs on every response, and an adapter without
+   * pricing data would silently record $0.
+   */
+  modelData: ModelDataResolver;
   skills?: ConversationSkill[];
   /** If provided, only these functions will be exposed to the model. */
   allowedFunctionNames?: string[];
@@ -126,6 +133,7 @@ export class OpenAiResponses {
   // disabled in the constructor so exactly one layer owns retrying.
   private readonly transportRetry = new LlmTransportRetry();
 
+  private readonly modelData: ModelDataResolver;
   private readonly skills: ConversationSkill[];
   private readonly allowedFunctionNames?: string[];
   private readonly defaultModel: TiktokenModel;
@@ -138,12 +146,13 @@ export class OpenAiResponses {
   private systemMessages: string[] = [];
   private functions: Function[] = [];
 
-  constructor(opts: OpenAiResponsesParams = {}) {
+  constructor(opts: OpenAiResponsesParams) {
     // Retries are owned by LlmTransportRetry at the call sites below (bounded, jittered, budgeted) —
     // disable the openai SDK's built-in 2 retries so the layers don't stack.
     this.client = new OpenAIApi({ maxRetries: 0 });
     this.logger = new Logger({ name: 'OpenAiResponses', logLevel: opts.logLevel });
 
+    this.modelData = opts.modelData;
     this.skills = opts.skills ?? [];
     this.allowedFunctionNames = opts.allowedFunctionNames;
 
@@ -277,7 +286,7 @@ export class OpenAiResponses {
   }): Promise<GenerateResponseReturn & { serviceTier?: OpenAiServiceTier }> {
     // UsageDataAccumulator is typed around TiktokenModel; keep accumulator model stable,
     // and (optionally) report the actual model via upstream telemetry if you later choose to.
-    const usage = new UsageDataAccumulator({ model: args.model });
+    const usage = new UsageDataAccumulator({ model: args.model, modelData: this.modelData });
     const toolInvocations: ToolInvocationResult[] = [];
 
     const tools = this.buildResponseTools(this.functions);

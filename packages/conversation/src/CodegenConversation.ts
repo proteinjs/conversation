@@ -1,5 +1,6 @@
 import * as readline from 'readline-sync';
 import { Conversation } from './Conversation';
+import type { ModelDataResolver } from './ModelData';
 import { KeywordToFilesIndexSkillFactory } from './fs/keyword_to_files_index/KeywordToFilesIndexSkill';
 import { ConversationTemplateSkillFactory } from './template/ConversationTemplateSkill';
 import { ConversationFsSkillFactory } from './fs/conversation_fs/ConversationFsSkill';
@@ -17,9 +18,11 @@ export class CodegenConversation {
   private static BOT_NAME = 'Alina';
   private static MODEL: TiktokenModel = 'gpt-4'; //'gpt-3.5-turbo-16k';
   private repoPath: string;
+  private modelData: ModelDataResolver;
 
-  constructor(repoPath: string) {
+  constructor(repoPath: string, modelData: ModelDataResolver) {
     this.repoPath = repoPath;
+    this.modelData = modelData;
   }
 
   async start() {
@@ -40,6 +43,7 @@ export class CodegenConversation {
   private async createConversation() {
     const conversation = new Conversation({
       name: this.constructor.name,
+      modelData: this.modelData,
       skills: await this.getSkills(),
       logLevel: 'info',
     });

@@ -16,6 +16,7 @@ export * from './src/sdkContentParts';
 /** @deprecated — Use `StreamResult.textStream` from `Conversation.generateStream` instead. */
 export { AssistantResponseStreamChunk } from './src/OpenAiStreamProcessor';
 export * from './src/UsageData';
+export * from './src/ModelData';
 export * from './src/OpenAiResponses';
 export * from './src/OpenAiCitationMarkers';
 export * from './src/resolveModel';

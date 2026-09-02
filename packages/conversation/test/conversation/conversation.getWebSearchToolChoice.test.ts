@@ -1,4 +1,5 @@
 import { Conversation } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Unit tests for the toolChoice helper used by the webSearch toggle.
@@ -19,7 +20,7 @@ import { Conversation } from '../../src/Conversation';
  * forcing would kill the whole turn.
  */
 
-const conv = new Conversation({ name: 'test-getWebSearchToolChoice' });
+const conv = new Conversation({ modelData: fixtureModelData, name: 'test-getWebSearchToolChoice' });
 
 type SearchToolChoice = { type: 'tool'; toolName: string } | undefined;
 

@@ -1,5 +1,6 @@
 import { Conversation } from '../../src/Conversation';
 import { z } from 'zod';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Integration tests for Conversation.generateObject.
@@ -47,7 +48,7 @@ describeIfKey('Conversation.generateObject', () => {
         continent: z.string(),
       });
 
-      const conversation = new Conversation({ name: 'test-object-zod' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-object-zod' });
       const result = await conversation.generateObject<CountryInfo>({
         messages: [
           'Give me info about France. Return the country name, population (approximate number), and continent.',
@@ -84,7 +85,7 @@ describeIfKey('Conversation.generateObject', () => {
         required: ['colors'],
       };
 
-      const conversation = new Conversation({ name: 'test-object-json-schema' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-object-json-schema' });
       const result = await conversation.generateObject<ColorList>({
         messages: ['List the 3 primary colors (red, blue, yellow).'],
         model: TEST_MODEL,
@@ -115,7 +116,7 @@ describeIfKey('Conversation.generateObject', () => {
         occupation: z.string(),
       });
 
-      const conversation = new Conversation({ name: 'test-object-nested' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-object-nested' });
       const result = await conversation.generateObject<PersonProfile>({
         messages: [
           'Create a fictional person profile. Use firstName "Ada", lastName "Lovelace", age 36, occupation "Mathematician".',

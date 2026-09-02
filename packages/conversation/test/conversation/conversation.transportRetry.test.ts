@@ -3,6 +3,7 @@ import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation } from '../../src/Conversation';
 import { LlmTransportRetry } from '../../src/LlmTransportRetry';
 import { TransientProviderError } from '../../src/TransientProviderError';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Transport-retry layer tests — no network, no API keys. A MockLanguageModelV3 stands in as the
@@ -13,7 +14,12 @@ import { TransientProviderError } from '../../src/TransientProviderError';
 const TIMEOUT = 30_000;
 
 const newConversation = () =>
-  new Conversation({ name: 'transport-retry-test', logLevel: 'error', limits: { enforceLimits: false } });
+  new Conversation({
+    modelData: fixtureModelData,
+    name: 'transport-retry-test',
+    logLevel: 'error',
+    limits: { enforceLimits: false },
+  });
 
 const transientError = () =>
   new APICallError({

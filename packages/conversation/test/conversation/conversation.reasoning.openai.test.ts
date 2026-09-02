@@ -1,4 +1,5 @@
 import { Conversation } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Integration tests for OpenAI reasoning text + web search.
@@ -26,7 +27,7 @@ describeIfKey('Conversation.generateStream — OpenAI reasoning + web search', (
   test(
     'streams reasoning text for gpt-5.5 when reasoningEffort is set',
     async () => {
-      const conversation = new Conversation({ name: 'test-openai-reasoning' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-openai-reasoning' });
 
       // A genuinely multi-step problem at 'medium' effort: at 'low' on a
       // simpler prompt, gpt-5.5 occasionally emits reasoning-start/end with
@@ -69,7 +70,7 @@ describeIfKey('Conversation.generateStream — OpenAI reasoning + web search', (
   test(
     'attaches the OpenAI web_search tool when webSearch: true',
     async () => {
-      const conversation = new Conversation({ name: 'test-openai-web-search' });
+      const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-openai-web-search' });
 
       // A question that requires fresh web info — gives the model a strong
       // signal to call the search tool.

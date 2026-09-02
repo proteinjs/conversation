@@ -1,4 +1,5 @@
 import { Conversation, ReasoningEffort } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Unit tests for the provider-options builder.
@@ -35,7 +36,7 @@ type GoogleProviderOptions = {
   thinkingConfig?: { includeThoughts?: boolean; thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high' };
 };
 
-const conv = new Conversation({ name: 'test-providerOptions' });
+const conv = new Conversation({ modelData: fixtureModelData, name: 'test-providerOptions' });
 
 const buildAnthropic = (effort: ReasoningEffort | undefined, modelString: string): AnthropicProviderOptions => {
   // buildProviderOptions is private — testing it directly via cast keeps the

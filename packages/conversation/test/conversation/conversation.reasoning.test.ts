@@ -1,6 +1,7 @@
 import { Conversation } from '../../src/Conversation';
 import type { StreamPart } from '../../src/Conversation';
 import type { ReasoningEffort } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Provider-agnostic reasoning contract: every reasoning-capable model we ship
@@ -68,7 +69,7 @@ describe('Conversation.generateStream — reasoning text streams for every shipp
     testIfKey(
       `${provider}/${model}: streams thinking text into result.reasoning`,
       async () => {
-        const conversation = new Conversation({ name: `test-reasoning-${model}` });
+        const conversation = new Conversation({ modelData: fixtureModelData, name: `test-reasoning-${model}` });
 
         const result = await conversation.generateStream({
           messages: [prompt ?? THINKY_PROMPT],

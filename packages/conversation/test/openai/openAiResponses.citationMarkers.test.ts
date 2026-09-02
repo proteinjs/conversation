@@ -1,4 +1,5 @@
 import { OpenAiResponses } from '../../src/OpenAiResponses';
+import { fixtureModelData } from '../conversation/fixtureModelData';
 
 /**
  * OpenAI Responses web-search output embeds in-band citation-marker runs in
@@ -91,7 +92,7 @@ function createAdapterWithFakeClient(fixture: unknown): OpenAiResponses {
   const prevKey = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = 'test-key-never-used';
   try {
-    const adapter = new OpenAiResponses();
+    const adapter = new OpenAiResponses({ modelData: fixtureModelData });
     (adapter as unknown as { client: unknown }).client = {
       responses: {
         create: async () => fixture,

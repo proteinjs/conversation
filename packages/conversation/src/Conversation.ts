@@ -10,6 +10,7 @@ import { Function, ToolTimelineDetail } from './Function';
 import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
 import { UsageData, UsageDataAccumulator, TokenUsage } from './UsageData';
+import type { ModelDataResolver } from './ModelData';
 import { resolveModel, inferProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
@@ -27,6 +28,15 @@ export type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi
 
 export type ConversationParams = {
   name: string;
+  /**
+   * Pricing data for every model this conversation may route to — see
+   * {@link ModelDataResolver}. REQUIRED: usage accounting runs inside the
+   * transport on every request, and a conversation constructed without pricing
+   * data would silently bill $0. The platform embedding this library passes
+   * its one resolver here (n3xa: `modelDataResolver` from `@n3xah/chat-common`);
+   * tests pass fixture rows.
+   */
+  modelData: ModelDataResolver;
   skills?: ConversationSkill[];
   logLevel?: LogLevel;
   defaultModel?: LanguageModel | string;
@@ -2586,6 +2596,7 @@ export class Conversation {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const { OpenAiResponses: OAIResponses } = require('./OpenAiResponses');
     return new OAIResponses({
+      modelData: this.params.modelData,
       skills: this.params.skills,
       logLevel: this.params.logLevel,
       defaultModel: this.getModelString(this.params.defaultModel) as TiktokenModel,
@@ -2825,7 +2836,7 @@ export class Conversation {
 
     // Count steps as individual requests to the assistant
     const stepCount = steps?.length ?? 1;
-    const acc = new UsageDataAccumulator({ model: modelString as TiktokenModel });
+    const acc = new UsageDataAccumulator({ model: modelString as TiktokenModel, modelData: this.params.modelData });
     acc.addTokenUsage(tokenUsage);
 
     // Populate tool call stats from steps
