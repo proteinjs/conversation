@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.0.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.0.1...@proteinjs/conversation@6.0.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* **conversation:** stream liveness guard no longer counts local tool execution as model silence ([021e46c](https://github.com/proteinjs/conversation/commit/021e46c2cbfb709779d30b2772af7ec6fcdaf08a))
+
+
+
+
+
 ## [6.0.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.0.0...@proteinjs/conversation@6.0.1) (2026-09-02)
 
 
