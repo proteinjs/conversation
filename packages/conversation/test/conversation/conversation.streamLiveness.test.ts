@@ -1,4 +1,5 @@
 import { Conversation } from '../../src/Conversation';
+import { fixtureModelData } from './fixtureModelData';
 
 /**
  * Deterministic unit tests for the stream liveness guard (guardStreamLiveness).
@@ -69,7 +70,7 @@ describe('Conversation stream liveness guard', () => {
     controller: AbortController,
     localTools?: ReadonlySet<string>
   ): AsyncIterable<any> =>
-    (new Conversation({ name: 'liveness-test' }) as unknown as GuardInternals).guardStreamLiveness(
+    (new Conversation({ modelData: fixtureModelData, name: 'liveness-test' }) as unknown as GuardInternals).guardStreamLiveness(
       stream,
       controller,
       'test-model',
