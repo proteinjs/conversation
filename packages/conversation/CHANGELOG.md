@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.0.2...@proteinjs/conversation@6.1.0) (2026-09-03)
+
+
+### Features
+
+* **conversation:** per-step usage on UsageData — `steps` lists every loop step's provider-reported usage (input, cache read/write, reasoning, output, tool calls) beside the summed totals, mapped from the SDK's StepResult.usage in mapSdkUsage and concatenated by aggregateUsageData; the partial-usage placeholders (no per-step usage) produce no list, never fabricated zero rows. The seam a downstream ledger needs to split the FIRST request (cross-turn prompt-cache read) from the later re-reads of the same prefix — the summed totals cannot. ([b4854a7](https://github.com/proteinjs/conversation/commit/b4854a7da322891d2fda0466520a614db0bf81da))
+
+
+
+
+
 ## [6.0.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.0.1...@proteinjs/conversation@6.0.2) (2026-09-02)
 
 
