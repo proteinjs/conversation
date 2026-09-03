@@ -36,6 +36,16 @@ export type UsageCostUsd = {
 };
 
 /**
+ * ONE loop step's usage — one billed provider request inside a tool loop (the initial request,
+ * then every tool-call continuation). The SDK reports each step's usage on the step itself
+ * (`StepResult.usage`); `UsageData.steps` keeps that list instead of only its sum, so a
+ * downstream ledger can tell the FIRST request (the cross-turn prompt-cache read) from the
+ * later steps (within-turn re-reads of the same prefix) — `totalTokenUsage` cannot: it is the
+ * sum. `toolCalls` = how many tools the model called in that step.
+ */
+export type StepUsage = TokenUsage & { toolCalls: number };
+
+/**
  * Usage data accumulated throughout the lifecycle of a single call to
  * `OpenAi.generateResponse` or `OpenAi.generateStreamingResponse`.
  */
@@ -56,6 +66,12 @@ export type UsageData = {
   callsPerTool: { [toolName: string]: number };
   /** The total number of tool calls made by the assistant */
   totalToolCalls: number;
+  /**
+   * Per-step usage in loop order (see `StepUsage`), present when the provider reported usage per
+   * step — Σ over `steps` reconciles to `totalTokenUsage`. Absent on paths that only know the
+   * sum (the in-flight partial reports, the single-shot object path's pre-step shape).
+   */
+  steps?: StepUsage[];
 };
 
 type UsageDataAccumulatorParams = {
@@ -210,6 +226,12 @@ export function aggregateUsageData(list: UsageData[]): UsageData | undefined {
     out.totalCostUsd.outputUsd += u.totalCostUsd.outputUsd;
     out.totalCostUsd.totalUsd += u.totalCostUsd.totalUsd;
     // Full precision retained; rounding happens only at display/ledger.
+  }
+
+  // Per-step lists concatenate in call order — the aggregate's steps are every call's steps.
+  const steps = list.flatMap((u) => u.steps ?? []);
+  if (steps.length > 0) {
+    out.steps = steps;
   }
 
   return out;

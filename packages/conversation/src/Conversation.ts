@@ -9,7 +9,7 @@ import { ConversationSkill } from './ConversationSkill';
 import { Function, ToolTimelineDetail } from './Function';
 import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
-import { UsageData, UsageDataAccumulator, TokenUsage } from './UsageData';
+import { UsageData, UsageDataAccumulator, TokenUsage, StepUsage } from './UsageData';
 import type { ModelDataResolver } from './ModelData';
 import { resolveModel, inferProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
@@ -2827,7 +2827,7 @@ export class Conversation {
   private mapSdkUsage(
     sdkUsage: LanguageModelUsage,
     modelString: string,
-    steps?: Array<{ toolCalls?: Array<{ toolName?: string }> }>
+    steps?: Array<{ toolCalls?: Array<{ toolName?: string }>; usage?: LanguageModelUsage }>
   ): UsageData {
     const inputTokens = sdkUsage?.inputTokens ?? 0;
     const outputTokens = sdkUsage?.outputTokens ?? 0;
@@ -2865,11 +2865,35 @@ export class Conversation {
       }
     }
 
+    // Per-step usage (see `UsageData.steps`): the SDK stamps each step's own usage on the step;
+    // keep the list so the first request stays distinguishable from the later re-reads. Only
+    // steps that CARRY usage are listed — the partial-usage path fabricates step placeholders
+    // with none, and a fabricated zero row would read as a real request.
+    const stepUsages: StepUsage[] = [];
+    for (const step of steps ?? []) {
+      const su = step.usage;
+      if (!su) {
+        continue;
+      }
+      const stepInput = su.inputTokens ?? 0;
+      const stepOutput = su.outputTokens ?? 0;
+      stepUsages.push({
+        inputTokens: stepInput,
+        cachedInputTokens: su.inputTokenDetails?.cacheReadTokens ?? 0,
+        cacheWriteTokens: su.inputTokenDetails?.cacheWriteTokens ?? 0,
+        reasoningTokens: su.outputTokenDetails?.reasoningTokens ?? 0,
+        outputTokens: stepOutput,
+        totalTokens: su.totalTokens ?? stepInput + stepOutput,
+        toolCalls: step.toolCalls?.length ?? 0,
+      });
+    }
+
     return {
       ...acc.usageData,
       totalRequestsToAssistant: stepCount,
       callsPerTool,
       totalToolCalls,
+      ...(stepUsages.length > 0 ? { steps: stepUsages } : {}),
     };
   }
 
