@@ -1,6 +1,0 @@
-{
-  "branch": "feat/tool-budget",
-  "packages": ["conversation"],
-  "suites": ["packages/conversation/test/conversation/toolBudget.test.ts"],
-  "removes": []
-}
