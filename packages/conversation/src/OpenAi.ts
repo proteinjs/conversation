@@ -45,6 +45,14 @@ export type ToolInvocationResult = {
    * for the timeline status lifecycle (error-string tool results the SDK counts as success).
    */
   outcome?: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean };
+  /**
+   * The call CONVERTED to a background job under the tool-call budget (plans/FREE_AGENT.md
+   * §M.3 part 1): `data` is the harness's yield sentence the model read, not the tool's result —
+   * the job (same id on the timeline) carries that later; `title` is the job's visible name (a
+   * task in plain English, never the tool's name). `deduped` marks a repeat call answered by an
+   * already-running job (§2.8) that never executed a second time.
+   */
+  converted?: { jobId: string; title: string; deduped?: boolean };
 };
 
 /** Realtime progress hook for tool calls. */

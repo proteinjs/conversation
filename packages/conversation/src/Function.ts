@@ -15,10 +15,49 @@ export type ToolTimelineDetail = {
   glyph?: { icon: string; style?: 'solid' | 'regular' | 'light'; color?: string };
 };
 
+/**
+ * A long call's progress, in the tool's own present-progressive words ("Setting up the
+ * workspace" — "getting the code (n3xa app)"). Reported through {@link ToolCallContext.onPhase};
+ * the harness names the current phase in its yield sentence when the call converts to a
+ * background job and moves the job's node in place afterwards (plans/FREE_AGENT.md §2.2 `phases`).
+ */
+export type ToolPhase = { on: string; detail?: string };
+
+/**
+ * What the harness hands a tool beside its arguments (plans/FREE_AGENT.md §M.3 part 1 — the
+ * tool-call budget). Present only under a budgeted executor (`GenerateStreamParams.toolBudget`);
+ * a tool never depends on it.
+ */
+export type ToolCallContext = {
+  /**
+   * The call's OWN abort signal: fired by the background job's Stop (D9) or its HARD budget once
+   * the call has converted — never by the turn's yield. A tool that can stop honours it.
+   */
+  signal: AbortSignal;
+  /** Report a phase (see {@link ToolPhase}). Cheap; safe to call before or after a conversion. */
+  onPhase: (phase: ToolPhase) => void;
+};
+
 export interface Function {
   definition: ChatCompletionFunctionTool['function'];
-  call(obj: any): Promise<any>;
+  call(obj: any, ctx?: ToolCallContext): Promise<any>;
   instructions?: string[];
+  /**
+   * Optional budget hints (plans/FREE_AGENT.md §2.2, D2 — "declarations are optional and only an
+   * optimization"; a missing or wrong one costs nothing, the budget catches it):
+   * `background` — the call is ALWAYS long: the executor converts it to a background job at t = 0
+   * instead of after the SOFT budget, so the yield is immediate.
+   */
+  background?: boolean;
+  /** The tool's own generous HARD ceiling in ms (D8); the host arms it on the job. Default 30 min. */
+  hardBudgetMs?: number;
+  /**
+   * §2.8 idempotency: `false` = a repeat call IS the intended act (a second createDevelopmentTask
+   * with the same request is a second task) — never deduped against a running job.
+   */
+  dedupe?: boolean;
+  /** The repeat-call identity when the arguments' hash is not it (a tool whose repeat is unsafe). */
+  dedupeKey?(args: any): string;
   /**
    * Optional: produce a short, human-meaningful subject for a call to this
    * tool — typically the acted-on entity's name/title — to personalize the

@@ -13,6 +13,7 @@ import { UsageData, UsageDataAccumulator, TokenUsage, StepUsage } from './UsageD
 import type { ModelDataResolver } from './ModelData';
 import { resolveModel, inferProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
+import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
 import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
@@ -111,6 +112,17 @@ export type GenerateStreamParams = {
    */
   onTransportRetry?: (activity: LlmTransportRetryActivity) => void;
   abortSignal?: AbortSignal;
+  /**
+   * The tool-call BUDGET (plans/FREE_AGENT.md §M.3 part 1; see {@link ToolBudget}): with a host
+   * here, every in-process tool call this loop executes is raced against N (SOFT, default 5 s,
+   * `ToolBudget.softBudgetMs()`); a call still running past N is converted IN PLACE into a
+   * background job the host owns (`convert`), and the model reads the typed "started in the
+   * background — job {id}" result at the step boundary — the round continues, so a mid-turn
+   * input reaches the mind within the bar instead of behind an unbounded tool. The call's
+   * promise runs on. Without a host the executor awaits every call to completion (a caller with
+   * no job machinery — the flow runner's own loop).
+   */
+  toolBudget?: ToolBudgetHost;
   maxToolCalls?: number;
   /**
    * Token ceiling for THIS call's whole tool loop: usage is checked at every step boundary
@@ -224,6 +236,15 @@ export type StreamPart =
       id: string;
       toolName: string;
       ok: boolean;
+      /**
+       * The call CONVERTED to a background job under the tool-call budget (plans/FREE_AGENT.md
+       * §M.3 part 1): what settled here is the hand-off, not the tool's work — the job carries
+       * the same id (the timeline's one node whose kind moves tool → job, part 3) and `title` is
+       * the job's visible NAME — a task in plain English, never the tool's name (the founder's
+       * ruling, FREE_AGENT §M). `deduped` marks a repeat call answered by an already-running job
+       * (§2.8) that never executed.
+       */
+      converted?: { jobId: string; title: string; deduped?: boolean };
     }
   | {
       /**
@@ -429,10 +450,15 @@ export class Conversation {
     // Ground truth for this call's tool outcomes (ok/error/timing), captured by the execute
     // wrapper — the SDK's step data can't distinguish a failed tool from a successful one.
     const capturedInvocations: ToolInvocationResult[] = [];
+    // Calls the tool-call budget converted to jobs this loop (by tool-call id) — the settle part
+    // of each carries its job so timeline consumers know the node's kind moved (§M.3 part 3).
+    const convertedCalls = new Map<string, { jobId: string; title: string; deduped?: boolean }>();
     const tools = this.buildAiSdkTools(allFunctions, {
       pendingImageInjections,
       onToolInvocation: params.onToolInvocation,
       recordInvocation: (r) => capturedInvocations.push(r),
+      toolBudget: params.toolBudget,
+      convertedCalls,
     });
 
     // Build provider options
@@ -962,7 +988,7 @@ export class Conversation {
       })(),
       // Liveness is guarded per round INSIDE the combined stream (each continuation call gets its
       // own guarded iteration; one idle window spans them via the shared controller).
-      fullStream: this.mapFullStream(combinedSdkStream, provider),
+      fullStream: this.mapFullStream(combinedSdkStream, provider, convertedCalls),
       // Lazy getters: only start consuming the AI SDK stream when accessed.
       // This prevents dual-consumption when the caller uses fullStream instead.
       get text() {
@@ -1505,12 +1531,18 @@ export class Conversation {
        * SDK steps, which have no failure signal.
        */
       recordInvocation?: (result: ToolInvocationResult) => void;
+      /** The tool-call budget's host (see `GenerateStreamParams.toolBudget`); absent = unbudgeted calls. */
+      toolBudget?: ToolBudgetHost;
+      /** Calls converted to jobs this loop, by tool-call id — read by `mapFullStream` at the settle part. */
+      convertedCalls?: Map<string, { jobId: string; title: string; deduped?: boolean }>;
     }
   ): ToolSet {
     const tools: ToolSet = {};
     const pendingImageInjections = options?.pendingImageInjections;
     const onToolInvocation = options?.onToolInvocation;
     const recordInvocation = options?.recordInvocation;
+    const toolBudget = options?.toolBudget;
+    const convertedCalls = options?.convertedCalls;
     const imageRedirectEnabled = !!pendingImageInjections;
 
     // Sentinel for tool returns that produced multimodal content parts.
@@ -1534,11 +1566,17 @@ export class Conversation {
       if (!def?.name) {
         continue;
       }
+      const parameters = this.normalizeToolParameters(def.parameters);
       tools[def.name] = {
         description: def.description,
-        inputSchema: jsonSchema(this.normalizeToolParameters(def.parameters)),
-        execute: async (args: any, executionOptions: { toolCallId: string }) => {
+        // A budgeted executor offers the model the `task` label on every tool (the job's plain-
+        // English name should the call convert); an unbudgeted one sends the schema untouched.
+        inputSchema: jsonSchema(toolBudget ? ToolBudget.withTaskParameter(parameters) : parameters),
+        execute: async (rawArgs: any, executionOptions: { toolCallId: string }) => {
           const toolStartedAt = new Date();
+          // The `task` label is the harness's, never the tool's: split off before anything reads
+          // the arguments (the timeline detail, the dedupe key, the tool itself, the record).
+          const { args, task } = toolBudget ? ToolBudget.splitTask(rawArgs) : { args: rawArgs, task: undefined };
           const timelineDetail = await this.resolveToolTimelineDetail(def.name, args);
           onToolInvocation?.({
             type: 'started',
@@ -1550,7 +1588,45 @@ export class Conversation {
           });
           let result: unknown;
           try {
-            result = await f.call(args);
+            if (toolBudget) {
+              // The budget (plans/FREE_AGENT.md §M.3 part 1): the call runs under N; past it the
+              // host owns it as a job and the model reads the typed hand-off as this call's
+              // result, so the loop reaches its next step boundary — where the next input
+              // drains — instead of waiting behind the tool. The promise is never cancelled by
+              // the yield (§2.3 #1).
+              const outcome = await new ToolBudget({
+                host: toolBudget,
+                fn: f,
+                toolCallId: executionOptions.toolCallId,
+                input: args,
+                ...(task ? { task } : {}),
+                detail: typeof timelineDetail === 'string' ? timelineDetail : timelineDetail?.text,
+              }).run();
+              if (outcome.kind === 'converted') {
+                const converted = {
+                  jobId: outcome.jobId,
+                  title: outcome.title,
+                  ...(outcome.deduped ? { deduped: true } : {}),
+                };
+                convertedCalls?.set(executionOptions.toolCallId, converted);
+                const convertedInvocation: ToolInvocationResult = {
+                  id: executionOptions.toolCallId,
+                  name: def.name,
+                  startedAt: toolStartedAt,
+                  finishedAt: new Date(),
+                  input: args,
+                  ok: true,
+                  data: outcome.text,
+                  converted,
+                };
+                recordInvocation?.(convertedInvocation);
+                onToolInvocation?.({ type: 'finished', result: convertedInvocation });
+                return outcome.text;
+              }
+              result = outcome.result;
+            } else {
+              result = await f.call(args);
+            }
           } catch (toolError) {
             const failedInvocation: ToolInvocationResult = {
               id: executionOptions.toolCallId,
@@ -3076,7 +3152,11 @@ export class Conversation {
     }
   }
 
-  private mapFullStream(aiSdkFullStream: AsyncIterable<any>, provider: string): AsyncIterable<StreamPart> {
+  private mapFullStream(
+    aiSdkFullStream: AsyncIterable<any>,
+    provider: string,
+    convertedCalls?: ReadonlyMap<string, { jobId: string; title: string; deduped?: boolean }>
+  ): AsyncIterable<StreamPart> {
     const logger = this.logger;
     const functions = this.functions;
     // OpenAI's Responses text embeds PUA-delimited citation-marker runs when web search
@@ -3174,8 +3254,11 @@ export class Conversation {
               //      freshness/lock fence renders as deferred, not done) — only for tools
               //      implementing the hook and returning a name/detail.
               const fn = functions.find((f) => f.definition.name === part.toolName);
+              // A call the budget converted settled as a HAND-OFF: its output is the harness's
+              // yield sentence, not the tool's result — the tool's own outcome hook never sees it.
+              const converted = convertedCalls?.get(String(part.toolCallId ?? ''));
               let outcome: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined;
-              if (fn?.getTimelineOutcome) {
+              if (fn?.getTimelineOutcome && !converted) {
                 try {
                   outcome = (await fn.getTimelineOutcome(part.input, part.output)) || undefined;
                 } catch {
@@ -3187,6 +3270,7 @@ export class Conversation {
                 id: String(part.toolCallId ?? ''),
                 toolName: part.toolName,
                 ok: outcome?.ok !== false,
+                ...(converted ? { converted } : {}),
               };
               if (outcome && (outcome.name || outcome.detail)) {
                 yield {
