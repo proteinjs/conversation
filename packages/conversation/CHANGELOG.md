@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.2.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.2.0...@proteinjs/conversation@6.2.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **conversation:** mid-turn notes wait while the assistant turn is open on a server tool — the drain is not consumed at a step boundary whose last assistant message carries a provider-executed call with no result (R7 finding 9: the follow-up that killed the research turn) ([197d410](https://github.com/proteinjs/conversation/commit/197d41064e6a01b6c6d9a2954750dba5d0948de7))
+
+
+
+
+
 # [6.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.1.0...@proteinjs/conversation@6.2.0) (2026-09-04)
 
 
