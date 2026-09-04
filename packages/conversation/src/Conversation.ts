@@ -153,6 +153,10 @@ export type GenerateStreamParams = {
    * and the note keeps its chronological position). The callback transfers ownership: it must
    * drain its source destructively (never hand the same item back twice) — this layer owns only
    * the splice; the caller owns transport, durability, and any acknowledgment bookkeeping.
+   * NOT called at a boundary where the last assistant message is still open on a SERVER tool (a
+   * provider-executed call with no result yet — Anthropic defers a web_search batched with a client
+   * tool to the next request, and pauses long server-side loops): that request must carry nothing
+   * after the client tool results, so the notes wait for the next boundary or the exit absorption.
    */
   drainInjectedContext?: () => string[];
   /**
@@ -546,15 +550,34 @@ export class Conversation {
         prepareStep: ({ messages: stepMessages }) => {
           let next = stepMessages;
           if (params.drainInjectedContext) {
-            for (const content of params.drainInjectedContext() ?? []) {
-              const text = String(content ?? '').trim();
-              if (!text) {
-                continue;
-              }
-              injectedContextSplices.push({
-                anchorIndex: stepMessages.length,
-                message: { role: 'user', content: text } as ModelMessage,
+            // A boundary where the last assistant message is still OPEN on a server tool — the model
+            // batched e.g. Anthropic web_search with a client tool, and the API stopped at the client
+            // tool WITHOUT running the search — is not a boundary a note can ride. The API runs the
+            // deferred server tool at the start of this request only if the follow-up carries nothing
+            // but the client tool results; a user block after them ends the assistant turn, and the
+            // unresolved server call fails the whole request ("`web_search` tool use with id … was
+            // found without a corresponding `web_search_tool_result` block" — R7 finding 9, the
+            // follow-up that killed the research turn). The drain is not consumed here: the notes
+            // wait in the caller's inbox for the next boundary (after the server tool's result has
+            // landed) or for the exit absorption.
+            const openServerTools = Conversation.openServerToolCallIds(stepMessages);
+            if (openServerTools.length > 0) {
+              this.logger.info({
+                message:
+                  'Mid-turn inputs wait: the assistant turn is still open on a server tool at this step boundary',
+                obj: { openServerTools, inputsWaiting: params.peekInjectedContext?.() },
               });
+            } else {
+              for (const content of params.drainInjectedContext() ?? []) {
+                const text = String(content ?? '').trim();
+                if (!text) {
+                  continue;
+                }
+                injectedContextSplices.push({
+                  anchorIndex: stepMessages.length,
+                  message: { role: 'user', content: text } as ModelMessage,
+                });
+              }
             }
             if (injectedContextSplices.length > 0) {
               next = Conversation.spliceInjectedContext(next, injectedContextSplices);
@@ -852,11 +875,31 @@ export class Conversation {
             });
             break;
           }
+          // The finished round's transcript, read BEFORE the drain (the drain is destructive): a
+          // response paused on a server tool (`pause_turn` — the provider stopped its server-side
+          // loop with a server call still open) cannot take a note after it either — the user block
+          // would end the turn and the request would fail on the unresolved server call, exactly as at
+          // a step boundary. Those notes stay for the caller's settle path, which re-raises them.
+          let responseMessages: ModelMessage[];
+          try {
+            responseMessages = (await current.response).messages as ModelMessage[];
+          } catch {
+            // The round settled no response (it errored or was aborted): nothing to continue from.
+            break;
+          }
+          const openServerTools = Conversation.openServerToolCallIds(responseMessages);
+          if (openServerTools.length > 0) {
+            self.logger.warn({
+              message:
+                'Boundary-note absorption skipped: the response is paused on a server tool; leaving notes to settle',
+              obj: { openServerTools, rounds },
+            });
+            break;
+          }
           const drained = (params.drainInjectedContext() ?? []).map((c) => String(c ?? '').trim()).filter(Boolean);
           if (drained.length === 0) {
             break;
           }
-          const responseMessages = (await current.response).messages as ModelMessage[];
           let nextMessages = [...currentMessages, ...responseMessages];
           if (injectedContextSplices.length > 0) {
             // Mid-loop splices were projected per step, never stored — materialize them into the
@@ -1803,6 +1846,37 @@ export class Conversation {
    * (image injection, pruning, cache marking) see the final ordering. Stateless per-step
    * projection like `pruneStaleToolImages` — history is never mutated.
    */
+  /**
+   * The provider-executed (server) tool calls the transcript's LAST assistant message is still
+   * waiting on: a `tool-call` part with `providerExecuted` whose id has no `tool-result` part in that
+   * same message. The shape Anthropic returns when the model batches a server tool (web_search,
+   * web_fetch) with a client tool — `stop_reason: tool_use`, the server tool deferred to the next
+   * request — and when it pauses its server-side loop (`pause_turn`). While it holds, the next
+   * request may carry nothing after the client tool results: a user block there ends the assistant
+   * turn and the unresolved server call fails the request. Read by `prepareStep` and the exit
+   * absorption before they drain (see `GenerateStreamParams.drainInjectedContext`).
+   */
+  private static openServerToolCallIds(messages: ModelMessage[]): string[] {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== 'assistant') {
+        continue;
+      }
+      if (!Array.isArray(msg.content)) {
+        return [];
+      }
+      const parts = msg.content as Array<{ type: string; toolCallId?: string; providerExecuted?: boolean }>;
+      const settled = new Set(parts.filter((part) => part.type === 'tool-result').map((part) => part.toolCallId));
+      return parts
+        .filter(
+          (part) => part.type === 'tool-call' && part.providerExecuted === true && typeof part.toolCallId === 'string'
+        )
+        .map((part) => part.toolCallId as string)
+        .filter((id) => !settled.has(id));
+    }
+    return [];
+  }
+
   private static spliceInjectedContext(
     messages: ModelMessage[],
     splices: Array<{ anchorIndex: number; message: ModelMessage }>
