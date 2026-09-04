@@ -1,0 +1,6 @@
+{
+  "branch": "fix/mid-turn-notes-wait-for-server-tools",
+  "packages": ["conversation"],
+  "suites": ["packages/conversation/test/conversation/conversation.injectedContext.test.ts"],
+  "removes": []
+}
