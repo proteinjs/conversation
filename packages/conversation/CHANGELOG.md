@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.2.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.1.0...@proteinjs/conversation@6.2.0) (2026-09-04)
+
+
+### Features
+
+* **conversation): the tool-call budget — a call still running past N converts IN PLACE into a background job at the executor (plans/FREE_AGENT.md §M.3 part 1). ToolBudget owns the one clock (CONVERSATION_TOOL_SOFT_BUDGET_MS, default 5 s; HARD default 30 min passed to the host): GenerateStreamParams.toolBudget is the host hook — the §2.8 running-job lookup before a call runs (a repeat reads "already running as job {id}", never executes twice; dedupe: false opts out, dedupeKey(args) names the identity, the arguments' stable hash is the default), then f.call(args, { signal, onPhase }) raced against N (background: true → t = 0); past N convert() receives the running promise, its abort, the phase relay, the dedupe key, the HARD ceiling and the job's visible title, and the model reads the §2.4 hand-off sentence as the call's result so the loop reaches its next step boundary — where the next input drains — instead of waiting behind the tool. The promise runs on. ToolInvocationResult.converted and the tool-settled part's converted { jobId, title } mark the hand-off for the timeline. The job's NAME is a task in plain English (founder ruling 2026-09-04 22:00Z:** every budgeted tool's schema is offered a `task` label the executor splits off before the tool runs; the title is the model's label, else the tool's last phase words, else "Working on {subject}" / "Working in the background" — never the tool's name (pinned). An unbudgeted host is byte-identical to before. Function gains call(args, ctx?), background, hardBudgetMs, dedupe, dedupeKey. Tests: toolBudget.test.ts (14) — red at `await f.call(args)` (6 of 12; the boundary at 6 s), bites: the race removed, the lookup skipped, background ignored. ([6c6dfdd](https://github.com/proteinjs/conversation/commit/6c6dfdddba54545bf92a576162e146e6d2531762))
+
+
+
+
+
 # [6.1.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.0.2...@proteinjs/conversation@6.1.0) (2026-09-03)
 
 
