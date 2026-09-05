@@ -14,6 +14,7 @@ import type { ModelDataResolver } from './ModelData';
 import { resolveModel, inferProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
+import { Utterance } from './Utterance';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
 import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
@@ -181,6 +182,31 @@ export type GenerateStreamParams = {
    * `drainInjectedContext`.
    */
   peekInjectedContext?: () => boolean;
+  /**
+   * The clock-driven wake (plans/FREE_AGENT.md §M.3 part 2a/2b): a promise that resolves the next
+   * time an input lands in `drainInjectedContext`'s source (at once when inputs already wait).
+   * The round loop races the provider's next part against it — a note that lands while the model
+   * is still THINKING restarts the round at once instead of waiting for a part to arrive (the
+   * restart rule above, `peekInjectedContext`, unchanged in what it restarts), and a note that
+   * lands while TEXT streams arms the cut-and-continue clock: the generation gets N
+   * (`ToolBudget.softBudgetMs`) to finish on its own; past N the round is cut at the next paragraph
+   * break (at N + 2 s regardless), the text so far is committed exactly as the exit absorption
+   * commits a finished round, and the SAME response continues with the note spliced. Only
+   * meaningful alongside `drainInjectedContext` + `peekInjectedContext`.
+   */
+  inputArrived?: () => Promise<void>;
+  /**
+   * The bounded UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c; see {@link Utterance}): before the
+   * mind takes an input into a step — at turn start, and at every drain that hands inputs to
+   * the model (a step boundary, a thinking-phase restart, a mid-text cut, the exit absorption) —
+   * the loop asks it for ONE LINE in a separate no-tools, no-thinking call over the same
+   * transcript, streams that line as its own step (a `step-finish` part flagged `utterance`, the
+   * acknowledgment the consumer commits to the response), then runs the step with the inputs
+   * spliced and the line riding as the agent's own prior message + the continue framing. A
+   * failed or empty utterance is logged and the step runs as it would have without one.
+   * Streaming consumers only (the first round starts inside the stream).
+   */
+  utterance?: boolean;
 
   // OpenAI-specific
   backgroundMode?: boolean;
@@ -276,6 +302,12 @@ export type StreamPart =
        */
       type: 'step-finish';
       finishReason: string;
+      /**
+       * This step was the bounded UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c): its text is the
+       * one-line acknowledgment of the inputs the mind is taking in — the consumer commits it to
+       * the response as the acknowledgment part, whatever the window says.
+       */
+      utterance?: true;
     };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
@@ -503,6 +535,16 @@ export class Conversation {
     // then re-projected at that anchor on every subsequent step. Steps only append raw messages, so
     // the projection is deterministic and the prefix stays byte-stable between steps.
     const injectedContextSplices: Array<{ anchorIndex: number; message: ModelMessage }> = [];
+    // The boundary utterance's queue (plans/FREE_AGENT.md §M.3 part 2c): a drain at `prepareStep`
+    // asks the mind for its one line THERE, but the line's parts must reach the consumer in
+    // order — after the step that just finished, before the step about to start. prepareStep
+    // streams them into this queue; the combined generator yields it at its next boundary (the
+    // SDK starts the next step only after prepareStep returns, so the order holds by construction).
+    const boundaryUtterance = new StreamPartQueue();
+    // The raw messages of the CURRENT round's latest step (what prepareStep was handed) — the
+    // transcript a mid-text cut continues from (the aborted round's own response never settles).
+    let latestStepMessages: ModelMessage[] = messages;
+    const projection = { provider, tools: allTools, modelString };
 
     // Cumulative per-step usage for live in-flight reporting. Each step (tool-call
     // round) is a separate billed call, so summing step usage reconciles exactly
@@ -547,7 +589,8 @@ export class Conversation {
         // aborts ONE round's call without touching the turn-level signal or the liveness guard.
         abortSignal: roundSignal ? Conversation.anySignal([combinedAbortSignal, roundSignal]) : combinedAbortSignal,
         providerOptions,
-        prepareStep: ({ messages: stepMessages }) => {
+        prepareStep: async ({ messages: stepMessages }) => {
+          latestStepMessages = stepMessages;
           let next = stepMessages;
           if (params.drainInjectedContext) {
             // A boundary where the last assistant message is still OPEN on a server tool — the model
@@ -568,15 +611,28 @@ export class Conversation {
                 obj: { openServerTools, inputsWaiting: params.peekInjectedContext?.() },
               });
             } else {
-              for (const content of params.drainInjectedContext() ?? []) {
-                const text = String(content ?? '').trim();
-                if (!text) {
-                  continue;
+              const drained = Conversation.drainTexts(params.drainInjectedContext);
+              if (drained.length > 0) {
+                // The bounded utterance at the boundary (part 2c): the line is asked for over the
+                // transcript this step would have seen, streamed to the consumer through the
+                // boundary queue, and the framing splices in after the inputs.
+                const line = params.utterance
+                  ? await this.utterInto(boundaryUtterance, {
+                      model,
+                      transcript: this.projectOutgoingStepMessages(
+                        Conversation.spliceInjectedContext(stepMessages, injectedContextSplices),
+                        projection
+                      ),
+                      inputs: drained,
+                      provider,
+                      modelString,
+                      abortSignal: combinedAbortSignal,
+                      onResult: (r) => roundResults.push(r),
+                    })
+                  : undefined;
+                for (const message of Conversation.inputMessages(drained, line)) {
+                  injectedContextSplices.push({ anchorIndex: stepMessages.length, message });
                 }
-                injectedContextSplices.push({
-                  anchorIndex: stepMessages.length,
-                  message: { role: 'user', content: text } as ModelMessage,
-                });
               }
             }
             if (injectedContextSplices.length > 0) {
@@ -620,7 +676,29 @@ export class Conversation {
     // Every round gets its own controller so the thinking-phase restart (peekInjectedContext)
     // can abort ONE round without ending the turn.
     let roundController = new AbortController();
-    const result = startCall(messages, roundController.signal);
+    // Every round's result, in order — usage and tool invocations are summed over ALL of them as
+    // ONE logical response (see finalizeAcrossRounds); the bounded utterance's calls ride here too.
+    const roundResults: Array<ReturnType<typeof startCall>> = [];
+    let liveResult: ReturnType<typeof startCall> | undefined;
+    const startRound = (roundMessages: ModelMessage[]): ReturnType<typeof startCall> => {
+      roundController = new AbortController();
+      const round = startCall(roundMessages, roundController.signal);
+      // The round's promises are read lazily, or never (a restarted or cut round's reject with
+      // the abort) — no unhandled rejections from them.
+      Promise.resolve(round.finishReason).catch(() => {});
+      Promise.resolve((round as any).rawFinishReason).catch(() => {});
+      Promise.resolve(round.response).catch(() => {});
+      Promise.resolve(round.totalUsage).catch(() => {});
+      roundResults.push(round);
+      liveResult = round;
+      latestStepMessages = roundMessages;
+      return round;
+    };
+    // The first round starts NOW for a buffered consumer (generateResponse reads the promises
+    // without touching fullStream) and for a plain streaming call; under the bounded utterance it
+    // starts inside the stream, after the take-in line (the line precedes the first step's
+    // thinking — plans/FREE_AGENT.md §M.3 part 2c, the idle path).
+    const result = params.utterance ? undefined : startRound(messages);
 
     // ── Boundary-note absorption (the steering hold) ──
     // A note that arrives DURING the final generation step never meets prepareStep (it only runs
@@ -633,8 +711,6 @@ export class Conversation {
     // streams into the same fullStream. Repeats until the drain is quiet at exit — one turn, one
     // response, ordered after everything it absorbed.
     const MAX_CONTINUATION_ROUNDS = 10;
-    const roundResults: Array<typeof result> = [result];
-    let liveResult = result;
 
     // Usage and tool invocations must cover ALL rounds as ONE logical response (downstream
     // recorders key/dedupe on the response message id — per-round reporting would drop every
@@ -711,24 +787,25 @@ export class Conversation {
       finalized = true;
       void finalizeAcrossRounds();
     };
-    Promise.resolve(result.totalUsage).then(
-      () => {
-        if (!generatorStarted) {
-          finalizeOnce();
+    if (result) {
+      Promise.resolve(result.totalUsage).then(
+        () => {
+          if (!generatorStarted) {
+            finalizeOnce();
+          }
+        },
+        () => {
+          if (!generatorStarted) {
+            finalizeOnce();
+          }
         }
-      },
-      () => {
-        if (!generatorStarted) {
-          finalizeOnce();
-        }
-      }
-    );
+      );
+    }
 
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
     const combinedSdkStream = (async function* () {
       generatorStarted = true;
-      let current = result;
       let currentMessages = messages;
       let rounds = 0;
       // TURN-scoped (2026-07-29 lost-response fix): once ANY round has streamed user-material
@@ -742,47 +819,215 @@ export class Conversation {
       // terminate). Distinct from `rounds`: note absorption and length continuation are
       // different budgets.
       let lengthContinuations = 0;
+      // The step budget's clocks (plans/FREE_AGENT.md §M.2, §M.3 part 2b): N is the tool budget's
+      // one number; a note that lands while text streams gets N for the generation to finish on its
+      // own, then the cut at the next paragraph break, at N + the grace regardless.
+      const softBudgetMs = ToolBudget.softBudgetMs();
+      const utterOptions = { model, provider, modelString, abortSignal: combinedAbortSignal };
+      const utter = (transcript: ModelMessage[], inputs: string[]) =>
+        self.utter({
+          ...utterOptions,
+          transcript: self.projectOutgoingStepMessages(transcript, projection),
+          inputs,
+          onResult: (r) => roundResults.push(r),
+        });
+      // The first round: started here when the bounded utterance leads it (the take-in line
+      // precedes the first step's thinking — the idle path of the bar), else already running.
+      let current: ReturnType<typeof startCall>;
+      if (result) {
+        current = result;
+      } else {
+        const line = yield* utter(messages, []);
+        if (line) {
+          currentMessages = [...messages, ...Utterance.framing([], line)];
+        }
+        current = startRound(currentMessages);
+      }
       try {
         while (true) {
-          // Consume the round part-by-part so a note that arrives while the model is still
-          // THINKING can restart it (see peekInjectedContext). `turnMaterial` flips at the
-          // first user-material part: tool parts BEFORE the restart check (input streaming
-          // means execution is imminent — never abort into a side effect), text AFTER it (the
-          // first text-delta hasn't been yielded yet, so restarting right at it shows nothing).
+          // ── One round, consumed part by part ──
+          // Each part is raced against the input wake (a note landing mid-thinking restarts the
+          // round at once; a note landing mid-text arms the cut clock), the cut deadline, and the
+          // boundary utterance queue. `turnMaterial` flips at the first user-material part: tool
+          // parts BEFORE the restart check (input streaming means execution is imminent — never
+          // abort into a side effect), text AFTER it (the first text-delta hasn't been yielded yet,
+          // so restarting right at it shows nothing).
           let restartRequested = false;
+          let cutRequested = false;
+          // The current step's streamed text (a cut continues from it) and the finished step's.
+          let stepText = '';
+          let finishedStepText = '';
+          // Inside a text run with no tool part since it began — the only window a cut may fire in.
+          let streamingText = false;
+          // The moment a note was seen waiting while text streamed — the cut clock's origin.
+          let noteSeenAt: number | undefined;
+          let cutDeadline: Promise<void> | undefined;
+          // A restart the wake asked for, pending the grace: the SDK executes a tool inside its
+          // own transform BEFORE the call's parts reach this reader, so a note that lands during a
+          // fast tool's first milliseconds wakes the loop with the tool part still buffered —
+          // never abort into that side effect. The next part (if one is already there) decides;
+          // the grace, if none is, restarts.
+          let restartGrace: Promise<void> | undefined;
+          // The round's terminal step-finish, held until the round's disposition is decided: a
+          // continuation must land its joiner INSIDE the finished step's text (before the commit),
+          // and a cut round has no step-finish of its own.
+          let heldFinish: any;
+          // Between steps (after a step-finish, or before the round's first part): where the
+          // boundary utterance queue may be yielded.
+          let atBoundary = true;
+          const iterator = self
+            .guardStreamLiveness(current.fullStream, livenessController, modelString, locallyExecutedToolNames)
+            [Symbol.asyncIterator]();
+          let pendingNext: Promise<IteratorResult<any>> | undefined;
+          let wake: Promise<void> | undefined;
+          const restartEligible = () =>
+            !turnMaterial &&
+            !!params.peekInjectedContext &&
+            !!params.drainInjectedContext &&
+            rounds < MAX_CONTINUATION_ROUNDS &&
+            !combinedAbortSignal.aborted;
+          const cutEligible = () =>
+            streamingText &&
+            !!params.absorbExitNotes &&
+            !!params.peekInjectedContext &&
+            !!params.drainInjectedContext &&
+            rounds < MAX_CONTINUATION_ROUNDS &&
+            !combinedAbortSignal.aborted;
+          const abortRound = (why: 'restart' | 'cut') => {
+            if (why === 'restart') {
+              restartRequested = true;
+            } else {
+              cutRequested = true;
+            }
+            roundController.abort();
+            void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined);
+          };
           try {
-            for await (const part of self.guardStreamLiveness(
-              current.fullStream,
-              livenessController,
-              modelString,
-              locallyExecutedToolNames
-            )) {
+            while (true) {
+              if (atBoundary) {
+                for (const queued of boundaryUtterance.take()) {
+                  yield queued;
+                }
+              }
+              if (!pendingNext) {
+                pendingNext = iterator.next();
+                pendingNext.catch(() => undefined);
+              }
+              const racers: Promise<'part' | 'input' | 'cut' | 'queued' | 'restart'>[] = [
+                pendingNext.then(() => 'part' as const),
+              ];
+              if (
+                params.inputArrived &&
+                ((restartEligible() && !restartGrace) || (cutEligible() && noteSeenAt === undefined))
+              ) {
+                wake ??= params.inputArrived();
+                racers.push(wake.then(() => 'input' as const));
+              }
+              if (restartGrace) {
+                racers.push(restartGrace.then(() => 'restart' as const));
+              }
+              if (noteSeenAt !== undefined && streamingText) {
+                cutDeadline ??= Conversation.sleep(
+                  noteSeenAt + softBudgetMs + Conversation.TEXT_CUT_GRACE_MS - Date.now()
+                );
+                racers.push(cutDeadline.then(() => 'cut' as const));
+              }
+              if (atBoundary) {
+                racers.push(boundaryUtterance.wait().then(() => 'queued' as const));
+              }
+              const won = await Promise.race(racers);
+              if (won === 'queued') {
+                continue;
+              }
+              if (won === 'input') {
+                wake = undefined;
+                if (!params.peekInjectedContext?.()) {
+                  continue; // drained meanwhile (a boundary took it)
+                }
+                if (restartEligible()) {
+                  restartGrace ??= Conversation.sleep(Conversation.RESTART_GRACE_MS);
+                  continue;
+                }
+                if (cutEligible()) {
+                  noteSeenAt ??= Date.now();
+                }
+                continue;
+              }
+              if (won === 'restart') {
+                restartGrace = undefined;
+                if (restartEligible() && params.peekInjectedContext!()) {
+                  abortRound('restart');
+                  break;
+                }
+                continue;
+              }
+              if (won === 'cut') {
+                abortRound('cut');
+                break;
+              }
+              const step = await pendingNext;
+              pendingNext = undefined;
+              if (step.done) {
+                break;
+              }
+              const part = step.value;
               const partType = (part as { type?: string }).type;
+              if (heldFinish && partType !== 'finish') {
+                // A step followed the held step-finish after all (a provider-deferred server tool);
+                // the stream's own terminal `finish` part is not a step and releases nothing.
+                yield heldFinish;
+                heldFinish = undefined;
+              }
               if (partType === 'tool-input-start' || partType === 'tool-call' || partType === 'tool-result') {
                 turnMaterial = true;
+                streamingText = false;
+                noteSeenAt = undefined;
+                cutDeadline = undefined;
               }
-              if (
-                !turnMaterial &&
-                params.peekInjectedContext?.() &&
-                params.drainInjectedContext &&
-                rounds < MAX_CONTINUATION_ROUNDS &&
-                !combinedAbortSignal.aborted
-              ) {
-                restartRequested = true;
-                roundController.abort();
+              if (restartEligible() && params.peekInjectedContext!()) {
+                abortRound('restart');
                 break;
               }
               if (partType === 'text-delta') {
                 turnMaterial = true;
+                streamingText = true;
+                const delta = String(part.delta ?? part.text ?? part.textDelta ?? '');
+                stepText += delta;
+                if (noteSeenAt === undefined && cutEligible() && params.peekInjectedContext!()) {
+                  noteSeenAt = Date.now();
+                }
+                if (noteSeenAt !== undefined && Date.now() - noteSeenAt >= softBudgetMs && delta.includes('\n\n')) {
+                  // The paragraph break past N: the cut lands here, with the break on screen.
+                  yield part;
+                  atBoundary = false;
+                  abortRound('cut');
+                  break;
+                }
               }
+              if (partType === 'finish-step') {
+                streamingText = false;
+                noteSeenAt = undefined;
+                cutDeadline = undefined;
+                finishedStepText = stepText;
+                stepText = '';
+                atBoundary = true;
+                const reason = String(part.finishReason?.unified ?? part.finishReason ?? '');
+                if (reason !== 'tool-calls') {
+                  heldFinish = part;
+                  continue;
+                }
+                yield part;
+                continue;
+              }
+              atBoundary = false;
               yield part;
             }
           } catch (error) {
-            if (!restartRequested) {
+            if (!restartRequested && !cutRequested) {
               throw error;
             }
-            // The abort WE fired surfacing through the stream — swallowed; the restart below owns
-            // the round.
+            // The abort WE fired surfacing through the stream — swallowed; the restart / cut below
+            // owns the round.
           }
           if (restartRequested) {
             // Nothing user-material streamed: re-plan the SAME response with the notes in hand —
@@ -793,11 +1038,7 @@ export class Conversation {
             // consumers never see the discarded round's reasoning-end and merge its thinking
             // into the restarted round's (one run-together reasoningSteps entry).
             yield { type: 'reasoning-end' };
-            Promise.resolve(current.totalUsage).catch(() => {});
-            Promise.resolve(current.response).catch(() => {});
-            Promise.resolve(current.finishReason).catch(() => {});
-            Promise.resolve((current as any).rawFinishReason).catch(() => {});
-            const drained = (params.drainInjectedContext!() ?? []).map((c) => String(c ?? '').trim()).filter(Boolean);
+            const drained = Conversation.drainTexts(params.drainInjectedContext!);
             let nextMessages = [...currentMessages];
             if (injectedContextSplices.length > 0) {
               // Splices projected by the aborted round's prepareStep — materialize them once
@@ -805,21 +1046,41 @@ export class Conversation {
               nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
               injectedContextSplices.length = 0;
             }
-            nextMessages = [
-              ...nextMessages,
-              ...drained.map((text) => ({ role: 'user', content: text }) as ModelMessage),
-            ];
+            const line = params.utterance && drained.length > 0 ? yield* utter(nextMessages, drained) : undefined;
+            nextMessages = [...nextMessages, ...Conversation.inputMessages(drained, line)];
             self.logger.info({
               message: 'Restarting thinking-phase round with mid-turn notes',
-              obj: { noteCount: drained.length, round: rounds + 1 },
+              obj: { noteCount: drained.length, round: rounds + 1, uttered: !!line },
             });
-            roundController = new AbortController();
-            current = startCall(nextMessages, roundController.signal);
-            Promise.resolve(current.finishReason).catch(() => {});
-            Promise.resolve((current as any).rawFinishReason).catch(() => {});
-            Promise.resolve(current.response).catch(() => {});
-            roundResults.push(current);
-            liveResult = current;
+            current = startRound(nextMessages);
+            currentMessages = nextMessages;
+            rounds++;
+            continue;
+          }
+          if (cutRequested) {
+            // The mid-text cut (part 2b): the text so far is committed exactly as a finished
+            // round's — the joiner inside it, then a step-finish — and the SAME response continues
+            // from the transcript the step was running on plus that text, with the notes spliced.
+            if (stepText.length > 0 && !stepText.endsWith('\n\n')) {
+              yield { type: 'text-delta', delta: '\n\n' };
+            }
+            yield { type: 'finish-step', finishReason: 'stop' };
+            const drained = Conversation.drainTexts(params.drainInjectedContext!);
+            let nextMessages = [...latestStepMessages];
+            if (injectedContextSplices.length > 0) {
+              nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
+              injectedContextSplices.length = 0;
+            }
+            if (stepText.trim().length > 0) {
+              nextMessages = [...nextMessages, { role: 'assistant', content: stepText.trimEnd() } as ModelMessage];
+            }
+            const line = params.utterance && drained.length > 0 ? yield* utter(nextMessages, drained) : undefined;
+            nextMessages = [...nextMessages, ...Conversation.inputMessages(drained, line)];
+            self.logger.info({
+              message: 'Cut the streaming round for mid-turn notes — the text so far committed, continuing',
+              obj: { noteCount: drained.length, round: rounds + 1, textChars: stepText.length, uttered: !!line },
+            });
+            current = startRound(nextMessages);
             currentMessages = nextMessages;
             rounds++;
             continue;
@@ -830,41 +1091,51 @@ export class Conversation {
           // join with NO separator so the text flows on from where it stopped. The user never
           // sees a truncated reply; if the bound is exhausted, the partial persists honestly
           // and the client's manual Continue affordance remains the fallback.
-          if (!combinedAbortSignal.aborted && !finalized && lengthContinuations < 2) {
-            const roundFinish = String((await Promise.resolve(current.finishReason).catch(() => '')) ?? '');
-            if (roundFinish === 'length') {
-              lengthContinuations++;
-              const responseMessages = (await current.response).messages as ModelMessage[];
-              let nextMessages = [...currentMessages, ...responseMessages];
-              if (injectedContextSplices.length > 0) {
-                nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
-                injectedContextSplices.length = 0;
-              }
-              nextMessages = [
-                ...nextMessages,
-                {
-                  role: 'user',
-                  content:
-                    'Your previous message was cut off by the output limit. Continue EXACTLY where it left off — no preamble, no repetition, no restarted sentences; resume mid-sentence if needed, preserving any open markdown or code structure.',
-                } as ModelMessage,
-              ];
-              self.logger.warn({
-                message: 'Round finished at the output limit — auto-continuing the response',
-                obj: { lengthContinuations, round: rounds + 1 },
-              });
-              roundController = new AbortController();
-              current = startCall(nextMessages, roundController.signal);
-              Promise.resolve(current.finishReason).catch(() => {});
-              Promise.resolve((current as any).rawFinishReason).catch(() => {});
-              Promise.resolve(current.response).catch(() => {});
-              roundResults.push(current);
-              liveResult = current;
-              currentMessages = nextMessages;
-              rounds++;
-              continue;
+          const heldReason = heldFinish
+            ? String(heldFinish.finishReason?.unified ?? heldFinish.finishReason ?? '')
+            : '';
+          if (
+            heldFinish &&
+            !combinedAbortSignal.aborted &&
+            !finalized &&
+            lengthContinuations < 2 &&
+            heldReason === 'length'
+          ) {
+            yield heldFinish;
+            heldFinish = undefined;
+            lengthContinuations++;
+            const responseMessages = (await current.response).messages as ModelMessage[];
+            let nextMessages = [...currentMessages, ...responseMessages];
+            if (injectedContextSplices.length > 0) {
+              nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
+              injectedContextSplices.length = 0;
             }
+            nextMessages = [
+              ...nextMessages,
+              {
+                role: 'user',
+                content:
+                  'Your previous message was cut off by the output limit. Continue EXACTLY where it left off — no preamble, no repetition, no restarted sentences; resume mid-sentence if needed, preserving any open markdown or code structure.',
+              } as ModelMessage,
+            ];
+            self.logger.warn({
+              message: 'Round finished at the output limit — auto-continuing the response',
+              obj: { lengthContinuations, round: rounds + 1 },
+            });
+            current = startRound(nextMessages);
+            currentMessages = nextMessages;
+            rounds++;
+            continue;
           }
+          const release = function* () {
+            if (heldFinish) {
+              const part = heldFinish;
+              heldFinish = undefined;
+              yield part;
+            }
+          };
           if (combinedAbortSignal.aborted || !params.absorbExitNotes || !params.drainInjectedContext || finalized) {
+            yield* release();
             break;
           }
           if (rounds >= MAX_CONTINUATION_ROUNDS) {
@@ -873,6 +1144,7 @@ export class Conversation {
               message: 'Boundary-note absorption hit the continuation cap; leaving remaining notes to settle',
               obj: { rounds },
             });
+            yield* release();
             break;
           }
           // The finished round's transcript, read BEFORE the drain (the drain is destructive): a
@@ -885,6 +1157,7 @@ export class Conversation {
             responseMessages = (await current.response).messages as ModelMessage[];
           } catch {
             // The round settled no response (it errored or was aborted): nothing to continue from.
+            yield* release();
             break;
           }
           const openServerTools = Conversation.openServerToolCallIds(responseMessages);
@@ -894,12 +1167,21 @@ export class Conversation {
                 'Boundary-note absorption skipped: the response is paused on a server tool; leaving notes to settle',
               obj: { openServerTools, rounds },
             });
+            yield* release();
             break;
           }
-          const drained = (params.drainInjectedContext() ?? []).map((c) => String(c ?? '').trim()).filter(Boolean);
+          const drained = Conversation.drainTexts(params.drainInjectedContext);
           if (drained.length === 0) {
+            yield* release();
             break;
           }
+          // The continuation's prose is a new paragraph, not a run-on of the draft's last
+          // sentence: the joiner rides the finished step's text, ahead of its commit (consumers
+          // join consecutive text-deltas with nothing in between).
+          if (finishedStepText.length > 0 && !finishedStepText.endsWith('\n\n')) {
+            yield { type: 'text-delta', delta: '\n\n' };
+          }
+          yield* release();
           let nextMessages = [...currentMessages, ...responseMessages];
           if (injectedContextSplices.length > 0) {
             // Mid-loop splices were projected per step, never stored — materialize them into the
@@ -908,21 +1190,13 @@ export class Conversation {
             nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
             injectedContextSplices.length = 0;
           }
-          nextMessages = [...nextMessages, ...drained.map((text) => ({ role: 'user', content: text }) as ModelMessage)];
+          const line = params.utterance ? yield* utter(nextMessages, drained) : undefined;
+          nextMessages = [...nextMessages, ...Conversation.inputMessages(drained, line)];
           self.logger.info({
             message: 'Absorbing boundary notes into the same response',
-            obj: { noteCount: drained.length, round: rounds + 1 },
+            obj: { noteCount: drained.length, round: rounds + 1, uttered: !!line },
           });
-          // The continuation's prose is a new paragraph, not a run-on of the draft's last
-          // sentence (consumers join consecutive text-deltas with nothing in between).
-          yield { type: 'text-delta', delta: '\n\n' };
-          roundController = new AbortController();
-          current = startCall(nextMessages, roundController.signal);
-          Promise.resolve(current.finishReason).catch(() => {});
-          Promise.resolve((current as any).rawFinishReason).catch(() => {});
-          Promise.resolve(current.response).catch(() => {});
-          roundResults.push(current);
-          liveResult = current;
+          current = startRound(nextMessages);
           currentMessages = nextMessages;
           rounds++;
         }
@@ -946,7 +1220,7 @@ export class Conversation {
     // liveResult (the newest continuation round) so post-completion consumers — e.g. the sources
     // fallback that runs after the combined stream ends — see the final round's data.
     const lazySafeText = () =>
-      Promise.resolve(liveResult.text)
+      Promise.resolve(liveResult?.text ?? '')
         // OpenAI web-search output embeds PUA-delimited citation-marker runs in the
         // text itself; strip them at this egress so buffered consumers (generateResponse)
         // see the same clean text the streaming egress emits — see OpenAiCitationMarkers.
@@ -956,7 +1230,7 @@ export class Conversation {
           return '';
         });
     const lazySafeReasoning = () =>
-      Promise.resolve(liveResult.reasoning)
+      Promise.resolve(liveResult?.reasoning ?? [])
         .then((parts: ReasoningOutput[]) =>
           parts
             ? parts
@@ -967,7 +1241,7 @@ export class Conversation {
         )
         .catch(() => '');
     const lazySafeSources = () =>
-      Promise.resolve(liveResult.sources)
+      Promise.resolve(liveResult?.sources ?? [])
         .then((s: LanguageModelV3Source[]) =>
           (s ?? []).map((source) => ({
             url: source.sourceType === 'url' ? source.url : undefined,
@@ -1014,17 +1288,15 @@ export class Conversation {
     let _reasoningPromise: Promise<string> | undefined;
     let _sourcesPromise: Promise<StreamSource[]> | undefined;
 
-    // We still need to catch finishReason etc. to prevent unhandled rejections,
-    // but these don't compete with fullStream.
-    Promise.resolve(result.finishReason).catch(() => {});
-    Promise.resolve((result as any).rawFinishReason).catch(() => {});
-    Promise.resolve(result.response).catch(() => {});
-
     return {
       // OpenAI's Responses text embeds PUA-delimited citation-marker runs when web
       // search runs; every text egress of this result is stripped at the same owner
       // (OpenAiCitationMarkers) so no read path leaks them.
-      textStream: provider === 'openai' ? OpenAiCitationMarkers.stripStream(result.textStream) : result.textStream,
+      textStream: !result
+        ? (async function* () {})()
+        : provider === 'openai'
+          ? OpenAiCitationMarkers.stripStream(result.textStream)
+          : result.textStream,
       reasoningStream: (async function* () {
         // Reasoning is available via the promise after generation completes.
         // For real-time streaming, use fullStream instead.
@@ -3156,6 +3428,117 @@ export class Conversation {
     return (AbortSignal as unknown as { any(signals: AbortSignal[]): AbortSignal }).any(signals);
   }
 
+  /**
+   * The mid-text cut's grace past N (plans/FREE_AGENT.md §M.3 part 2b): past N the round is cut
+   * at the next paragraph break; at N + this, regardless.
+   */
+  static readonly TEXT_CUT_GRACE_MS = 2_000;
+
+  /** How long a wake-driven restart waits for an already-buffered part before aborting the round. */
+  static readonly RESTART_GRACE_MS = 50;
+
+  /** A timer promise that never holds the process open. */
+  private static sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, Math.max(0, ms));
+      timer.unref?.();
+    });
+  }
+
+  /** Drain the caller's inbox into trimmed, non-empty texts (the drain is destructive — once). */
+  private static drainTexts(drain: () => string[]): string[] {
+    return (drain() ?? []).map((content) => String(content ?? '').trim()).filter(Boolean);
+  }
+
+  /**
+   * The messages a set of drained inputs becomes in the next request: under the bounded
+   * utterance, the inputs + the line as the agent's own prior message + the continue framing
+   * (`Utterance.framing`); without a line, the inputs as user messages.
+   */
+  private static inputMessages(inputs: string[], line: string | undefined): ModelMessage[] {
+    return line
+      ? Utterance.framing(inputs, line)
+      : inputs.map((text) => ({ role: 'user', content: text }) as ModelMessage);
+  }
+
+  /**
+   * The bounded utterance (plans/FREE_AGENT.md §M.3 part 2c; {@link Utterance}): one no-tools,
+   * no-thinking call over `transcript` + `inputs` + the instruction, its text streamed as
+   * text-delta parts and closed by a step-finish flagged `utterance`. Returns the line, or nothing
+   * when the call produced no text or failed (logged — the step then runs without its line, and
+   * the consumer's acknowledgment window commits that step's own first text as before).
+   */
+  private async *utter(args: {
+    model: LanguageModel;
+    transcript: ModelMessage[];
+    inputs: string[];
+    provider: string;
+    modelString: string;
+    abortSignal: AbortSignal;
+    onResult: (result: ReturnType<typeof streamText>) => void;
+  }): AsyncGenerator<any, string | undefined> {
+    const request = Utterance.request(args.transcript, args.inputs);
+    const startedAt = Date.now();
+    let text = '';
+    try {
+      const result = streamText({
+        model: args.model,
+        messages: request,
+        maxOutputTokens: Utterance.MAX_OUTPUT_TOKENS,
+        maxRetries: 0,
+        abortSignal: args.abortSignal,
+        providerOptions: this.buildProviderOptions(args.provider, { reasoningEffort: 'none' }, args.modelString),
+      });
+      args.onResult(result);
+      Promise.resolve(result.response).catch(() => {});
+      Promise.resolve(result.finishReason).catch(() => {});
+      for await (const part of result.fullStream as AsyncIterable<any>) {
+        if (part.type === 'text-delta') {
+          const delta = String(part.delta ?? part.text ?? part.textDelta ?? '');
+          if (delta) {
+            text += delta;
+            yield { type: 'text-delta', delta };
+          }
+        } else if (part.type === 'error') {
+          const cause = (part as { error?: unknown }).error;
+          throw cause instanceof Error ? cause : new Error(String((cause as { message?: string })?.message ?? cause));
+        }
+      }
+    } catch (error) {
+      if (args.abortSignal.aborted) {
+        return undefined;
+      }
+      this.logger.warn({
+        message: 'The bounded utterance failed — the step runs without its acknowledgment line',
+        obj: { error: error instanceof Error ? error.message : String(error), inputCount: args.inputs.length },
+      });
+    }
+    const line = text.trim();
+    if (!line) {
+      return undefined;
+    }
+    yield { type: 'finish-step', finishReason: 'stop', utterance: true };
+    this.logger.info({
+      message: 'Bounded utterance',
+      obj: { ms: Date.now() - startedAt, chars: line.length, inputCount: args.inputs.length },
+    });
+    return line;
+  }
+
+  /** The utterance streamed into a boundary queue (the `prepareStep` seam) instead of yielded. */
+  private async utterInto(
+    queue: StreamPartQueue,
+    args: Parameters<Conversation['utter']>[0]
+  ): Promise<string | undefined> {
+    const parts = this.utter(args);
+    let next = await parts.next();
+    while (!next.done) {
+      queue.push(next.value);
+      next = await parts.next();
+    }
+    return next.value;
+  }
+
   private async *guardStreamLiveness(
     aiSdkFullStream: AsyncIterable<any>,
     livenessController: AbortController,
@@ -3268,7 +3651,11 @@ export class Conversation {
               // it as { finishReason: { unified, raw } } in some paths and a bare string in
               // others — normalize to the unified string.
               const finishReason = part.finishReason?.unified ?? part.finishReason ?? 'unknown';
-              yield { type: 'step-finish' as const, finishReason: String(finishReason) };
+              yield {
+                type: 'step-finish' as const,
+                finishReason: String(finishReason),
+                ...(part.utterance ? { utterance: true as const } : {}),
+              };
             } else if (part.type === 'tool-call') {
               const toolName = part.toolName ?? 'unknown';
               // A custom function tool resolves to one of our `functions`; a
@@ -3576,4 +3963,39 @@ function deriveToolCallDetail(input: unknown): string | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * An ordered hand-off of stream parts produced OUTSIDE the combined stream's generator (the
+ * bounded utterance at `prepareStep`) — the generator yields them at its next step boundary,
+ * waking on `wait()` so a line reaches the consumer the moment it streams.
+ */
+class StreamPartQueue {
+  private parts: any[] = [];
+  private wake: (() => void) | undefined;
+  private waiting: Promise<void> | undefined;
+
+  push(part: any): void {
+    this.parts.push(part);
+    const wake = this.wake;
+    this.wake = undefined;
+    this.waiting = undefined;
+    wake?.();
+  }
+
+  /** Everything queued, in order (the queue is empty afterwards). */
+  take(): any[] {
+    return this.parts.splice(0, this.parts.length);
+  }
+
+  /** Resolves when a part is queued (at once when parts already wait). */
+  wait(): Promise<void> {
+    if (this.parts.length > 0) {
+      return Promise.resolve();
+    }
+    this.waiting ??= new Promise<void>((resolve) => {
+      this.wake = resolve;
+    });
+    return this.waiting;
+  }
 }

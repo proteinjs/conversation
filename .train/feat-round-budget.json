@@ -1,0 +1,13 @@
+{
+  "branch": "feat/round-budget",
+  "packages": ["conversation"],
+  "suites": [
+    "packages/conversation/test/conversation/roundBudget.test.ts",
+    "packages/conversation/test/conversation/utterance.test.ts",
+    "packages/conversation/test/conversation/conversation.thinkingRestart.test.ts",
+    "packages/conversation/test/conversation/conversation.injectedContext.test.ts",
+    "packages/conversation/test/conversation/toolBudget.test.ts",
+    "packages/conversation/test/conversation/conversation.streamLiveness.test.ts"
+  ],
+  "removes": []
+}
