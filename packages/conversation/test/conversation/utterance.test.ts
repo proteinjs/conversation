@@ -1,6 +1,6 @@
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation, type GenerateStreamParams } from '../../src/Conversation';
-import { Utterance } from '../../src/Utterance';
+import { Utterance, type DrainedInput } from '../../src/Utterance';
 import { fixtureModelData } from './fixtureModelData';
 
 /**
@@ -29,7 +29,58 @@ type CallOptions = {
   maxOutputTokens?: number;
   providerOptions?: Record<string, Record<string, unknown>>;
 };
-type Part = { type: string; textDelta?: string; finishReason?: string; utterance?: true; toolName?: string };
+type Part = {
+  type: string;
+  textDelta?: string;
+  finishReason?: string;
+  utterance?: true;
+  toolName?: string;
+  text?: string;
+};
+
+/** A provider stream that stalls `ms` before its first part — a model "thinking" with nothing on the wire. */
+const stalledStream = (ms: number, parts: unknown[]) => {
+  let started = false;
+  const queue = [...parts];
+  return new ReadableStream<any>({
+    async pull(controller) {
+      if (!started) {
+        started = true;
+        await new Promise((resolve) => setTimeout(resolve, ms));
+      }
+      const next = queue.shift();
+      if (next === undefined) {
+        controller.close();
+      } else {
+        controller.enqueue(next);
+      }
+    },
+  });
+};
+
+const toolCallParts = (id: string, toolName: string) => [
+  { type: 'stream-start' as const, warnings: [] },
+  { type: 'tool-input-start' as const, id, toolName },
+  { type: 'tool-input-delta' as const, id, delta: '{}' },
+  { type: 'tool-input-end' as const, id },
+  { type: 'tool-call' as const, toolCallId: id, toolName, input: '{}' },
+  { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool_use' }, usage },
+];
+
+/** The host's side-utterance door (the nudge): each wait is a fresh promise; `push` resolves the current one. */
+class Nudger {
+  private waiter: ((input: DrainedInput) => void) | undefined;
+  push(input: DrainedInput): void {
+    const waiter = this.waiter;
+    this.waiter = undefined;
+    waiter?.(input);
+  }
+  wait(): Promise<DrainedInput> {
+    return new Promise<DrainedInput>((resolve) => {
+      this.waiter = resolve;
+    });
+  }
+}
 
 const textStep = (text: string) =>
   convertArrayToReadableStream([
@@ -78,10 +129,10 @@ const messageText = (msg: { content: unknown }): string =>
       : '';
 
 class Inbox {
-  readonly notes: string[] = [];
+  readonly notes: Array<string | DrainedInput> = [];
   private wakers: Array<() => void> = [];
 
-  push(note: string): void {
+  push(note: string | DrainedInput): void {
     this.notes.push(note);
     const wakers = this.wakers;
     this.wakers = [];
@@ -408,6 +459,120 @@ describe('the bounded utterance — one line before every step that takes an inp
     ).toBeDefined();
     expect(internals.buildProviderOptions('google', { reasoningEffort: 'none' }).google.thinkingConfig).toBeUndefined();
     expect(internals.buildProviderOptions('openai', { reasoningEffort: 'none' }).openai.reasoningEffort).toBe('none');
+  });
+
+  test(
+    'SIDE UTTERANCE (part 5 — the nudge): the host asks mid-round while the model is silent; the line lands as ONE side-utterance part before the provider\'s first part, the round is not restarted, and the next step runs under its framing',
+    async () => {
+      const NUDGE: DrainedInput = {
+        text: 'HARNESS NUDGE: the user has heard nothing from you for a while.',
+        ask: 'In one short sentence, say what you are doing right now.',
+      };
+      const LINE = 'Still comparing the two.';
+      const inbox = new Inbox();
+      const nudger = new Nudger();
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            const last = messageText(options.prompt[options.prompt.length - 1] as never);
+            return { stream: textStep(last.includes(NUDGE.text) ? LINE : 'On it.') };
+          }
+          mainStep++;
+          if (mainStep === 1) {
+            // A silent think: nothing on the wire for 600 ms; the host nudges 100 ms in.
+            setTimeout(() => nudger.push(NUDGE), 100);
+            return { stream: stalledStream(600, toolCallParts('tc-1', 'doWork')) };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      const result = await conversation('utterance-side', true).generateStream({
+        messages: ['compare sql and nosql'],
+        model: model as never,
+        ...inbox.params(),
+        sideUtterance: () => nudger.wait(),
+      });
+      const { parts } = await collect(result.fullStream);
+
+      // take-in utterance · step 1 · the side utterance · step 2 — the round ran on (no restart).
+      expect(calls).toHaveLength(4);
+      expect(mainStep).toBe(2);
+      const side = calls[2];
+      expect(Utterance.isRequest(side.prompt)).toBe(true);
+      expect(side.tools ?? []).toHaveLength(0);
+      const sideText = messageText(side.prompt[side.prompt.length - 1] as never);
+      expect(sideText).toContain(NUDGE.text);
+      // The input's OWN ask, not the default acknowledgment instruction.
+      expect(sideText.trimEnd().endsWith(`${NUDGE.ask} ${Utterance.REPLY_WITH_THE_LINE_ONLY}`)).toBe(true);
+      expect(sideText).not.toContain(Utterance.INSTRUCTION);
+      // ONE part, mid-round: after the take-in line's step, before step 1's first provider part.
+      const types = parts.map((part) => part.type);
+      const takeIn = types.indexOf('step-finish');
+      const sidePart = types.indexOf('side-utterance');
+      const firstToolPart = types.indexOf('tool-call');
+      expect(sidePart).toBeGreaterThan(takeIn);
+      expect(sidePart).toBeLessThan(firstToolPart);
+      expect(parts[sidePart].text).toBe(LINE);
+      expect(parts.filter((part) => part.type === 'side-utterance')).toHaveLength(1);
+      // Step 2 runs under the framing: the nudge as a user message, the line as the agent's own,
+      // the continue instruction — after step 1's tool result, before anything else.
+      expectFraming(calls[3].prompt, LINE, NUDGE.text);
+      const usageData = await result.usage;
+      expect(usageData.totalTokenUsage.inputTokens).toBe(4);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'AN INPUT WITH ITS OWN ASK at a boundary is uttered with that ask (the marker holds) and framed by its text alone',
+    async () => {
+      const NOTE: DrainedInput = { text: 'Also check the costs.', ask: 'Say, in five words, what you will do.' };
+      const inbox = new Inbox();
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            return { stream: textStep(mainStep === 0 ? 'On it.' : 'Costs next.') };
+          }
+          mainStep++;
+          return { stream: mainStep === 1 ? toolCallStep('tc-1', 'doWork') : textStep('THE ANSWER WITH COSTS') };
+        },
+      });
+      toolHooks.onCall = () => inbox.push(NOTE);
+      const result = await conversation('utterance-own-ask', true).generateStream({
+        messages: ['compare sql and nosql'],
+        model: model as never,
+        ...inbox.params(),
+      });
+      await collect(result.fullStream);
+      toolHooks.onCall = undefined;
+      expect(calls).toHaveLength(4);
+      const request = messageText(calls[2].prompt[calls[2].prompt.length - 1] as never);
+      expect(request).toContain(NOTE.text);
+      expect(request.trimEnd().endsWith(`${NOTE.ask} ${Utterance.REPLY_WITH_THE_LINE_ONLY}`)).toBe(true);
+      expect(request).not.toContain(Utterance.INSTRUCTION);
+      expectFraming(calls[3].prompt, 'Costs next.', NOTE.text);
+      expect(messageText(calls[3].prompt[calls[3].prompt.length - 3] as never)).toBe(NOTE.text);
+    },
+    TIMEOUT
+  );
+
+  test('Utterance.askFor — the default instruction, or the last input\'s own ask normalized to the marker', () => {
+    expect(Utterance.askFor(['a note'])).toBe(Utterance.INSTRUCTION);
+    expect(Utterance.askFor([{ text: 'a note' }, { text: 'b' }])).toBe(Utterance.INSTRUCTION);
+    expect(Utterance.askFor([{ text: 'a', ask: 'Do X.' }])).toBe(`Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`);
+    expect(Utterance.askFor([{ text: 'a', ask: `Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}` }])).toBe(
+      `Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`
+    );
+    expect(Utterance.askFor([{ text: 'a', ask: 'Do X.' }, { text: 'b' }])).toBe(`Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`);
+    expect(Utterance.INSTRUCTION.endsWith(Utterance.REPLY_WITH_THE_LINE_ONLY)).toBe(true);
+    const custom = Utterance.request([{ role: 'user', content: 'hello' }] as never[], [{ text: 'n', ask: 'Do X.' }]);
+    expect(Utterance.isRequest(custom as never)).toBe(true);
   });
 
   test('Utterance.request / framing / isRequest — the shapes', () => {
