@@ -3531,10 +3531,11 @@ export class Conversation {
   /** Drain the caller's inbox into trimmed, non-empty texts (the drain is destructive — once). */
   private static drainTexts(drain: () => Array<string | DrainedInput>): DrainedInput[] {
     return (drain() ?? [])
-      .map((item): DrainedInput =>
-        typeof item === 'string' || item == null
-          ? { text: String(item ?? '').trim() }
-          : { ...item, text: String(item.text ?? '').trim() }
+      .map(
+        (item): DrainedInput =>
+          typeof item === 'string' || item == null
+            ? { text: String(item ?? '').trim() }
+            : { ...item, text: String(item.text ?? '').trim() }
       )
       .filter((item) => item.text.length > 0);
   }

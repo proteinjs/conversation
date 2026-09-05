@@ -462,7 +462,7 @@ describe('the bounded utterance — one line before every step that takes an inp
   });
 
   test(
-    'SIDE UTTERANCE (part 5 — the nudge): the host asks mid-round while the model is silent; the line lands as ONE side-utterance part before the provider\'s first part, the round is not restarted, and the next step runs under its framing',
+    "SIDE UTTERANCE (part 5 — the nudge): the host asks mid-round while the model is silent; the line lands as ONE side-utterance part before the provider's first part, the round is not restarted, and the next step runs under its framing",
     async () => {
       const NUDGE: DrainedInput = {
         text: 'HARNESS NUDGE: the user has heard nothing from you for a while.',
@@ -562,14 +562,16 @@ describe('the bounded utterance — one line before every step that takes an inp
     TIMEOUT
   );
 
-  test('Utterance.askFor — the default instruction, or the last input\'s own ask normalized to the marker', () => {
+  test("Utterance.askFor — the default instruction, or the last input's own ask normalized to the marker", () => {
     expect(Utterance.askFor(['a note'])).toBe(Utterance.INSTRUCTION);
     expect(Utterance.askFor([{ text: 'a note' }, { text: 'b' }])).toBe(Utterance.INSTRUCTION);
     expect(Utterance.askFor([{ text: 'a', ask: 'Do X.' }])).toBe(`Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`);
     expect(Utterance.askFor([{ text: 'a', ask: `Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}` }])).toBe(
       `Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`
     );
-    expect(Utterance.askFor([{ text: 'a', ask: 'Do X.' }, { text: 'b' }])).toBe(`Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`);
+    expect(Utterance.askFor([{ text: 'a', ask: 'Do X.' }, { text: 'b' }])).toBe(
+      `Do X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`
+    );
     expect(Utterance.INSTRUCTION.endsWith(Utterance.REPLY_WITH_THE_LINE_ONLY)).toBe(true);
     const custom = Utterance.request([{ role: 'user', content: 'hello' }] as never[], [{ text: 'n', ask: 'Do X.' }]);
     expect(Utterance.isRequest(custom as never)).toBe(true);
