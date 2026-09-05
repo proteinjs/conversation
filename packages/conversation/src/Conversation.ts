@@ -14,7 +14,7 @@ import type { ModelDataResolver } from './ModelData';
 import { resolveModel, inferProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
-import { Utterance } from './Utterance';
+import { Utterance, type DrainedInput } from './Utterance';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
 import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
@@ -159,7 +159,7 @@ export type GenerateStreamParams = {
    * tool to the next request, and pauses long server-side loops): that request must carry nothing
    * after the client tool results, so the notes wait for the next boundary or the exit absorption.
    */
-  drainInjectedContext?: () => string[];
+  drainInjectedContext?: () => Array<string | DrainedInput>;
   /**
    * Absorb exit notes: when the model's FINAL generation finishes and `drainInjectedContext`
    * still yields notes, extend the SAME call with continuation rounds (prior response messages +
@@ -207,6 +207,17 @@ export type GenerateStreamParams = {
    * Streaming consumers only (the first round starts inside the stream).
    */
   utterance?: boolean;
+  /**
+   * The SIDE utterance (plans/FREE_AGENT.md §M.3 part 5 — the nudge's door): a promise that resolves
+   * when the host wants ONE LINE said right now, mid-round, without touching the round — the harness
+   * asking the mind what it is doing after a long silence. The loop asks the mind for the line over
+   * the round's transcript with the input's own ask ({@link DrainedInput.ask}), yields it as ONE
+   * `side-utterance` part the moment it lands (no restart, no cut, no boundary needed), and frames it
+   * into the next step the way every utterance rides (the input as a user message, the line as the
+   * agent's own prior message, the continue instruction). Re-asked after each resolution; only
+   * raced while a round is being consumed. Streaming consumers under `utterance`.
+   */
+  sideUtterance?: () => Promise<DrainedInput>;
 
   // OpenAI-specific
   backgroundMode?: boolean;
@@ -308,6 +319,16 @@ export type StreamPart =
        * the response as the acknowledgment part, whatever the window says.
        */
       utterance?: true;
+    }
+  | {
+      /**
+       * A SIDE utterance (plans/FREE_AGENT.md §M.3 part 5): one line the mind said mid-round at the
+       * host's ask (`GenerateStreamParams.sideUtterance`) — the nudge's sentence, what it is doing
+       * right now. Not a step: the round runs on around it; the consumer places the words where its
+       * status lines live (the activity timeline), never in the response body.
+       */
+      type: 'side-utterance';
+      text: string;
     };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
@@ -541,6 +562,14 @@ export class Conversation {
     // streams them into this queue; the combined generator yields it at its next boundary (the
     // SDK starts the next step only after prepareStep returns, so the order holds by construction).
     const boundaryUtterance = new StreamPartQueue();
+    // The side utterance's queue + its pending framing (plans/FREE_AGENT.md §M.3 part 5): a line said
+    // mid-round at the host's ask is yielded from here the moment it lands (raced beside the provider's
+    // parts, boundary or not), and rides into the transcript at the next step — the ask as a user
+    // message, the line as the agent's own, the continue instruction — ahead of anything that
+    // boundary drains (the restart, cut and exit paths carry it the same way).
+    const sideQueue = new StreamPartQueue();
+    const pendingSideFramings: ModelMessage[] = [];
+    const takeSideFramings = (): ModelMessage[] => pendingSideFramings.splice(0, pendingSideFramings.length);
     // The raw messages of the CURRENT round's latest step (what prepareStep was handed) — the
     // transcript a mid-text cut continues from (the aborted round's own response never settles).
     let latestStepMessages: ModelMessage[] = messages;
@@ -592,6 +621,9 @@ export class Conversation {
         prepareStep: async ({ messages: stepMessages }) => {
           latestStepMessages = stepMessages;
           let next = stepMessages;
+          for (const message of takeSideFramings()) {
+            injectedContextSplices.push({ anchorIndex: stepMessages.length, message });
+          }
           if (params.drainInjectedContext) {
             // A boundary where the last assistant message is still OPEN on a server tool — the model
             // batched e.g. Anthropic web_search with a client tool, and the API stopped at the client
@@ -824,13 +856,35 @@ export class Conversation {
       // own, then the cut at the next paragraph break, at N + the grace regardless.
       const softBudgetMs = ToolBudget.softBudgetMs();
       const utterOptions = { model, provider, modelString, abortSignal: combinedAbortSignal };
-      const utter = (transcript: ModelMessage[], inputs: string[]) =>
+      const utter = (transcript: ModelMessage[], inputs: DrainedInput[]) =>
         self.utter({
           ...utterOptions,
           transcript: self.projectOutgoingStepMessages(transcript, projection),
           inputs,
           onResult: (r) => roundResults.push(r),
         });
+      // The side utterance (part 5): the host's ask, raced beside every provider part while a round is
+      // consumed; the line is asked for over the round's latest transcript and lands as ONE part.
+      let sideWake: Promise<DrainedInput> | undefined;
+      let sideInFlight = false;
+      const sideLine = async (ask: DrainedInput): Promise<void> => {
+        const transcript = self.projectOutgoingStepMessages(
+          Conversation.spliceInjectedContext(latestStepMessages, injectedContextSplices),
+          projection
+        );
+        const parts = self.utter({ ...utterOptions, transcript, inputs: [ask], onResult: (r) => roundResults.push(r) });
+        let next = await parts.next();
+        while (!next.done) {
+          next = await parts.next();
+        }
+        const line = next.value;
+        if (!line) {
+          return;
+        }
+        sideQueue.push({ type: 'side-utterance', text: line });
+        pendingSideFramings.push(...Utterance.framing([ask], line));
+        self.logger.info({ message: 'Side utterance said mid-round', obj: { chars: line.length } });
+      };
       // The first round: started here when the bounded utterance leads it (the take-in line
       // precedes the first step's thinking — the idle path of the bar), else already running.
       let current: ReturnType<typeof startCall>;
@@ -913,9 +967,14 @@ export class Conversation {
                 pendingNext = iterator.next();
                 pendingNext.catch(() => undefined);
               }
-              const racers: Promise<'part' | 'input' | 'cut' | 'queued' | 'restart'>[] = [
+              const racers: Promise<'part' | 'input' | 'cut' | 'queued' | 'restart' | 'side' | 'side-part'>[] = [
                 pendingNext.then(() => 'part' as const),
               ];
+              if (params.sideUtterance && params.utterance) {
+                sideWake ??= params.sideUtterance();
+                racers.push(sideWake.then(() => 'side' as const));
+                racers.push(sideQueue.wait().then(() => 'side-part' as const));
+              }
               if (
                 params.inputArrived &&
                 ((restartEligible() && !restartGrace) || (cutEligible() && noteSeenAt === undefined))
@@ -937,6 +996,30 @@ export class Conversation {
               }
               const won = await Promise.race(racers);
               if (won === 'queued') {
+                continue;
+              }
+              if (won === 'side-part') {
+                for (const queued of sideQueue.take()) {
+                  yield queued;
+                }
+                continue;
+              }
+              if (won === 'side') {
+                const ask = await sideWake!;
+                sideWake = undefined;
+                if (!sideInFlight && !combinedAbortSignal.aborted) {
+                  sideInFlight = true;
+                  void sideLine(ask)
+                    .catch((error) =>
+                      self.logger.warn({
+                        message: 'The side utterance failed',
+                        obj: { error: error instanceof Error ? error.message : String(error) },
+                      })
+                    )
+                    .finally(() => {
+                      sideInFlight = false;
+                    });
+                }
                 continue;
               }
               if (won === 'input') {
@@ -1047,7 +1130,7 @@ export class Conversation {
               injectedContextSplices.length = 0;
             }
             const line = params.utterance && drained.length > 0 ? yield* utter(nextMessages, drained) : undefined;
-            nextMessages = [...nextMessages, ...Conversation.inputMessages(drained, line)];
+            nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained, line)];
             self.logger.info({
               message: 'Restarting thinking-phase round with mid-turn notes',
               obj: { noteCount: drained.length, round: rounds + 1, uttered: !!line },
@@ -1075,7 +1158,7 @@ export class Conversation {
               nextMessages = [...nextMessages, { role: 'assistant', content: stepText.trimEnd() } as ModelMessage];
             }
             const line = params.utterance && drained.length > 0 ? yield* utter(nextMessages, drained) : undefined;
-            nextMessages = [...nextMessages, ...Conversation.inputMessages(drained, line)];
+            nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained, line)];
             self.logger.info({
               message: 'Cut the streaming round for mid-turn notes — the text so far committed, continuing',
               obj: { noteCount: drained.length, round: rounds + 1, textChars: stepText.length, uttered: !!line },
@@ -1191,7 +1274,7 @@ export class Conversation {
             injectedContextSplices.length = 0;
           }
           const line = params.utterance ? yield* utter(nextMessages, drained) : undefined;
-          nextMessages = [...nextMessages, ...Conversation.inputMessages(drained, line)];
+          nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained, line)];
           self.logger.info({
             message: 'Absorbing boundary notes into the same response',
             obj: { noteCount: drained.length, round: rounds + 1, uttered: !!line },
@@ -3446,8 +3529,14 @@ export class Conversation {
   }
 
   /** Drain the caller's inbox into trimmed, non-empty texts (the drain is destructive — once). */
-  private static drainTexts(drain: () => string[]): string[] {
-    return (drain() ?? []).map((content) => String(content ?? '').trim()).filter(Boolean);
+  private static drainTexts(drain: () => Array<string | DrainedInput>): DrainedInput[] {
+    return (drain() ?? [])
+      .map((item): DrainedInput =>
+        typeof item === 'string' || item == null
+          ? { text: String(item ?? '').trim() }
+          : { ...item, text: String(item.text ?? '').trim() }
+      )
+      .filter((item) => item.text.length > 0);
   }
 
   /**
@@ -3455,10 +3544,10 @@ export class Conversation {
    * utterance, the inputs + the line as the agent's own prior message + the continue framing
    * (`Utterance.framing`); without a line, the inputs as user messages.
    */
-  private static inputMessages(inputs: string[], line: string | undefined): ModelMessage[] {
+  private static inputMessages(inputs: DrainedInput[], line: string | undefined): ModelMessage[] {
     return line
       ? Utterance.framing(inputs, line)
-      : inputs.map((text) => ({ role: 'user', content: text }) as ModelMessage);
+      : inputs.map((input) => ({ role: 'user', content: input.text }) as ModelMessage);
   }
 
   /**
@@ -3471,7 +3560,7 @@ export class Conversation {
   private async *utter(args: {
     model: LanguageModel;
     transcript: ModelMessage[];
-    inputs: string[];
+    inputs: DrainedInput[];
     provider: string;
     modelString: string;
     abortSignal: AbortSignal;
@@ -3656,6 +3745,10 @@ export class Conversation {
                 finishReason: String(finishReason),
                 ...(part.utterance ? { utterance: true as const } : {}),
               };
+            } else if (part.type === 'side-utterance') {
+              // The side utterance (plans/FREE_AGENT.md §M.3 part 5): one line said mid-round at
+              // the host's ask — passes through as its own part, never a step.
+              yield { type: 'side-utterance' as const, text: String(part.text ?? '') };
             } else if (part.type === 'tool-call') {
               const toolName = part.toolName ?? 'unknown';
               // A custom function tool resolves to one of our `functions`; a
