@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.4.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.3.0...@proteinjs/conversation@6.4.0) (2026-09-05)
+
+
+### Features
+
+* **conversation:** the side utterance — one line said mid-round at the host's ask, and inputs with their own ask (plans/FREE_AGENT.md §M.3 part 5; §M.11) ([f25face](https://github.com/proteinjs/conversation/commit/f25face75998073d4223f430caf09ac80c814eed))
+
+
+
+
+
 # [6.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.2.1...@proteinjs/conversation@6.3.0) (2026-09-05)
 
 
