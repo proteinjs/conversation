@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.3.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.2.1...@proteinjs/conversation@6.3.0) (2026-09-05)
+
+
+### Features
+
+* **conversation): the step budget + the bounded utterance — a boundary within the bar on every step phase (plans/FREE_AGENT.md §M.3 part 2). (a) Thinking, clock-driven: GenerateStreamParams.inputArrived is the wake the round loop races every provider part against — a note that lands while the model is still thinking restarts the round at once (after a 50 ms grace for a part the SDK's transform already produced — never abort into a side effect) instead of at the next part. (b) Text, cut-and-continue: a note that lands while text streams gives the generation N (ToolBudget.softBudgetMs) to finish on its own; past N the round is cut at the next paragraph break (N + 2 s regardless), the text so far commits exactly as a finished round's (the joiner inside the step, then a step-finish) and the SAME response continues from the step's transcript + that text with the note spliced. (c) The bounded utterance (Utterance, GenerateStreamParams.utterance:** before every step that takes an input in — turn start, a step boundary (prepareStep streams it through an ordered queue the generator yields at the boundary), a restart, a cut, the exit absorption — one no-tools, no-thinking (reasoningEffort 'none'), 80-token call over the same transcript says the acknowledgment line, streamed as its own step (step-finish flagged `utterance`), and the step runs under the framing: the inputs, the line as the agent's own prior message, the continue instruction (never a prefill). The round's terminal step-finish is held until its disposition is decided so a continuation's joiner lands inside the finished step. Tests: roundBudget.test.ts (4) — red at the pre-fix loop (thinking restart 2.8 s vs ≤ 100 ms; mid-text 3.6 s vs the N + 2 s cut); utterance.test.ts (7) — red at the pre-fix loop (5 of 7). Bites: the wake never resolves, the cut deadline dropped, the paragraph-break cut dropped, the framing dropped, the boundary queue's parts dropped — each red, each restored. ([b3bce82](https://github.com/proteinjs/conversation/commit/b3bce8223eaf7773b5c68870cc64b1db276238e8))
+
+
+
+
+
 ## [6.2.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.2.0...@proteinjs/conversation@6.2.1) (2026-09-04)
 
 
