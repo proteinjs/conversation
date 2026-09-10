@@ -707,3 +707,187 @@ describe('the line is the FIRST PARAGRAPH, whole — never a word broken by the 
     expect(Utterance.atCeiling('Unbroken')).toBe('');
   });
 });
+
+/**
+ * FOUND ON THE WAY (plans/FREE_AGENT.md §M.16 found (2), the control run): the R7 finding-9 400
+ * ("`web_search` tool use … without a corresponding `web_search_tool_result` block") fired with NO
+ * note in play — on an 80-token, no-tools request right after `[TurnNudge] Nudging`. The nudge's
+ * SIDE utterance asked its line over a transcript still OPEN on a deferred server tool; Anthropic's
+ * contract there is "nothing but the client tool results", and the hold at `prepareStep` guarded
+ * the inbox only. One predicate, every door: the side utterance, the side framing, the cut.
+ */
+describe('the server-tool boundary guards every door — the side utterance, its framing, the cut (FREE_AGENT §M.16 found (2))', () => {
+  const NUDGE: DrainedInput = {
+    text: 'HARNESS NUDGE: the user has heard nothing from you for a while.',
+    ask: 'In one short sentence, say what you are doing right now.',
+  };
+  const LINE = 'Searching, then checking your spaces.';
+
+  /** A step that batches web_search (server, deferred — no result in the message) with doWork (client). */
+  const openOnSearchParts = (serverId: string, clientId: string) => [
+    { type: 'stream-start' as const, warnings: [] },
+    {
+      type: 'tool-call' as const,
+      toolCallId: serverId,
+      toolName: 'web_search',
+      input: '{"query":"frontier models"}',
+      providerExecuted: true,
+      dynamic: true,
+    },
+    { type: 'tool-call' as const, toolCallId: clientId, toolName: 'doWork', input: '{}' },
+    { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool_use' }, usage },
+  ];
+  /** The step after: the API ran the deferred search first (its result opens the message), then doWork again. */
+  const searchResultThenCallParts = (serverId: string, clientId: string) => [
+    { type: 'stream-start' as const, warnings: [] },
+    {
+      type: 'tool-result' as const,
+      toolCallId: serverId,
+      toolName: 'web_search',
+      result: [{ url: 'https://example.com', title: 'Example' }],
+    },
+    { type: 'tool-call' as const, toolCallId: clientId, toolName: 'doWork', input: '{}' },
+    { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool_use' }, usage },
+  ];
+
+  /**
+   * Anthropic's contract for a server tool the API deferred: the next request may carry ONLY the
+   * client tool results after the open assistant message — a user (or assistant) block there ends
+   * the assistant turn and the unresolved server call fails the request (the R7 finding-9 400).
+   */
+  const expectNoBlockBeyondToolResultsAfterOpenServerTool = (prompt: Prompt): void => {
+    type ToolPart = { type: string; toolCallId?: string; providerExecuted?: boolean };
+    const assistantParts = (message: { role: string; content: unknown }): ToolPart[] =>
+      message.role === 'assistant' && Array.isArray(message.content) ? (message.content as ToolPart[]) : [];
+    // A deferred call is settled by the result block the API puts in its NEXT assistant message.
+    const settled = new Set(
+      prompt
+        .flatMap(assistantParts)
+        .filter((part) => part.type === 'tool-result')
+        .map((part) => part.toolCallId)
+    );
+    prompt.forEach((message, i) => {
+      const parts = assistantParts(message);
+      const open = parts
+        .filter((part) => part.type === 'tool-call' && part.providerExecuted === true && !settled.has(part.toolCallId))
+        .map((part) => part.toolCallId);
+      if (open.length === 0) {
+        return;
+      }
+      const after = prompt.slice(i + 1).map((m) => m.role);
+      expect({ open, after }).toEqual({ open, after: after.filter((role) => role === 'tool') });
+    });
+  };
+
+  const sideCalls = (calls: CallOptions[]) =>
+    calls.filter(
+      (call) =>
+        Utterance.isRequest(call.prompt) &&
+        messageText(call.prompt[call.prompt.length - 1] as never).includes(NUDGE.text)
+    );
+
+  test(
+    'SIDE UTTERANCE HELD: a nudge that lands while the transcript is open on a server tool is not asked there (that request 400s) — it is asked at the next closed boundary, its part on the stream, its framing in the step after',
+    async () => {
+      const nudger = new Nudger();
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            const last = messageText(options.prompt[options.prompt.length - 1] as never);
+            return { stream: textStep(last.includes(NUDGE.text) ? LINE : 'On it.') };
+          }
+          mainStep++;
+          if (mainStep === 1) {
+            return { stream: convertArrayToReadableStream(openOnSearchParts('srv-1', 'tc-1')) };
+          }
+          if (mainStep === 2) {
+            // The step that runs the deferred search: silent for 600 ms; the host nudges 100 ms in,
+            // while the request this step runs on is still open on the search.
+            setTimeout(() => nudger.push(NUDGE), 100);
+            return { stream: stalledStream(600, searchResultThenCallParts('srv-1', 'tc-2')) };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      const result = await conversation('utterance-side-held', true).generateStream({
+        messages: ['research the frontier models'],
+        model: model as never,
+        ...new Inbox().params(),
+        sideUtterance: () => nudger.wait(),
+      });
+      const { parts } = await collect(result.fullStream);
+
+      for (const call of calls) {
+        expectNoBlockBeyondToolResultsAfterOpenServerTool(call.prompt);
+      }
+      // take-in · step 1 · step 2 · the side utterance (at the closed boundary) · step 3
+      expect(mainStep).toBe(3);
+      const side = sideCalls(calls);
+      expect(side).toHaveLength(1);
+      expect(calls.indexOf(side[0])).toBe(calls.length - 2);
+      // Said over the transcript that carries the search's result — the boundary before step 3.
+      const sidePrompt = side[0].prompt;
+      const lastAssistant = [...sidePrompt].reverse().find((m) => m.role === 'assistant');
+      expect(JSON.stringify(lastAssistant?.content)).toContain('srv-1');
+      expect(JSON.stringify(lastAssistant?.content)).toContain('tool-result');
+      const sideParts = parts.filter((part) => part.type === 'side-utterance');
+      expect(sideParts).toHaveLength(1);
+      expect(sideParts[0].text).toBe(LINE);
+      expectFraming(calls[calls.length - 1].prompt, LINE, NUDGE.text);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'SIDE FRAMING HELD: a line said over a closed transcript whose step then batches a server tool with a client tool is not spliced at that open boundary (the main request would 400) — it rides the boundary after the search settles',
+    async () => {
+      const nudger = new Nudger();
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            const last = messageText(options.prompt[options.prompt.length - 1] as never);
+            return { stream: textStep(last.includes(NUDGE.text) ? LINE : 'On it.') };
+          }
+          mainStep++;
+          if (mainStep === 1) {
+            // A silent think (closed transcript), the nudge 100 ms in — the line is said; then the
+            // step batches the search with a client tool, so the boundary after it is OPEN.
+            setTimeout(() => nudger.push(NUDGE), 100);
+            return { stream: stalledStream(400, openOnSearchParts('srv-1', 'tc-1')) };
+          }
+          if (mainStep === 2) {
+            return { stream: convertArrayToReadableStream(searchResultThenCallParts('srv-1', 'tc-2')) };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      const result = await conversation('utterance-side-framing-held', true).generateStream({
+        messages: ['research the frontier models'],
+        model: model as never,
+        ...new Inbox().params(),
+        sideUtterance: () => nudger.wait(),
+      });
+      await collect(result.fullStream);
+
+      for (const call of calls) {
+        expectNoBlockBeyondToolResultsAfterOpenServerTool(call.prompt);
+      }
+      expect(mainStep).toBe(3);
+      expect(sideCalls(calls)).toHaveLength(1);
+      const mainPrompts = calls.filter((call) => !Utterance.isRequest(call.prompt)).map((call) => call.prompt);
+      // Step 2's request: the client tool result only — the framing waits.
+      const step2 = mainPrompts[1];
+      expect(step2[step2.length - 1].role).toBe('tool');
+      expect(step2.some((m) => messageText(m as never).includes(NUDGE.text))).toBe(false);
+      // Step 3's request: the framing, after the settled search and step 2's tool result.
+      expectFraming(mainPrompts[2], LINE, NUDGE.text);
+    },
+    TIMEOUT
+  );
+});

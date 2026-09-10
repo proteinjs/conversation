@@ -568,3 +568,153 @@ describe('the interjection shape — after-generation takes the note when the ge
     TIMEOUT
   );
 });
+
+/**
+ * FOUND ON THE WAY (plans/FREE_AGENT.md §M.16 found (2)): the step that runs a DEFERRED server tool
+ * (the API stopped at a client tool batched with it; the search runs at the start of this request)
+ * runs on a transcript still OPEN on that tool. A cut in that step would continue from that
+ * transcript plus the text so far plus the note — an assistant text block and a user block behind
+ * the unresolved server call, which Anthropic refuses (the R7 finding-9 400) — and would drop the
+ * search's result, which only this step's response carries. No cut there: the note waits for the
+ * generation's end and rides the exit absorption, whose transcript carries the result.
+ */
+describe('no cut while the step is open on a server tool (FREE_AGENT §M.16 found (2))', () => {
+  const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
+  afterEach(() => {
+    if (savedSoft === undefined) {
+      delete process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
+    } else {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = savedSoft;
+    }
+  });
+
+  /** After an assistant message open on a server tool, a request may carry only tool results. */
+  const expectNoBlockBeyondToolResultsAfterOpenServerTool = (prompt: Prompt): void => {
+    type ToolPart = { type: string; toolCallId?: string; providerExecuted?: boolean };
+    const assistantParts = (message: { role: string; content: unknown }): ToolPart[] =>
+      message.role === 'assistant' && Array.isArray(message.content) ? (message.content as ToolPart[]) : [];
+    // A deferred call is settled by the result block the API puts in its NEXT assistant message.
+    const settled = new Set(
+      prompt
+        .flatMap(assistantParts)
+        .filter((part) => part.type === 'tool-result')
+        .map((part) => part.toolCallId)
+    );
+    prompt.forEach((message, i) => {
+      const parts = assistantParts(message);
+      const open = parts
+        .filter((part) => part.type === 'tool-call' && part.providerExecuted === true && !settled.has(part.toolCallId))
+        .map((part) => part.toolCallId);
+      if (open.length === 0) {
+        return;
+      }
+      const after = prompt.slice(i + 1).map((m) => m.role);
+      expect({ open, after }).toEqual({ open, after: after.filter((role) => role === 'tool') });
+    });
+  };
+
+  test(
+    'a note mid-text in the step that runs the deferred search does not cut the round — every paragraph streams, the continuation follows the generation with the note last, and no request carries a block behind the open search',
+    async () => {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
+      const NOTE = 'Also cover robotics.';
+      const inbox = new Inbox();
+      const prompts: Prompt[] = [];
+      let call = 0;
+      const paragraphs = Array.from({ length: 8 }, (_, i) => `Paragraph ${i}.\n\n`);
+      const withTool = new Conversation({
+        modelData: fixtureModelData,
+        name: 'round-budget-open-server-tool',
+        logLevel: 'error',
+        limits: { enforceLimits: false },
+        skills: [
+          {
+            getId: () => 'do-work',
+            getName: () => 'DoWork',
+            getSystemMessages: () => [],
+            getMessageModerators: () => [],
+            getFunctions: () => [
+              {
+                definition: { name: 'doWork', description: 'work', parameters: { type: 'object', properties: {} } },
+                call: async () => ({ ok: true }),
+              },
+            ],
+          } as never,
+        ],
+      });
+      const model = new MockLanguageModelV3({
+        doStream: async (options: { prompt: Prompt; abortSignal?: AbortSignal }) => {
+          prompts.push(options.prompt);
+          call++;
+          if (call === 1) {
+            // web_search (server, deferred) batched with doWork (client): the message stays open.
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                {
+                  type: 'tool-call' as const,
+                  toolCallId: 'srv-1',
+                  toolName: 'web_search',
+                  input: '{"query":"frontier models"}',
+                  providerExecuted: true,
+                  dynamic: true,
+                },
+                { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'doWork', input: '{}' },
+                { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool_use' }, usage },
+              ]),
+            };
+          }
+          if (call === 2) {
+            // The step that runs the deferred search: its result first, then a paragraph every
+            // 400 ms for 3.2 s; the note lands 500 ms into the text.
+            setTimeout(() => inbox.push(NOTE), 550);
+            return {
+              stream: scheduledStream(options.abortSignal, [
+                {
+                  afterMs: 0,
+                  parts: [
+                    {
+                      type: 'tool-result',
+                      toolCallId: 'srv-1',
+                      toolName: 'web_search',
+                      result: [{ url: 'https://example.com', title: 'Example' }],
+                    },
+                    { type: 'text-start', id: 't1' },
+                  ],
+                },
+                ...paragraphs.map((paragraph) => ({
+                  afterMs: 400,
+                  parts: [{ type: 'text-delta', id: 't1', delta: paragraph }],
+                })),
+                {
+                  afterMs: 0,
+                  parts: [
+                    { type: 'text-end', id: 't1' },
+                    { type: 'finish', finishReason: { unified: 'stop', raw: 'end_turn' }, usage },
+                  ],
+                },
+              ]),
+            };
+          }
+          return { stream: textStep('ROBOTICS') };
+        },
+      });
+      const result = await withTool.generateStream({
+        messages: ['research the frontier models'],
+        model: model as never,
+        ...inbox.params(),
+      });
+      const { text } = await collect(result.fullStream);
+
+      for (const prompt of prompts) {
+        expectNoBlockBeyondToolResultsAfterOpenServerTool(prompt);
+      }
+      // Every paragraph streamed — the round was never cut — and the note rode the exit absorption.
+      expect(text).toBe(`${paragraphs.join('')}ROBOTICS`);
+      expect(prompts).toHaveLength(3);
+      const continuation = prompts[2];
+      expect(messageText(continuation[continuation.length - 1] as never)).toContain(NOTE);
+    },
+    TIMEOUT
+  );
+});

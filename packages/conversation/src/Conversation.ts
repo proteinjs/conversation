@@ -586,9 +586,18 @@ export class Conversation {
     const sideQueue = new StreamPartQueue();
     const pendingSideFramings: ModelMessage[] = [];
     const takeSideFramings = (): ModelMessage[] => pendingSideFramings.splice(0, pendingSideFramings.length);
+    // Side asks that arrived while the transcript was OPEN on a server tool (R7 finding 9, at
+    // prepareStep below): no request may carry a user block there — not the main step's, not a
+    // side utterance's — so the ask waits for the next closed transcript (the boundary after the
+    // server tool's result lands, or the exit continuation) and is said over that one.
+    const heldSideAsks: DrainedInput[] = [];
     // The raw messages of the CURRENT round's latest step (what prepareStep was handed) — the
     // transcript a mid-text cut continues from (the aborted round's own response never settles).
     let latestStepMessages: ModelMessage[] = messages;
+    // Whether that step's transcript is open on a server tool (set at prepareStep): the step that
+    // runs a deferred search cannot be cut — its continuation would carry blocks behind the open
+    // call, and only this step's response carries the search's result.
+    let stepOpenOnServerTool = false;
     const projection = { provider, tools: allTools, modelString };
 
     // Cumulative per-step usage for live in-flight reporting. Each step (tool-call
@@ -637,28 +646,45 @@ export class Conversation {
         prepareStep: async ({ messages: stepMessages }) => {
           latestStepMessages = stepMessages;
           let next = stepMessages;
-          for (const message of takeSideFramings()) {
-            injectedContextSplices.push({ anchorIndex: stepMessages.length, message });
-          }
-          if (params.drainInjectedContext) {
-            // A boundary where the last assistant message is still OPEN on a server tool — the model
-            // batched e.g. Anthropic web_search with a client tool, and the API stopped at the client
-            // tool WITHOUT running the search — is not a boundary a note can ride. The API runs the
-            // deferred server tool at the start of this request only if the follow-up carries nothing
-            // but the client tool results; a user block after them ends the assistant turn, and the
-            // unresolved server call fails the whole request ("`web_search` tool use with id … was
-            // found without a corresponding `web_search_tool_result` block" — R7 finding 9, the
-            // follow-up that killed the research turn). The drain is not consumed here: the notes
-            // wait in the caller's inbox for the next boundary (after the server tool's result has
-            // landed) or for the exit absorption.
-            const openServerTools = Conversation.openServerToolCallIds(stepMessages);
-            if (openServerTools.length > 0) {
-              this.logger.info({
-                message:
-                  'Mid-turn inputs wait: the assistant turn is still open on a server tool at this step boundary',
-                obj: { openServerTools, inputsWaiting: params.peekInjectedContext?.() },
-              });
-            } else {
+          // A boundary where the last assistant message is still OPEN on a server tool — the model
+          // batched e.g. Anthropic web_search with a client tool, and the API stopped at the client
+          // tool WITHOUT running the search — is not a boundary anything can ride. The API runs the
+          // deferred server tool at the start of this request only if the follow-up carries nothing
+          // but the client tool results; a user block after them ends the assistant turn, and the
+          // unresolved server call fails the whole request ("`web_search` tool use with id … was
+          // found without a corresponding `web_search_tool_result` block" — R7 finding 9, the
+          // follow-up that killed the research turn; plans/FREE_AGENT.md §M.16 found (2), the nudge's
+          // line asked over the same open transcript). Nothing is consumed here: the notes wait in
+          // the caller's inbox, a side line's framing and a held side ask wait in theirs — all for
+          // the next boundary (after the server tool's result has landed) or the exit absorption.
+          const openServerTools = Conversation.openServerToolCallIds(stepMessages);
+          stepOpenOnServerTool = openServerTools.length > 0;
+          if (stepOpenOnServerTool) {
+            this.logger.info({
+              message: 'Mid-turn inputs wait: the assistant turn is still open on a server tool at this step boundary',
+              obj: {
+                openServerTools,
+                inputsWaiting: params.peekInjectedContext?.(),
+                sideFramingsWaiting: pendingSideFramings.length,
+                sideAsksHeld: heldSideAsks.length,
+              },
+            });
+          } else {
+            // A side ask held at an open boundary is said now, over this closed transcript, ahead
+            // of anything this boundary drains; its framing then rides with the others.
+            for (const ask of heldSideAsks.splice(0, heldSideAsks.length)) {
+              await sayAside(
+                ask,
+                this.projectOutgoingStepMessages(
+                  Conversation.spliceInjectedContext(stepMessages, injectedContextSplices),
+                  projection
+                )
+              );
+            }
+            for (const message of takeSideFramings()) {
+              injectedContextSplices.push({ anchorIndex: stepMessages.length, message });
+            }
+            if (params.drainInjectedContext) {
               const drained = Conversation.drainTexts(params.drainInjectedContext);
               if (drained.length > 0) {
                 // The bounded utterance at the boundary (part 2c): the line is asked for over the
@@ -683,9 +709,9 @@ export class Conversation {
                 }
               }
             }
-            if (injectedContextSplices.length > 0) {
-              next = Conversation.spliceInjectedContext(next, injectedContextSplices);
-            }
+          }
+          if (injectedContextSplices.length > 0) {
+            next = Conversation.spliceInjectedContext(next, injectedContextSplices);
           }
           if (pendingImageInjections) {
             next = this.injectPendingImageUserMessages(next, pendingImageInjections).messages;
@@ -728,6 +754,32 @@ export class Conversation {
     // ONE logical response (see finalizeAcrossRounds); the bounded utterance's calls ride here too.
     const roundResults: Array<ReturnType<typeof startCall>> = [];
     let liveResult: ReturnType<typeof startCall> | undefined;
+    // The side utterance said over a transcript (plans/FREE_AGENT.md §M.3 part 5): one no-tools call
+    // with the input's own ask; the line lands as ONE `side-utterance` part and its framing rides
+    // the next step (`pendingSideFramings`). The transcript must be CLOSED (no server tool open —
+    // `openServerToolCallIds`); the callers own that check.
+    const sayAside = async (ask: DrainedInput, transcript: ModelMessage[]): Promise<void> => {
+      const parts = this.utter({
+        model,
+        provider,
+        modelString,
+        abortSignal: combinedAbortSignal,
+        transcript,
+        inputs: [ask],
+        onResult: (r) => roundResults.push(r),
+      });
+      let next = await parts.next();
+      while (!next.done) {
+        next = await parts.next();
+      }
+      const line = next.value;
+      if (!line) {
+        return;
+      }
+      sideQueue.push({ type: 'side-utterance', text: line });
+      pendingSideFramings.push(...Utterance.framing([ask], line));
+      this.logger.info({ message: 'Side utterance said mid-round', obj: { chars: line.length } });
+    };
     const startRound = (roundMessages: ModelMessage[]): ReturnType<typeof startCall> => {
       roundController = new AbortController();
       const round = startCall(roundMessages, roundController.signal);
@@ -888,18 +940,20 @@ export class Conversation {
           Conversation.spliceInjectedContext(latestStepMessages, injectedContextSplices),
           projection
         );
-        const parts = self.utter({ ...utterOptions, transcript, inputs: [ask], onResult: (r) => roundResults.push(r) });
-        let next = await parts.next();
-        while (!next.done) {
-          next = await parts.next();
-        }
-        const line = next.value;
-        if (!line) {
+        // The round's transcript is open on a server tool (the step running a deferred search):
+        // a user block behind the open call fails the request, the side utterance's included — the
+        // ask is held for the next closed transcript (prepareStep, or the exit continuation).
+        const openServerTools = Conversation.openServerToolCallIds(transcript);
+        if (openServerTools.length > 0) {
+          heldSideAsks.push(ask);
+          self.logger.info({
+            message:
+              'Side utterance held: the assistant turn is open on a server tool — asked at the next closed transcript',
+            obj: { openServerTools, held: heldSideAsks.length },
+          });
           return;
         }
-        sideQueue.push({ type: 'side-utterance', text: line });
-        pendingSideFramings.push(...Utterance.framing([ask], line));
-        self.logger.info({ message: 'Side utterance said mid-round', obj: { chars: line.length } });
+        await sayAside(ask, transcript);
       };
       // The first round: started here when the bounded utterance leads it (the take-in line
       // precedes the first step's thinking — the idle path of the bar), else already running.
@@ -958,6 +1012,7 @@ export class Conversation {
             !combinedAbortSignal.aborted;
           const cutEligible = () =>
             streamingText &&
+            !stepOpenOnServerTool &&
             params.interjection !== 'after-generation' &&
             !!params.absorbExitNotes &&
             !!params.peekInjectedContext &&
@@ -1290,6 +1345,11 @@ export class Conversation {
             nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
             injectedContextSplices.length = 0;
           }
+          // A side ask held at an open boundary: this transcript is closed (checked above) — said
+          // here, ahead of the inputs, its framing riding with theirs.
+          for (const ask of heldSideAsks.splice(0, heldSideAsks.length)) {
+            await sayAside(ask, self.projectOutgoingStepMessages(nextMessages, projection));
+          }
           const line = params.utterance ? yield* utter(nextMessages, drained) : undefined;
           nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained, line)];
           self.logger.info({
@@ -1301,6 +1361,14 @@ export class Conversation {
           rounds++;
         }
       } finally {
+        if (heldSideAsks.length > 0) {
+          // The turn ended before a closed transcript came: a nudge's ask with nothing to say it over.
+          self.logger.info({
+            message: 'Side asks held to the end of the turn were dropped (no closed transcript to ask over)',
+            obj: { dropped: heldSideAsks.length },
+          });
+          heldSideAsks.length = 0;
+        }
         finalizeOnce();
       }
     })();
