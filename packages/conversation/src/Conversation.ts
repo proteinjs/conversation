@@ -89,6 +89,9 @@ export type GenerateObjectOutcome<T> = GenerateObjectResult<T>;
 
 export type ReasoningEffort = 'auto' | 'none' | 'low' | 'medium' | 'high' | 'max' | 'xhigh';
 
+/** How the round loop takes a note that lands mid-text — see {@link GenerateStreamParams.interjection}. */
+export type InterjectionShape = 'cut-and-continue' | 'after-generation';
+
 export type GenerateStreamParams = {
   messages: ConversationMessage[];
   model?: LanguageModel | string;
@@ -195,6 +198,19 @@ export type GenerateStreamParams = {
    * meaningful alongside `drainInjectedContext` + `peekInjectedContext`.
    */
   inputArrived?: () => Promise<void>;
+  /**
+   * The mid-text INTERJECTION shape (plans/FREE_AGENT.md §M.16) — what the loop does with a note
+   * that lands while TEXT streams:
+   *  - `'cut-and-continue'` (the loop's own shape since 6.3.0, part 2b): the generation gets N to
+   *    finish on its own; past N the round is cut at the next paragraph break (N + 2 s regardless),
+   *    the text so far commits, and the SAME response continues with the note spliced;
+   *  - `'after-generation'` (the shape before part 2b): the generation always runs to its end, then
+   *    the exit absorption (`absorbExitNotes`) continues the same response with the note — the
+   *    acknowledgment (`utterance`) rides at that boundary exactly as it rides at a cut.
+   * Absent = `'cut-and-continue'`. The thinking-phase restart (`peekInjectedContext`, part 2a) is
+   * not this knob's — nothing visible is lost by re-planning a round that has shown nothing.
+   */
+  interjection?: InterjectionShape;
   /**
    * The bounded UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c; see {@link Utterance}): before the
    * mind takes an input into a step — at turn start, and at every drain that hands inputs to
@@ -942,6 +958,7 @@ export class Conversation {
             !combinedAbortSignal.aborted;
           const cutEligible = () =>
             streamingText &&
+            params.interjection !== 'after-generation' &&
             !!params.absorbExitNotes &&
             !!params.peekInjectedContext &&
             !!params.drainInjectedContext &&

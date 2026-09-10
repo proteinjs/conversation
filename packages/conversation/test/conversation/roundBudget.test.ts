@@ -1,5 +1,6 @@
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation, type GenerateStreamParams } from '../../src/Conversation';
+import { Utterance } from '../../src/Utterance';
 import { fixtureModelData } from './fixtureModelData';
 
 /**
@@ -383,6 +384,186 @@ describe('the step budget — a boundary within the bar on every step phase (FRE
       // One step-finish per finished round; nothing was aborted.
       expect(parts.filter((part) => part.type === 'step-finish')).toHaveLength(2);
       await sleep(10);
+    },
+    TIMEOUT
+  );
+});
+
+/**
+ * THE INTERJECTION SHAPE (plans/FREE_AGENT.md §M.16): `GenerateStreamParams.interjection` names what
+ * the loop does with a note that lands mid-text — `'cut-and-continue'` (part 2b, the loop's own shape,
+ * absent = this) or `'after-generation'` (the shape before part 2b: the generation runs to its end, the
+ * exit absorption continues the same response with the note; the acknowledgment rides there). The
+ * host's one owner (thought-server `FreeAgent.interjection()`) reads it from the environment so the cut
+ * can be retired on prod without a deploy. RED at 6.4.0: the option did not exist — the loop cut.
+ */
+describe('the interjection shape — after-generation takes the note when the generation ends (FREE_AGENT §M.16)', () => {
+  const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
+  afterEach(() => {
+    if (savedSoft === undefined) {
+      delete process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
+    } else {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = savedSoft;
+    }
+  });
+
+  /** The (b) shape: a 4 s no-break generation, the note 500 ms in, N = 300 ms. */
+  const longGeneration = (inbox: Inbox, note: string, onPush: () => void) => {
+    const prompts: Array<{ at: number; prompt: Prompt }> = [];
+    const words = Array.from({ length: 80 }, (_, i) => ` word${i}`);
+    let call = 0;
+    const model = new MockLanguageModelV3({
+      doStream: async (options: { prompt: Prompt; abortSignal?: AbortSignal }) => {
+        if (Utterance.isRequest(options.prompt)) {
+          prompts.push({ at: Date.now(), prompt: options.prompt });
+          return { stream: textStep('Taking that in.') };
+        }
+        prompts.push({ at: Date.now(), prompt: options.prompt });
+        call++;
+        if (call === 1) {
+          setTimeout(() => {
+            onPush();
+            inbox.push(note);
+          }, 500);
+          return {
+            stream: scheduledStream(options.abortSignal, [
+              {
+                afterMs: 0,
+                parts: [
+                  { type: 'text-start', id: 't1' },
+                  { type: 'text-delta', id: 't1', delta: 'A long answer:' },
+                ],
+              },
+              ...words.map((word) => ({ afterMs: 50, parts: [{ type: 'text-delta', id: 't1', delta: word }] })),
+              {
+                afterMs: 0,
+                parts: [
+                  { type: 'text-end', id: 't1' },
+                  { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage },
+                ],
+              },
+            ]),
+          };
+        }
+        return { stream: textStep('FOLDED IN') };
+      },
+    });
+    return { model, prompts, fullText: `A long answer:${words.join('')}` };
+  };
+
+  test(
+    "'after-generation': the same 4 s generation with the note at 500 ms is NOT cut — every word streams, then the exit absorption continues the same response with the note spliced",
+    async () => {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
+      const NOTE = 'Also mention costs.';
+      const inbox = new Inbox();
+      let pushedAt = 0;
+      const { model, prompts, fullText } = longGeneration(inbox, NOTE, () => {
+        pushedAt = Date.now();
+      });
+      const result = await conversation('interjection-after-generation').generateStream({
+        messages: ['write a long answer'],
+        model: model as never,
+        ...inbox.params(),
+        interjection: 'after-generation',
+      });
+      const { text, parts } = await collect(result.fullStream);
+
+      expect(prompts).toHaveLength(2);
+      // The continuation's call went out when the generation ENDED (~3.5 s after the note) — not at
+      // N + 2 s (2.3 s), where the cut would have fired.
+      const continuationLatencyMs = prompts[1].at - pushedAt;
+      expect(continuationLatencyMs).toBeGreaterThanOrEqual(3_000);
+      // Nothing was lost or aborted: the whole generation, the joiner, the continuation; one
+      // step-finish per finished round.
+      expect(text).toBe(`${fullText}\n\nFOLDED IN`);
+      expect(parts.filter((part) => part.type === 'step-finish')).toHaveLength(2);
+      // The continuation ran on the transcript plus the FULL text, with the note spliced last.
+      const round2 = prompts[1].prompt;
+      const assistant = round2.filter((m) => m.role === 'assistant');
+      expect(assistant).toHaveLength(1);
+      expect(messageText(assistant[0] as never)).toBe(fullText);
+      expect(messageText(round2[round2.length - 1] as never)).toContain(NOTE);
+    },
+    TIMEOUT
+  );
+
+  test(
+    "'after-generation' under the bounded utterance: the acknowledgment still rides — asked once the generation ended, streamed as its own step between the finished text and the continuation",
+    async () => {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
+      const NOTE = 'Also mention costs.';
+      const inbox = new Inbox();
+      let pushedAt = 0;
+      const { model, prompts, fullText } = longGeneration(inbox, NOTE, () => {
+        pushedAt = Date.now();
+      });
+      const result = await conversation('interjection-after-generation-utterance').generateStream({
+        messages: ['write a long answer'],
+        model: model as never,
+        ...inbox.params(),
+        utterance: true,
+        interjection: 'after-generation',
+      });
+      const { text, parts } = await collect(result.fullStream);
+
+      // The calls: the take-in line (the idle path), the generation, the note's line, the continuation.
+      expect(prompts.map((p) => (Utterance.isRequest(p.prompt as never) ? 'utterance' : 'step'))).toEqual([
+        'utterance',
+        'step',
+        'utterance',
+        'step',
+      ]);
+      expect(prompts[2].at - pushedAt).toBeGreaterThanOrEqual(3_000);
+      // On the stream: the take-in line (its own step; the consumer adds the ack's joiner), the whole
+      // generation with the joiner INSIDE its finished step, the note's line as its own flagged step, the
+      // continuation.
+      expect(text).toBe(`Taking that in.${fullText}\n\nTaking that in.FOLDED IN`);
+      const finishes = parts.map((part, index) => ({ part, index })).filter(({ part }) => part.type === 'step-finish');
+      expect(finishes.map(({ part }) => !!part.utterance)).toEqual([true, false, true, false]);
+      const generationEnd = finishes[1].index;
+      const ackEnd = finishes[2].index;
+      const between = parts
+        .slice(generationEnd + 1, ackEnd)
+        .filter((part) => part.type === 'text-delta')
+        .map((part) => part.textDelta)
+        .join('');
+      expect(between).toBe('Taking that in.');
+      // The continuation's prompt: … the full text → the note → the line as the agent's own → the continue framing.
+      const round = prompts[3].prompt;
+      const texts = round.map((m) => `${m.role}: ${messageText(m as never)}`);
+      const noteAt = texts.findIndex((t) => t.startsWith('user:') && t.includes(NOTE));
+      expect(noteAt).toBeGreaterThan(0);
+      expect(texts[noteAt - 1]).toBe(`assistant: ${fullText}`);
+      expect(texts[noteAt + 1]).toBe('assistant: Taking that in.');
+      expect(texts[noteAt + 2].startsWith('user:')).toBe(true);
+    },
+    TIMEOUT
+  );
+
+  test(
+    "'cut-and-continue', named: the cut fires exactly as when the option is absent",
+    async () => {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
+      const NOTE = 'Also mention costs.';
+      const inbox = new Inbox();
+      let pushedAt = 0;
+      const { model, prompts, fullText } = longGeneration(inbox, NOTE, () => {
+        pushedAt = Date.now();
+      });
+      const result = await conversation('interjection-cut-named').generateStream({
+        messages: ['write a long answer'],
+        model: model as never,
+        ...inbox.params(),
+        interjection: 'cut-and-continue',
+      });
+      const { text } = await collect(result.fullStream);
+      expect(prompts).toHaveLength(2);
+      const cutLatencyMs = prompts[1].at - pushedAt;
+      expect(cutLatencyMs).toBeGreaterThanOrEqual(300);
+      expect(cutLatencyMs).toBeLessThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS + 250);
+      expect(text.endsWith('FOLDED IN')).toBe(true);
+      expect(text.length).toBeLessThan(fullText.length);
     },
     TIMEOUT
   );
