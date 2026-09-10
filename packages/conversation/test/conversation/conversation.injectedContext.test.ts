@@ -456,3 +456,96 @@ describe('Conversation.generateStream — a server tool whose result already lan
     TIMEOUT
   );
 });
+
+/**
+ * FOUND ON THE WAY (plans/FREE_AGENT.md §M.16 found (3), the control run): after the model's final
+ * text the turn died with Anthropic's 400 "This model does not support assistant message prefill.
+ * The conversation must end with a user message." — a SEVENTH request, with the turn's 44 tools
+ * and adaptive thinking, over a transcript ending on the assistant's own text. Not a label call:
+ * the AI SDK's step loop (ai 6.0.14) continues while `pendingDeferredToolCalls` is non-empty, it
+ * enters a deferred server tool there when the API stops at a client tool batched with it, and it
+ * clears the entry only on a `tool-result` — a search that settles with an ERROR streams as
+ * `tool-error` and never leaves the set. The transcript, not the bookkeeping, ends the loop.
+ */
+describe("Conversation.generateStream — the loop ends with the model's turn, whatever the SDK's deferred-tool bookkeeping says", () => {
+  test(
+    "a deferred web_search that settles with an ERROR never drives a step past the final text (the pre-fix loop sent one more request, ending on the assistant's own text)",
+    async () => {
+      const capturedPrompts: Array<Array<{ role: string; content: unknown }>> = [];
+      let call = 0;
+      const model = new MockLanguageModelV3({
+        // An Anthropic id: the loop attaches the provider's web_search tool, whose
+        // `supportsDeferredResults` is what puts the call into the SDK's pending set.
+        modelId: 'claude-opus-4-6',
+        doStream: async (options: { prompt: Array<{ role: string; content: unknown }> }) => {
+          capturedPrompts.push(options.prompt);
+          call++;
+          if (call === 1) {
+            // web_search (server, deferred) batched with doWork (client).
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                {
+                  type: 'tool-call' as const,
+                  toolCallId: 'srv-1',
+                  toolName: 'web_search',
+                  input: '{"query":"frontier models"}',
+                  providerExecuted: true,
+                  dynamic: true,
+                },
+                { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'doWork', input: '{}' },
+                { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool_use' }, usage },
+              ]),
+            };
+          }
+          if (call === 2) {
+            // The API ran the deferred search and it FAILED (the estate's shape); the model answered.
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                {
+                  type: 'tool-result' as const,
+                  toolCallId: 'srv-1',
+                  toolName: 'web_search',
+                  isError: true,
+                  result: { type: 'web_search_tool_result_error', errorCode: 'unavailable' },
+                },
+                { type: 'text-start' as const, id: 't1' },
+                { type: 'text-delta' as const, id: 't1', delta: 'done' },
+                { type: 'text-end' as const, id: 't1' },
+                { type: 'finish' as const, finishReason: { unified: 'stop' as const, raw: 'end_turn' }, usage },
+              ]),
+            };
+          }
+          return { stream: textStep('A STEP PAST THE ANSWER') };
+        },
+      });
+
+      const workTool: Function = {
+        definition: {
+          name: 'doWork',
+          description: 'Does one unit of work.',
+          parameters: { type: 'object', properties: {} },
+        },
+        call: async () => ({ ok: true }),
+      };
+      const conversation = new Conversation({
+        modelData: fixtureModelData,
+        name: 'injected-context-errored-deferred-search-test',
+        logLevel: 'error',
+        limits: { enforceLimits: false },
+        skills: [buildSkill(workTool)],
+      });
+
+      const result = await conversation.generateResponse({
+        messages: ['research the frontier models'],
+        model: model as never,
+      });
+
+      expect(result.text).toBe('done');
+      // Two requests: the batched step, then the step that ran the failed search and answered.
+      expect(capturedPrompts.map((prompt) => prompt[prompt.length - 1].role)).toEqual(['user', 'tool']);
+    },
+    TIMEOUT
+  );
+});

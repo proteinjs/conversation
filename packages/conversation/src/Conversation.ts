@@ -1,7 +1,14 @@
 import type { LanguageModel, ToolSet, LanguageModelUsage, ReasoningOutput, ModelMessage } from 'ai';
 import type { ImagePart, TextPart, FilePart } from '@ai-sdk/provider-utils';
 import type { LanguageModelV3Source } from '@ai-sdk/provider';
-import { streamText, generateObject as aiGenerateObject, jsonSchema, stepCountIs, hasToolCall } from 'ai';
+import {
+  streamText,
+  generateObject as aiGenerateObject,
+  jsonSchema,
+  stepCountIs,
+  hasToolCall,
+  type StopCondition,
+} from 'ai';
 import { SdkContentParts } from './sdkContentParts';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
@@ -635,6 +642,7 @@ export class Conversation {
           stepCountIs(params.maxToolCalls ?? 50),
           ...(params.stopOnToolCalls ?? []).map((name) => hasToolCall(name)),
           ...(params.maxTotalTokens ? [totalTokensReach(params.maxTotalTokens)] : []),
+          Conversation.turnComplete,
         ],
         // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer so
         // budgets don't stack multiplicatively.
@@ -2296,6 +2304,29 @@ export class Conversation {
    * turn and the unresolved server call fails the request. Read by `prepareStep` and the exit
    * absorption before they drain (see `GenerateStreamParams.drainInjectedContext`).
    */
+  /**
+   * The loop's own end: a step after which the transcript shows no reason to go on — no client
+   * tool call to answer, no provider-executed call still open — ENDS the loop. The AI SDK also
+   * continues on its own bookkeeping of deferred server tools (`pendingDeferredToolCalls`, ai
+   * 6.0.14): a call enters it when the API stops at a client tool batched with it, and leaves it
+   * only on a `tool-result` — a search that then settles with an ERROR streams as `tool-error` and
+   * never leaves. After the model's final text the SDK then issued one more request, over a
+   * transcript ending on the assistant's own text: Anthropic 400 "This model does not support
+   * assistant message prefill. The conversation must end with a user message." (plans/FREE_AGENT.md
+   * §M.16 found (3), the control run's seventh request). The transcript decides, not the
+   * bookkeeping; a response still open on a server tool (`pause_turn`) is left to the SDK as before.
+   */
+  private static readonly turnComplete: StopCondition<ToolSet> = ({ steps }) => {
+    const last = steps[steps.length - 1];
+    if (!last) {
+      return false;
+    }
+    if (last.toolCalls.some((call) => !call.providerExecuted)) {
+      return false;
+    }
+    return Conversation.openServerToolCallIds(last.response.messages as ModelMessage[]).length === 0;
+  };
+
   private static openServerToolCallIds(messages: ModelMessage[]): string[] {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
