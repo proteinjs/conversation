@@ -14,6 +14,7 @@ import type { ModelDataResolver } from './ModelData';
 import { resolveModel, inferProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
+import { CutBoundary, type CutBoundaryKind } from './CutBoundary';
 import { Utterance, type DrainedInput } from './Utterance';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
@@ -193,16 +194,19 @@ export type GenerateStreamParams = {
    * restart rule above, `peekInjectedContext`, unchanged in what it restarts), and a note that
    * lands while TEXT streams arms the cut-and-continue clock: the generation gets N
    * (`ToolBudget.softBudgetMs`) to finish on its own; past N the round is cut at the next paragraph
-   * break (at N + 2 s regardless), the text so far is committed exactly as the exit absorption
-   * commits a finished round, and the SAME response continues with the note spliced. Only
-   * meaningful alongside `drainInjectedContext` + `peekInjectedContext`.
+   * break, past N + 2 s at the next boundary of any kind, past the boundary window at the next
+   * word boundary — never mid-word, never inside a code fence ({@link CutBoundary}, §M.16); the
+   * text so far is committed exactly as the exit absorption commits a finished round, and the
+   * SAME response continues with the note spliced. Only meaningful alongside
+   * `drainInjectedContext` + `peekInjectedContext`.
    */
   inputArrived?: () => Promise<void>;
   /**
    * The mid-text INTERJECTION shape (plans/FREE_AGENT.md §M.16) — what the loop does with a note
    * that lands while TEXT streams:
    *  - `'cut-and-continue'` (the loop's own shape since 6.3.0, part 2b): the generation gets N to
-   *    finish on its own; past N the round is cut at the next paragraph break (N + 2 s regardless),
+   *    finish on its own; past N the round is cut at the next paragraph break, past N + 2 s at the
+   *    next boundary of any kind (never mid-word, never inside a code fence — {@link CutBoundary}),
    *    the text so far commits, and the SAME response continues with the note spliced;
    *  - `'after-generation'` (the shape before part 2b): the generation always runs to its end, then
    *    the exit absorption (`absorbExitNotes`) continues the same response with the note — the
@@ -867,9 +871,11 @@ export class Conversation {
       // terminate). Distinct from `rounds`: note absorption and length continuation are
       // different budgets.
       let lengthContinuations = 0;
-      // The step budget's clocks (plans/FREE_AGENT.md §M.2, §M.3 part 2b): N is the tool budget's
-      // one number; a note that lands while text streams gets N for the generation to finish on its
-      // own, then the cut at the next paragraph break, at N + the grace regardless.
+      // The step budget's clocks (plans/FREE_AGENT.md §M.2, §M.3 part 2b, §M.16): N is the tool
+      // budget's one number; a note that lands while text streams gets N for the generation to
+      // finish on its own, then the cut at the next paragraph break; past N + the grace (the
+      // deadline) at the next boundary of any kind; past the window at the next word boundary —
+      // never mid-word, never inside a code fence (CutBoundary).
       const softBudgetMs = ToolBudget.softBudgetMs();
       const utterOptions = { model, provider, modelString, abortSignal: combinedAbortSignal };
       const utter = (transcript: ModelMessage[], inputs: DrainedInput[]) =>
@@ -931,7 +937,10 @@ export class Conversation {
           let streamingText = false;
           // The moment a note was seen waiting while text streamed — the cut clock's origin.
           let noteSeenAt: number | undefined;
-          let cutDeadline: Promise<void> | undefined;
+          // The cut clock's next phase edge (N, the deadline, the window's end), armed while a note
+          // waits; the boundary scanner of the current step's text — where the cut may land (§M.16).
+          let cutClock: Promise<void> | undefined;
+          let boundary = new CutBoundary();
           // A restart the wake asked for, pending the grace: the SDK executes a tool inside its
           // own transform BEFORE the call's parts reach this reader, so a note that lands during a
           // fast tool's first milliseconds wakes the loop with the tool part still buffered —
@@ -1002,11 +1011,15 @@ export class Conversation {
               if (restartGrace) {
                 racers.push(restartGrace.then(() => 'restart' as const));
               }
-              if (noteSeenAt !== undefined && streamingText) {
-                cutDeadline ??= Conversation.sleep(
-                  noteSeenAt + softBudgetMs + Conversation.TEXT_CUT_GRACE_MS - Date.now()
-                );
-                racers.push(cutDeadline.then(() => 'cut' as const));
+              if (noteSeenAt !== undefined && streamingText && cutEligible()) {
+                // The cut clock's next edge (N, the deadline, the window's end): at it the text so
+                // far may already rest on a boundary the new phase allows — asked with no part in
+                // flight, so a stream at rest is cut the moment the phase turns.
+                const edge = Conversation.nextCutEdge(noteSeenAt, softBudgetMs, Date.now());
+                if (edge !== undefined) {
+                  cutClock ??= Conversation.sleep(edge - Date.now());
+                  racers.push(cutClock.then(() => 'cut' as const));
+                }
               }
               if (atBoundary) {
                 racers.push(boundaryUtterance.wait().then(() => 'queued' as const));
@@ -1062,8 +1075,16 @@ export class Conversation {
                 continue;
               }
               if (won === 'cut') {
-                abortRound('cut');
-                break;
+                cutClock = undefined;
+                if (
+                  cutEligible() &&
+                  noteSeenAt !== undefined &&
+                  boundary.split('', Conversation.cutKinds(Date.now() - noteSeenAt, softBudgetMs)) >= 0
+                ) {
+                  abortRound('cut');
+                  break;
+                }
+                continue;
               }
               const step = await pendingNext;
               pendingNext = undefined;
@@ -1082,7 +1103,7 @@ export class Conversation {
                 turnMaterial = true;
                 streamingText = false;
                 noteSeenAt = undefined;
-                cutDeadline = undefined;
+                cutClock = undefined;
               }
               if (restartEligible() && params.peekInjectedContext!()) {
                 abortRound('restart');
@@ -1092,22 +1113,37 @@ export class Conversation {
                 turnMaterial = true;
                 streamingText = true;
                 const delta = String(part.delta ?? part.text ?? part.textDelta ?? '');
-                stepText += delta;
                 if (noteSeenAt === undefined && cutEligible() && params.peekInjectedContext!()) {
                   noteSeenAt = Date.now();
                 }
-                if (noteSeenAt !== undefined && Date.now() - noteSeenAt >= softBudgetMs && delta.includes('\n\n')) {
-                  // The paragraph break past N: the cut lands here, with the break on screen.
-                  yield part;
+                // The cut lands only where the text rests (§M.16): the scanner sees every delta
+                // (its fence state is line-grained) with the kinds this moment allows — a paragraph
+                // break past N, any boundary past the deadline, a word boundary past the window —
+                // and answers where in the delta the text so far first ends at one. The text up to
+                // it is shown; the tail past it is dropped for the continuation to say again.
+                const splitAt = boundary.split(
+                  delta,
+                  noteSeenAt === undefined || !cutEligible()
+                    ? CutBoundary.NONE
+                    : Conversation.cutKinds(Date.now() - noteSeenAt, softBudgetMs)
+                );
+                if (splitAt >= 0) {
+                  const shown = delta.slice(0, splitAt);
+                  if (shown.length > 0) {
+                    stepText += shown;
+                    yield { type: 'text-delta', delta: shown };
+                  }
                   atBoundary = false;
                   abortRound('cut');
                   break;
                 }
+                stepText += delta;
               }
               if (partType === 'finish-step') {
                 streamingText = false;
                 noteSeenAt = undefined;
-                cutDeadline = undefined;
+                cutClock = undefined;
+                boundary = new CutBoundary();
                 finishedStepText = stepText;
                 stepText = '';
                 atBoundary = true;
@@ -1161,8 +1197,13 @@ export class Conversation {
             // The mid-text cut (part 2b): the text so far is committed exactly as a finished
             // round's — the joiner inside it, then a step-finish — and the SAME response continues
             // from the transcript the step was running on plus that text, with the notes spliced.
-            if (stepText.length > 0 && !stepText.endsWith('\n\n')) {
-              yield { type: 'text-delta', delta: '\n\n' };
+            if (stepText.length > 0) {
+              // The joiner completes the paragraph break the cut text may already carry part of —
+              // the acknowledgment that follows is its own paragraph, and so is the continuation.
+              const trailingNewlines = /\n*$/.exec(stepText)![0].length;
+              if (trailingNewlines < 2) {
+                yield { type: 'text-delta', delta: '\n'.repeat(2 - trailingNewlines) };
+              }
             }
             yield { type: 'finish-step', finishReason: 'stop' };
             const drained = Conversation.drainTexts(params.drainInjectedContext!);
@@ -3530,9 +3571,42 @@ export class Conversation {
 
   /**
    * The mid-text cut's grace past N (plans/FREE_AGENT.md §M.3 part 2b): past N the round is cut
-   * at the next paragraph break; at N + this, regardless.
+   * at the next paragraph break; at N + this — the deadline — the boundary window opens (§M.16).
    */
   static readonly TEXT_CUT_GRACE_MS = 2_000;
+
+  /**
+   * The boundary window past the deadline (plans/FREE_AGENT.md §M.16): inside it the round is cut
+   * at the next boundary of any kind — a paragraph break, a sentence end, a line end, a code
+   * fence's close — and past it at the next word boundary; never mid-word, never inside a fence.
+   * At ~200 chars/s a paragraph is 2–4 s of streaming.
+   */
+  static readonly CUT_BOUNDARY_WAIT_MS = 6_000;
+
+  /**
+   * The boundary kinds a cut may land on once a note has waited `waitedMs` (§M.16): none before N,
+   * a paragraph break through the grace, any boundary through the window, a word boundary past it.
+   */
+  private static cutKinds(waitedMs: number, softBudgetMs: number): ReadonlySet<CutBoundaryKind> {
+    if (waitedMs < softBudgetMs) {
+      return CutBoundary.NONE;
+    }
+    if (waitedMs < softBudgetMs + Conversation.TEXT_CUT_GRACE_MS) {
+      return CutBoundary.PARAGRAPH;
+    }
+    if (waitedMs < softBudgetMs + Conversation.TEXT_CUT_GRACE_MS + Conversation.CUT_BOUNDARY_WAIT_MS) {
+      return CutBoundary.ANY_BOUNDARY;
+    }
+    return CutBoundary.ANY_WORD;
+  }
+
+  /** The next moment the allowed kinds widen — N, the deadline, the window's end — after `now`; undefined past all three. */
+  private static nextCutEdge(noteSeenAt: number, softBudgetMs: number, now: number): number | undefined {
+    const grace = softBudgetMs + Conversation.TEXT_CUT_GRACE_MS;
+    return [softBudgetMs, grace, grace + Conversation.CUT_BOUNDARY_WAIT_MS]
+      .map((ms) => noteSeenAt + ms)
+      .find((edge) => edge > now);
+  }
 
   /** How long a wake-driven restart waits for an already-buffered part before aborting the round. */
   static readonly RESTART_GRACE_MS = 50;

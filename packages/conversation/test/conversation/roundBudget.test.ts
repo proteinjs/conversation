@@ -13,10 +13,14 @@ import { fixtureModelData } from './fixtureModelData';
  *      first part waited for that part (the harness's thinking row read the phase's length).
  *  (b) Text, cut-and-continue: a note that lands while text streams gives the generation N
  *      (`CONVERSATION_TOOL_SOFT_BUDGET_MS`) to finish on its own; past N the round is cut at the
- *      next paragraph break (at N + 2 s regardless), the text so far COMMITS exactly as a finished
- *      round's (the joiner, then a step-finish), and the SAME response continues from that text
- *      with the note spliced. RED at `absorbExitNotes` waiting for the generation's end (the
- *      harness's mid-text row read the generation's length).
+ *      next paragraph break; past N + 2 s (the deadline) at the next BOUNDARY of any kind — a
+ *      paragraph break, a sentence end, a line end, a code fence's close — and past the boundary
+ *      window (`Conversation.CUT_BOUNDARY_WAIT_MS`) at the next word boundary; NEVER mid-word and
+ *      never inside a code fence (plans/FREE_AGENT.md §M.16: the deadline cut landed inside a
+ *      sentence, a word and a heading in 3 of 3 live runs). The text so far COMMITS exactly as a
+ *      finished round's (the joiner, then a step-finish), and the SAME response continues from that
+ *      text with the note spliced. RED at `absorbExitNotes` waiting for the generation's end (the
+ *      harness's mid-text row read the generation's length); RED at the deadline cut (mid-word).
  *
  * No network: MockLanguageModelV3 scripts each round; the outgoing prompts prove what each round
  * saw; the parts prove what the consumer was shown, in order.
@@ -80,6 +84,26 @@ const scheduledStream = (
   });
 };
 
+/** A text generation: `deltas` one every `tickMs` after the opening delta, then the finish. */
+const generation = (signal: AbortSignal | undefined, opening: string, deltas: string[], tickMs = 50) =>
+  scheduledStream(signal, [
+    {
+      afterMs: 0,
+      parts: [
+        { type: 'text-start', id: 't1' },
+        { type: 'text-delta', id: 't1', delta: opening },
+      ],
+    },
+    ...deltas.map((delta) => ({ afterMs: tickMs, parts: [{ type: 'text-delta', id: 't1', delta }] })),
+    {
+      afterMs: 0,
+      parts: [
+        { type: 'text-end', id: 't1' },
+        { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage },
+      ],
+    },
+  ]);
+
 const messageText = (msg: { content: unknown }): string =>
   typeof msg.content === 'string'
     ? msg.content
@@ -129,6 +153,67 @@ async function collect(fullStream: AsyncIterable<unknown>): Promise<{ text: stri
   }
   return { text, parts };
 }
+
+/** The text the consumer was shown before the first step-finish — the committed cut text. */
+const textBeforeFirstFinish = (parts: Part[]): { text: string; finish: Part } => {
+  const firstFinish = parts.findIndex((part) => part.type === 'step-finish');
+  expect(firstFinish).toBeGreaterThan(0);
+  return {
+    finish: parts[firstFinish],
+    text: parts
+      .slice(0, firstFinish)
+      .filter((part) => part.type === 'text-delta')
+      .map((part) => part.textDelta)
+      .join(''),
+  };
+};
+
+/**
+ * The (b) shape with real sentences: `count` words, every `every`th ending a sentence, the note
+ * at 500 ms, N = 300 ms — so the deadline (N + 2 s) falls at 2.8 s, inside a sentence.
+ */
+const sentenceWords = (count: number, every: number) =>
+  Array.from({ length: count }, (_, i) => ((i + 1) % every === 0 ? ` word${i}.` : ` word${i}`));
+
+/** One scripted turn of the (b) shape: the note pushed 500 ms in; the prompts stamped. */
+const midTextTurn = (
+  name: string,
+  opening: string,
+  deltas: string[],
+  extra: Partial<GenerateStreamParams> = {},
+  tickMs = 50
+) => {
+  const NOTE = 'Also mention costs.';
+  const inbox = new Inbox();
+  const prompts: Array<{ at: number; prompt: Prompt }> = [];
+  let pushedAt = 0;
+  let call = 0;
+  const model = new MockLanguageModelV3({
+    doStream: async (options: { prompt: Prompt; abortSignal?: AbortSignal }) => {
+      prompts.push({ at: Date.now(), prompt: options.prompt });
+      call++;
+      if (call === 1) {
+        setTimeout(() => {
+          pushedAt = Date.now();
+          inbox.push(NOTE);
+        }, 500);
+        return { stream: generation(options.abortSignal, opening, deltas, tickMs) };
+      }
+      return { stream: textStep('FOLDED IN') };
+    },
+  });
+  const run = async () => {
+    const result = await conversation(name).generateStream({
+      messages: ['write a long answer'],
+      model: model as never,
+      ...inbox.params(),
+      ...extra,
+    });
+    const collected = await collect(result.fullStream);
+    return { ...collected, prompts, cutLatencyMs: prompts[1].at - pushedAt, NOTE };
+  };
+  return run;
+};
 
 describe('the step budget — a boundary within the bar on every step phase (FREE_AGENT §M.3 part 2a/2b)', () => {
   const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
@@ -199,79 +284,35 @@ describe('the step budget — a boundary within the bar on every step phase (FRE
   );
 
   test(
-    '(b) MID-TEXT: a note during a 4 s generation (no paragraph breaks) cuts the round at N + 2 s, commits the text so far, and continues from it with the note spliced',
+    '(b) MID-TEXT: a note during a 4 s generation of sentences (no paragraph breaks) cuts the round at the first SENTENCE END past N + 2 s — never at the deadline, never mid-word — commits the text so far, and continues from it with the note spliced',
     async () => {
       process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
-      const NOTE = 'Also mention costs.';
-      const inbox = new Inbox();
-      const prompts: Array<{ at: number; prompt: Prompt }> = [];
-      let pushedAt = 0;
-      let call = 0;
-      const words = Array.from({ length: 80 }, (_, i) => ` word${i}`);
-      const model = new MockLanguageModelV3({
-        doStream: async (options: { prompt: Prompt; abortSignal?: AbortSignal }) => {
-          prompts.push({ at: Date.now(), prompt: options.prompt });
-          call++;
-          if (call === 1) {
-            setTimeout(() => {
-              pushedAt = Date.now();
-              inbox.push(NOTE);
-            }, 500);
-            return {
-              stream: scheduledStream(options.abortSignal, [
-                {
-                  afterMs: 0,
-                  parts: [
-                    { type: 'text-start', id: 't1' },
-                    { type: 'text-delta', id: 't1', delta: 'A long answer:' },
-                  ],
-                },
-                ...words.map((word) => ({ afterMs: 50, parts: [{ type: 'text-delta', id: 't1', delta: word }] })),
-                {
-                  afterMs: 0,
-                  parts: [
-                    { type: 'text-end', id: 't1' },
-                    { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage },
-                  ],
-                },
-              ]),
-            };
-          }
-          return { stream: textStep('FOLDED IN') };
-        },
-      });
-      const result = await conversation('round-budget-cut').generateStream({
-        messages: ['write a long answer'],
-        model: model as never,
-        ...inbox.params(),
-      });
-      const { text, parts } = await collect(result.fullStream);
+      // A sentence every four words (every 200 ms); the deadline (2.8 s) falls inside one.
+      const words = sentenceWords(80, 4);
+      const run = midTextTurn('round-budget-cut', 'A long answer:', words);
+      const { text, parts, prompts, cutLatencyMs, NOTE } = await run();
 
       expect(prompts).toHaveLength(2);
-      // The cut landed past N and no later than N + 2 s after the note (the deadline, no paragraph
-      // break to cut at) — the continuation's call went out then, not after the 4 s generation.
-      const cutLatencyMs = prompts[1].at - pushedAt;
-      expect(cutLatencyMs).toBeGreaterThanOrEqual(300);
-      expect(cutLatencyMs).toBeLessThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS + 250);
+      // The cut landed past the deadline (N + 2 s = 2.3 s after the note) at the next sentence end
+      // — within one sentence (200 ms) of it — not at the deadline itself and not after the 4 s
+      // generation.
+      expect(cutLatencyMs).toBeGreaterThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS);
+      expect(cutLatencyMs).toBeLessThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS + 200 + 250);
       // The text so far was committed as a finished step — the joiner inside it, then a
-      // step-finish — and the continuation follows.
-      const firstFinish = parts.findIndex((part) => part.type === 'step-finish');
-      expect(firstFinish).toBeGreaterThan(0);
-      expect(parts[firstFinish].finishReason).toBe('stop');
-      const textBeforeCut = parts
-        .slice(0, firstFinish)
-        .filter((part) => part.type === 'text-delta')
-        .map((part) => part.textDelta)
-        .join('');
+      // step-finish — and it ends on a complete sentence: the period, then the paragraph joiner.
+      const { text: textBeforeCut, finish } = textBeforeFirstFinish(parts);
+      expect(finish.finishReason).toBe('stop');
       expect(textBeforeCut.startsWith('A long answer: word0')).toBe(true);
-      expect(textBeforeCut.endsWith('\n\n')).toBe(true);
+      expect(textBeforeCut).toMatch(/word\d+\.\n\n$/);
       expect(textBeforeCut.length).toBeLessThan('A long answer:'.length + words.join('').length);
       expect(text).toBe(`${textBeforeCut}FOLDED IN`);
-      // The continuation ran on the transcript plus the text so far, with the note spliced last.
+      // The continuation ran on the transcript plus the text so far — ending on that sentence, the
+      // delta's tail past it dropped for the model to re-say — with the note spliced last.
       const round2 = prompts[1].prompt;
       const assistant = round2.filter((m) => m.role === 'assistant');
       expect(assistant).toHaveLength(1);
       expect(messageText(assistant[0] as never)).toBe(textBeforeCut.trimEnd());
+      expect(messageText(assistant[0] as never)).toMatch(/word\d+\.$/);
       expect(messageText(round2[round2.length - 1] as never)).toContain(NOTE);
     },
     TIMEOUT
@@ -337,6 +378,104 @@ describe('the step budget — a boundary within the bar on every step phase (FRE
   );
 
   test(
+    '(b) BOUNDARY: past the deadline a run-on with no sentence end is NOT cut mid-word — the cut waits for the paragraph break 1 s later and lands there',
+    async () => {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
+      // 55 bare words carry the stream past the deadline (2.8 s); the break lands at ~3.8 s; more
+      // words follow so the generation outlives the cut.
+      const words = [
+        ...Array.from({ length: 74 }, (_, i) => ` word${i}`),
+        '\n\nNext paragraph',
+        ...Array.from({ length: 20 }, (_, i) => ` more${i}`),
+      ];
+      const run = midTextTurn('round-budget-boundary-paragraph', 'A long answer:', words);
+      const { text, parts, prompts, cutLatencyMs } = await run();
+
+      expect(prompts).toHaveLength(2);
+      // Not at the deadline (2.3 s after the note): at the break, ~3.3 s after it.
+      expect(cutLatencyMs).toBeGreaterThanOrEqual(3_200);
+      expect(cutLatencyMs).toBeLessThanOrEqual(3_200 + 400);
+      const { text: textBeforeCut } = textBeforeFirstFinish(parts);
+      // Every word before the break is on screen, the break closes the cut text, and nothing of
+      // the next paragraph rode ahead of the acknowledgment.
+      expect(textBeforeCut).toBe(`A long answer:${words.slice(0, 74).join('')}\n\n`);
+      expect(text).toBe(`${textBeforeCut}FOLDED IN`);
+      const assistant = prompts[1].prompt.filter((m) => m.role === 'assistant');
+      expect(messageText(assistant[0] as never)).toBe(textBeforeCut.trimEnd());
+    },
+    TIMEOUT
+  );
+
+  test(
+    '(b) BOUNDARY: the deadline strikes with the text already resting on a boundary — the cut fires at the deadline, waiting for no further part',
+    async () => {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
+      // One sentence and its line end at once, then a 5 s silence before the rest.
+      const run = midTextTurn('round-budget-boundary-at-rest', 'First sentence.\n', ['Second sentence.'], {}, 5_000);
+      const { text, parts, prompts, cutLatencyMs } = await run();
+
+      expect(prompts).toHaveLength(2);
+      expect(cutLatencyMs).toBeGreaterThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS);
+      expect(cutLatencyMs).toBeLessThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS + 250);
+      const { text: textBeforeCut } = textBeforeFirstFinish(parts);
+      expect(textBeforeCut).toBe('First sentence.\n\n');
+      expect(text).toBe('First sentence.\n\nFOLDED IN');
+    },
+    TIMEOUT
+  );
+
+  test(
+    '(b) BOUNDARY: a stream with no boundary at all inside the window is cut at the first WORD boundary past it — never mid-word',
+    async () => {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
+      // 200 bare words, 10 s: no sentence end, no line end, no paragraph; the window closes at
+      // N + 2 s + CUT_BOUNDARY_WAIT_MS = 8.3 s after the note.
+      const words = Array.from({ length: 200 }, (_, i) => ` word${i}`);
+      const run = midTextTurn('round-budget-boundary-word', 'A long answer:', words);
+      const { text, parts, prompts, cutLatencyMs } = await run();
+
+      const windowMs = 300 + Conversation.TEXT_CUT_GRACE_MS + Conversation.CUT_BOUNDARY_WAIT_MS;
+      expect(prompts).toHaveLength(2);
+      expect(cutLatencyMs).toBeGreaterThanOrEqual(windowMs);
+      expect(cutLatencyMs).toBeLessThanOrEqual(windowMs + 300);
+      const { text: textBeforeCut } = textBeforeFirstFinish(parts);
+      // The cut text ends on a whole word, then the joiner; the word count says the cut came
+      // past the window (~166 words at 50 ms), not at the deadline (~55).
+      expect(textBeforeCut).toMatch(/ word\d+\n\n$/);
+      const shown = textBeforeCut.match(/ word\d+/g)!.length;
+      expect(shown).toBeGreaterThanOrEqual(160);
+      expect(text).toBe(`${textBeforeCut}FOLDED IN`);
+      const assistant = prompts[1].prompt.filter((m) => m.role === 'assistant');
+      expect(messageText(assistant[0] as never)).toBe(textBeforeCut.trimEnd());
+    },
+    TIMEOUT
+  );
+
+  test(
+    '(b) BOUNDARY: a code fence spanning the deadline is never cut inside — the cut lands after the fence closes, with every line of code on screen',
+    async () => {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
+      // The fence opens at once; 70 lines (3.5 s) carry it past the deadline (2.8 s) — each a line
+      // end, each a sentence-shaped statement — then it closes; prose follows.
+      const lines = Array.from({ length: 70 }, (_, i) => `const value${i} = compute(${i}). done;\n`);
+      const words = [...lines, '```\n', '\nThe code above', ' does the work.', ' More prose follows.'];
+      const run = midTextTurn('round-budget-boundary-fence', 'Here is the code:\n\n```ts\n', words);
+      const { text, parts, prompts, cutLatencyMs } = await run();
+
+      expect(prompts).toHaveLength(2);
+      // At the close (~3.55 s after the start, 3.05 s after the note) — not at the deadline (2.3 s).
+      expect(cutLatencyMs).toBeGreaterThanOrEqual(3_000);
+      expect(cutLatencyMs).toBeLessThanOrEqual(3_000 + 400);
+      const { text: textBeforeCut } = textBeforeFirstFinish(parts);
+      expect(textBeforeCut).toBe(`Here is the code:\n\n\`\`\`ts\n${lines.join('')}\`\`\`\n\n`);
+      expect(text).toBe(`${textBeforeCut}FOLDED IN`);
+      const assistant = prompts[1].prompt.filter((m) => m.role === 'assistant');
+      expect(messageText(assistant[0] as never)).toBe(textBeforeCut.trimEnd());
+    },
+    TIMEOUT
+  );
+
+  test(
     '(b) a note during text that finishes within N never cuts — the generation ends on its own, then the exit absorption continues it',
     async () => {
       process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '2000';
@@ -394,8 +533,9 @@ describe('the step budget — a boundary within the bar on every step phase (FRE
  * the loop does with a note that lands mid-text — `'cut-and-continue'` (part 2b, the loop's own shape,
  * absent = this) or `'after-generation'` (the shape before part 2b: the generation runs to its end, the
  * exit absorption continues the same response with the note; the acknowledgment rides there). The
- * host's one owner (thought-server `FreeAgent.interjection()`) reads it from the environment so the cut
- * can be retired on prod without a deploy. RED at 6.4.0: the option did not exist — the loop cut.
+ * host's one owner (thought-server `FreeAgent.interjection()`) reads it from the mid-text-cut kill
+ * switch's row so the cut can be retired on prod without a deploy. RED at 6.4.0: the option did not
+ * exist — the loop cut.
  */
 describe('the interjection shape — after-generation takes the note when the generation ends (FREE_AGENT §M.16)', () => {
   const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
@@ -407,10 +547,10 @@ describe('the interjection shape — after-generation takes the note when the ge
     }
   });
 
-  /** The (b) shape: a 4 s no-break generation, the note 500 ms in, N = 300 ms. */
+  /** The (b) shape: a 4 s generation of sentences (no paragraph breaks), the note 500 ms in, N = 300 ms. */
   const longGeneration = (inbox: Inbox, note: string, onPush: () => void) => {
     const prompts: Array<{ at: number; prompt: Prompt }> = [];
-    const words = Array.from({ length: 80 }, (_, i) => ` word${i}`);
+    const words = sentenceWords(80, 4);
     let call = 0;
     const model = new MockLanguageModelV3({
       doStream: async (options: { prompt: Prompt; abortSignal?: AbortSignal }) => {
@@ -425,25 +565,7 @@ describe('the interjection shape — after-generation takes the note when the ge
             onPush();
             inbox.push(note);
           }, 500);
-          return {
-            stream: scheduledStream(options.abortSignal, [
-              {
-                afterMs: 0,
-                parts: [
-                  { type: 'text-start', id: 't1' },
-                  { type: 'text-delta', id: 't1', delta: 'A long answer:' },
-                ],
-              },
-              ...words.map((word) => ({ afterMs: 50, parts: [{ type: 'text-delta', id: 't1', delta: word }] })),
-              {
-                afterMs: 0,
-                parts: [
-                  { type: 'text-end', id: 't1' },
-                  { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage },
-                ],
-              },
-            ]),
-          };
+          return { stream: generation(options.abortSignal, 'A long answer:', words) };
         }
         return { stream: textStep('FOLDED IN') };
       },
@@ -471,7 +593,7 @@ describe('the interjection shape — after-generation takes the note when the ge
 
       expect(prompts).toHaveLength(2);
       // The continuation's call went out when the generation ENDED (~3.5 s after the note) — not at
-      // N + 2 s (2.3 s), where the cut would have fired.
+      // the first sentence end past N + 2 s (~2.4 s), where the cut would have fired.
       const continuationLatencyMs = prompts[1].at - pushedAt;
       expect(continuationLatencyMs).toBeGreaterThanOrEqual(3_000);
       // Nothing was lost or aborted: the whole generation, the joiner, the continuation; one
@@ -542,7 +664,7 @@ describe('the interjection shape — after-generation takes the note when the ge
   );
 
   test(
-    "'cut-and-continue', named: the cut fires exactly as when the option is absent",
+    "'cut-and-continue', named: the cut fires exactly as when the option is absent — at the first sentence end past the deadline",
     async () => {
       process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
       const NOTE = 'Also mention costs.';
@@ -557,13 +679,14 @@ describe('the interjection shape — after-generation takes the note when the ge
         ...inbox.params(),
         interjection: 'cut-and-continue',
       });
-      const { text } = await collect(result.fullStream);
+      const { text, parts } = await collect(result.fullStream);
       expect(prompts).toHaveLength(2);
       const cutLatencyMs = prompts[1].at - pushedAt;
-      expect(cutLatencyMs).toBeGreaterThanOrEqual(300);
-      expect(cutLatencyMs).toBeLessThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS + 250);
+      expect(cutLatencyMs).toBeGreaterThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS);
+      expect(cutLatencyMs).toBeLessThanOrEqual(300 + Conversation.TEXT_CUT_GRACE_MS + 200 + 250);
       expect(text.endsWith('FOLDED IN')).toBe(true);
       expect(text.length).toBeLessThan(fullText.length);
+      expect(textBeforeFirstFinish(parts).text).toMatch(/word\d+\.\n\n$/);
     },
     TIMEOUT
   );
