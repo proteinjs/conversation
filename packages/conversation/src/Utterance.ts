@@ -42,8 +42,18 @@ export class Utterance {
     `comes next, and no time estimate. That single line reaches the user right away; you continue ` +
     `the work after it. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`;
 
-  /** The output ceiling of the utterance call — one line, never a paragraph. */
+  /**
+   * The output ceiling of the utterance REQUEST — a cost and latency bound, not the line's
+   * definition. The line is the first paragraph of what comes back ({@link Utterance.lineEnd}); a
+   * call that hits this ceiling ends its line at a sentence end ({@link Utterance.atCeiling}),
+   * never inside a word (plans/FREE_AGENT.md §M.16 found (1): Opus 5 writes a caveat as a second
+   * paragraph and the ceiling cut it mid-word — "…and its tr" — onto the screen and into the
+   * framing, so the main step continued the broken sentence).
+   */
   static readonly MAX_OUTPUT_TOKENS = 80;
+
+  /** The break that ends the line: the model's own paragraph break. */
+  static readonly PARAGRAPH_BREAK = '\n\n';
 
   /**
    * The request: the transcript as the next step will see it, plus the inputs being taken in and
@@ -130,6 +140,46 @@ export class Utterance {
     }
     const ask = own.ask.trim();
     return ask.endsWith(Utterance.REPLY_WITH_THE_LINE_ONLY) ? ask : `${ask} ${Utterance.REPLY_WITH_THE_LINE_ONLY}`;
+  }
+
+  /**
+   * Where the line ends inside the model's text: the index of the first paragraph break past any
+   * leading whitespace, or −1 while none has arrived. The line is the FIRST paragraph — a model
+   * that writes a second one (a caveat, a plan) has written past the ask, and that text is never
+   * the line.
+   */
+  static lineEnd(text: string): number {
+    const lead = text.length - text.trimStart().length;
+    return text.indexOf(Utterance.PARAGRAPH_BREAK, lead);
+  }
+
+  /**
+   * The longest prefix of `text` that ends at a sentence end — a terminator (`.`, `!`, `?`, `…`)
+   * with any closing quote or bracket, followed by whitespace or the end of the text. What may
+   * reach the screen while the rest of the line is still arriving, and where a line cut by the
+   * output ceiling ends. 0 when none has arrived.
+   */
+  static sentenceEnd(text: string): number {
+    const terminators = /[.!?…]+["'”’)\]]*(?=\s|$)/g;
+    let end = 0;
+    for (let match = terminators.exec(text); match !== null; match = terminators.exec(text)) {
+      end = match.index + match[0].length;
+    }
+    return end;
+  }
+
+  /**
+   * The line a call that hit its output ceiling still has: the text to its last sentence end, else
+   * to its last whole word — never a word the ceiling broke. Empty when nothing whole arrived.
+   */
+  static atCeiling(text: string): string {
+    const sentence = Utterance.sentenceEnd(text);
+    if (sentence > 0) {
+      return text.slice(0, sentence);
+    }
+    const trimmed = text.trimEnd();
+    const lastWord = trimmed.search(/\s\S*$/);
+    return lastWord > 0 ? trimmed.slice(0, lastWord) : '';
   }
 
   /** Inputs as {@link DrainedInput}s — a bare string is an input with the default ask. */

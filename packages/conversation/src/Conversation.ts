@@ -3586,7 +3586,23 @@ export class Conversation {
   }): AsyncGenerator<any, string | undefined> {
     const request = Utterance.request(args.transcript, args.inputs);
     const startedAt = Date.now();
+    // The LINE is the first paragraph of what the model writes (plans/FREE_AGENT.md §M.16 found
+    // (1)): text reaches the consumer sentence by sentence (a sentence still arriving is held
+    // back), the model's own paragraph break ends the line (the rest of the call is read for its
+    // usage and never shown), and a call that hits its ceiling — or fails mid-stream — ends the
+    // line at its last sentence end, never inside a word. What the user reads and what the framing
+    // quotes back to the mind are then the same whole line.
     let text = '';
+    let sent = 0;
+    let lineEnded = false;
+    let cutShort = false;
+    const flushTo = function* (end: number) {
+      if (end > sent) {
+        const delta = text.slice(sent, end);
+        sent = end;
+        yield { type: 'text-delta', delta };
+      }
+    };
     try {
       const result = streamText({
         model: args.model,
@@ -3601,11 +3617,25 @@ export class Conversation {
       Promise.resolve(result.finishReason).catch(() => {});
       for await (const part of result.fullStream as AsyncIterable<any>) {
         if (part.type === 'text-delta') {
-          const delta = String(part.delta ?? part.text ?? part.textDelta ?? '');
-          if (delta) {
-            text += delta;
-            yield { type: 'text-delta', delta };
+          if (lineEnded) {
+            continue;
           }
+          const delta = String(part.delta ?? part.text ?? part.textDelta ?? '');
+          if (!delta) {
+            continue;
+          }
+          text += delta;
+          const end = Utterance.lineEnd(text);
+          if (end >= 0) {
+            text = text.slice(0, end);
+            lineEnded = true;
+            yield* flushTo(text.length);
+            continue;
+          }
+          yield* flushTo(Utterance.sentenceEnd(text));
+        } else if (part.type === 'finish-step' || part.type === 'finish') {
+          const reason = String(part.finishReason?.unified ?? part.finishReason ?? '');
+          cutShort ||= reason === 'length';
         } else if (part.type === 'error') {
           const cause = (part as { error?: unknown }).error;
           throw cause instanceof Error ? cause : new Error(String((cause as { message?: string })?.message ?? cause));
@@ -3615,11 +3645,16 @@ export class Conversation {
       if (args.abortSignal.aborted) {
         return undefined;
       }
+      cutShort = true;
       this.logger.warn({
         message: 'The bounded utterance failed — the step runs without its acknowledgment line',
         obj: { error: error instanceof Error ? error.message : String(error), inputCount: args.inputs.length },
       });
     }
+    if (!lineEnded && cutShort) {
+      text = Utterance.atCeiling(text);
+    }
+    yield* flushTo(text.length);
     const line = text.trim();
     if (!line) {
       return undefined;

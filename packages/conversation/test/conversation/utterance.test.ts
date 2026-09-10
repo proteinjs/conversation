@@ -592,3 +592,118 @@ describe('the bounded utterance — one line before every step that takes an inp
     expect(messageText(framing[2] as never)).toContain('Got it.');
   });
 });
+
+/**
+ * FOUND ON THE WAY (plans/FREE_AGENT.md §M.16 found (1), Opus 5 live): the take-in line was cut
+ * mid-word at its 80-token ceiling whenever the model wrote TWO paragraphs — "…a solid picture of
+ * the landscape and its tr" on screen, and the main step then continued that broken sentence,
+ * because the framing quoted the cut text back as what the user had read. The ceiling is the
+ * REQUEST's bound (cost, latency); the LINE is the first paragraph of what comes back, whole.
+ */
+describe('the line is the FIRST PARAGRAPH, whole — never a word broken by the ceiling (FREE_AGENT §M.16 found (1))', () => {
+  const PARAGRAPH_1 = 'Got it — a thorough LLM state-of-the-art rundown, straight in chat from what I know.';
+  const PARAGRAPH_2_CUT =
+    'Caveat up front: my knowledge has a cutoff, and this field moves fast. Treat this as a solid picture of the landscape and its tr';
+
+  /** A provider stream that emits `deltas` in order and ends for `reason` (`length` = the ceiling). */
+  const deltasStep = (deltas: string[], reason: 'stop' | 'length') =>
+    convertArrayToReadableStream([
+      { type: 'stream-start' as const, warnings: [] },
+      { type: 'text-start' as const, id: 't1' },
+      ...deltas.map((delta) => ({ type: 'text-delta' as const, id: 't1', delta })),
+      { type: 'text-end' as const, id: 't1' },
+      {
+        type: 'finish' as const,
+        finishReason: { unified: reason, raw: reason === 'length' ? 'max_tokens' : 'stop' },
+        usage,
+      },
+    ]);
+
+  /** The utterance's text-delta parts (everything before the first step-finish, the utterance's own). */
+  const utteranceDeltas = (parts: Part[]): string[] => {
+    const firstFinish = parts.findIndex((part) => part.type === 'step-finish');
+    return parts
+      .slice(0, firstFinish)
+      .filter((part) => part.type === 'text-delta')
+      .map((part) => part.textDelta ?? '');
+  };
+
+  const run = async (name: string, utteranceDeltasScript: string[], reason: 'stop' | 'length') => {
+    const calls: CallOptions[] = [];
+    const model = new MockLanguageModelV3({
+      doStream: async (options: CallOptions) => {
+        calls.push(options);
+        if (Utterance.isRequest(options.prompt)) {
+          return { stream: deltasStep(utteranceDeltasScript, reason) };
+        }
+        return { stream: textStep('THE ANSWER') };
+      },
+    });
+    const result = await conversation(name).generateStream({
+      messages: ['give me the state of the art'],
+      model: model as never,
+      ...new Inbox().params(),
+    });
+    const { parts } = await collect(result.fullStream);
+    return { calls, parts, result };
+  };
+
+  test(
+    'TWO PARAGRAPHS AT THE CEILING (the live shape): the line is the first paragraph; the second — cut mid-word by the ceiling — never reaches the stream, and the framing quotes exactly the line',
+    async () => {
+      const { calls, parts, result } = await run(
+        'utterance-first-paragraph',
+        [PARAGRAPH_1, `\n\n${PARAGRAPH_2_CUT}`],
+        'length'
+      );
+      expect(calls).toHaveLength(2);
+      expect(utteranceDeltas(parts).join('')).toBe(PARAGRAPH_1);
+      expect(parts.some((part) => (part.textDelta ?? '').includes('its tr'))).toBe(false);
+      expect(parts.filter((part) => part.utterance)).toHaveLength(1);
+      expectFraming(calls[1].prompt, PARAGRAPH_1);
+      // The call is read to its end: its usage still rides the turn's.
+      const usageData = await result.usage;
+      expect(usageData.totalTokenUsage.inputTokens).toBe(2);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'THE CEILING INSIDE THE FIRST PARAGRAPH: the line ends at its last sentence end — text reaches the stream sentence by sentence, so a sentence still arriving is never shown cut',
+    async () => {
+      const { calls, parts } = await run(
+        'utterance-ceiling-in-paragraph',
+        ['Got it. I will treat this as a solid', ' picture of the landscape and its tr'],
+        'length'
+      );
+      expect(utteranceDeltas(parts)).toEqual(['Got it.']);
+      expectFraming(calls[1].prompt, 'Got it.');
+    },
+    TIMEOUT
+  );
+
+  test(
+    'A LINE THAT ENDS ON ITS OWN streams whole, terminator or not',
+    async () => {
+      const { calls, parts } = await run('utterance-whole-line', ['Robotics too — ', 'folding it in'], 'stop');
+      expect(utteranceDeltas(parts).join('')).toBe('Robotics too — folding it in');
+      expectFraming(calls[1].prompt, 'Robotics too — folding it in');
+    },
+    TIMEOUT
+  );
+
+  test('Utterance.lineEnd / sentenceEnd / atCeiling — the shapes', () => {
+    expect(Utterance.lineEnd('Got it.\n\nCaveat')).toBe(7);
+    expect(Utterance.lineEnd('\n\nGot it.')).toBe(-1);
+    expect(Utterance.lineEnd('Got it — no break yet')).toBe(-1);
+    expect(Utterance.sentenceEnd('Got it. I will')).toBe(7);
+    expect(Utterance.sentenceEnd('Got it — no end')).toBe(0);
+    expect(Utterance.sentenceEnd('Version 3.5 is out')).toBe(0);
+    expect(Utterance.sentenceEnd('He said "go." Then')).toBe(13);
+    expect(Utterance.atCeiling('Got it. I will treat this as a solid picture and its tr')).toBe('Got it.');
+    expect(Utterance.atCeiling('Got it — a solid picture of the landscape and its tr')).toBe(
+      'Got it — a solid picture of the landscape and its'
+    );
+    expect(Utterance.atCeiling('Unbroken')).toBe('');
+  });
+});
