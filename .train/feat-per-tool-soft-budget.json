@@ -1,0 +1,9 @@
+{
+  "branch": "feat/per-tool-soft-budget",
+  "packages": ["conversation"],
+  "suites": [
+    "packages/conversation/test/conversation/toolBudget.test.ts",
+    "packages/conversation/test/conversation/utterance.test.ts"
+  ],
+  "removes": []
+}
