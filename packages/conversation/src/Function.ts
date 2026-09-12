@@ -49,6 +49,13 @@ export interface Function {
    * instead of after the SOFT budget, so the yield is immediate.
    */
   background?: boolean;
+  /**
+   * The tool's OWN soft budget in ms — this call's N in place of the loop's (`ToolBudgetHost.
+   * softBudgetMs`, else `ToolBudget.softBudgetMs()`). `Infinity` = the call is always awaited
+   * inline, never converted: for a tool whose result IS the reply's substance (a document write —
+   * the model must report what it wrote, not that it started). `background: true` still wins.
+   */
+  softBudgetMs?: number;
   /** The tool's own generous HARD ceiling in ms (D8); the host arms it on the job. Default 30 min. */
   hardBudgetMs?: number;
   /**

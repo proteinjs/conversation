@@ -566,3 +566,131 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     expect(run.parts.find((p) => p.type === 'tool-settled')).toMatchObject({ id: 'tc-1', ok: false });
   });
 });
+
+/**
+ * A tool's OWN soft budget (`Function.softBudgetMs`): the per-tool tune of N (D2 — hints only
+ * tune the budget). A tool whose result IS the reply's substance (a document write) declares
+ * `Infinity`: the executor awaits it however long it runs — the model reads the tool's own result
+ * at the boundary and the host is never asked to own a job. A finite value is that call's own N.
+ * `background: true` still wins (t = 0). Tools that declare nothing keep the loop's N.
+ *
+ * RED at the pre-fix executor: `softBudgetMs` is unread — every call races the loop's N, so the
+ * Infinity tool converts at 250 ms like any other and the model reads the hand-off.
+ */
+describe('a tool’s own SOFT budget — `softBudgetMs` per tool (deliverable writes stay inline)', () => {
+  const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
+  const LOOP_N_MS = 250;
+
+  beforeEach(() => {
+    process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = String(LOOP_N_MS);
+  });
+
+  afterAll(() => {
+    if (savedSoft === undefined) {
+      delete process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
+    } else {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = savedSoft;
+    }
+  });
+
+  const writeTool = (opts: { ms: number; softBudgetMs?: number; background?: boolean; name?: string }) => {
+    const state = { settled: 0 };
+    const fn: Function = {
+      definition: {
+        name: opts.name ?? 'writeDocument',
+        description: 'writes the document the user asked for',
+        parameters: { type: 'object', properties: {} },
+      },
+      ...(opts.softBudgetMs !== undefined ? { softBudgetMs: opts.softBudgetMs } : {}),
+      ...(opts.background ? { background: true } : {}),
+      call: async () => {
+        await sleep(opts.ms);
+        state.settled++;
+        return { written: true, id: 'doc-1' };
+      },
+    };
+    return { fn, state };
+  };
+
+  test('`softBudgetMs: Infinity` — the call is AWAITED however long it runs: the boundary waits for it, the model reads the tool’s own result, the host is never called', async () => {
+    const { fn, state } = writeTool({ ms: 1_500, softBudgetMs: Number.POSITIVE_INFINITY });
+    const { host, conversions } = recordingHost();
+    const run = await runLoop({
+      fns: [fn],
+      host,
+      steps: [() => toolCallStep('writeDocument', ['tc-1']), () => textStep('here it is')],
+    });
+
+    expect(run.prompts).toHaveLength(2);
+    // The boundary came AFTER the write (6× past the loop's N), not at N.
+    expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(1_400);
+    expect(state.settled).toBe(1);
+    expect(conversions).toHaveLength(0);
+    const toolResults = toolResultTexts(run.prompts[1].prompt);
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0]).toContain('"written":true');
+    expect(toolResults[0]).not.toContain('Started in the background');
+    expect(run.toolInvocations[0].converted).toBeUndefined();
+    expect(run.toolInvocations[0].data).toEqual({ written: true, id: 'doc-1' });
+    expect(run.text).toBe('here it is');
+  }, 20_000);
+
+  test('a finite `softBudgetMs` is that call’s own N — inline under it though past the loop’s N; converted past it', async () => {
+    // Under its own N (1 200 ms) though 4× past the loop's (250 ms): inline.
+    const under = writeTool({ ms: 1_000, softBudgetMs: 1_200, name: 'writeUnder' });
+    const underHost = recordingHost();
+    const underRun = await runLoop({
+      fns: [under.fn],
+      host: underHost.host,
+      steps: [() => toolCallStep('writeUnder', ['tc-1']), () => textStep('inline')],
+    });
+    expect(underHost.conversions).toHaveLength(0);
+    expect(underRun.prompts[1].atMs).toBeGreaterThanOrEqual(900);
+    expect(toolResultTexts(underRun.prompts[1].prompt)[0]).toContain('"written":true');
+
+    // Past its own N (400 ms): converted there — its own number, not the loop's.
+    const over = writeTool({ ms: 1_500, softBudgetMs: 400, name: 'writeOver' });
+    const overHost = recordingHost();
+    const overRun = await runLoop({
+      fns: [over.fn],
+      host: overHost.host,
+      steps: [() => toolCallStep('writeOver', ['tc-2']), () => textStep('started')],
+    });
+    expect(overHost.conversions).toHaveLength(1);
+    expect(overHost.conversions[0].toolCallId).toBe('tc-2');
+    expect(overRun.prompts[1].atMs).toBeGreaterThanOrEqual(350);
+    expect(overRun.prompts[1].atMs).toBeLessThan(1_300);
+    expect(toolResultTexts(overRun.prompts[1].prompt)[0]).toContain('Started in the background');
+    await expect(overHost.conversions[0].promise).resolves.toEqual({ written: true, id: 'doc-1' });
+  }, 20_000);
+
+  test('`background: true` still wins over the tool’s own soft budget (t = 0); a tool that declares nothing keeps the loop’s N', async () => {
+    const always = writeTool({
+      ms: 1_000,
+      softBudgetMs: Number.POSITIVE_INFINITY,
+      background: true,
+      name: 'alwaysLong',
+    });
+    const alwaysHost = recordingHost();
+    const alwaysRun = await runLoop({
+      fns: [always.fn],
+      host: alwaysHost.host,
+      steps: [() => toolCallStep('alwaysLong', ['tc-1']), () => textStep('started')],
+    });
+    expect(alwaysHost.conversions).toHaveLength(1);
+    expect(alwaysRun.prompts[1].atMs).toBeLessThan(500);
+    await expect(alwaysHost.conversions[0].promise).resolves.toEqual({ written: true, id: 'doc-1' });
+
+    const plain = writeTool({ ms: 1_000, name: 'plainTool' });
+    const plainHost = recordingHost();
+    const plainRun = await runLoop({
+      fns: [plain.fn],
+      host: plainHost.host,
+      steps: [() => toolCallStep('plainTool', ['tc-2']), () => textStep('started')],
+    });
+    expect(plainHost.conversions).toHaveLength(1);
+    expect(plainRun.prompts[1].atMs).toBeGreaterThanOrEqual(LOOP_N_MS - 50);
+    expect(plainRun.prompts[1].atMs).toBeLessThan(900);
+    await expect(plainHost.conversions[0].promise).resolves.toEqual({ written: true, id: 'doc-1' });
+  }, 20_000);
+});

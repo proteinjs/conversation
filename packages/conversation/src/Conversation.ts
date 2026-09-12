@@ -2274,10 +2274,13 @@ export class Conversation {
             return { type: 'content', value: sdkParts };
           }
           // Default path: preserve the SDK's historical behavior — string →
-          // text, everything else → json (stringified).
+          // text, everything else → json — JSON-SAFE: the value rides the step
+          // transcript, which the bounded utterance replays as a fresh prompt
+          // the SDK validates (a Date or a date library's object in a tool
+          // result fails that validation; see `jsonSafeToolOutput`).
           return typeof output === 'string'
             ? { type: 'text', value: output }
-            : { type: 'json', value: (output ?? null) as unknown as any };
+            : { type: 'json', value: Conversation.jsonSafeToolOutput(output) as unknown as any };
         },
       } as any;
     }
@@ -2597,6 +2600,20 @@ export class Conversation {
       Conversation.toolResultEncoder = encoding_for_model('gpt-4o');
     }
     return Conversation.toolResultEncoder.encode_ordinary(text).length;
+  }
+
+  /**
+   * A tool's non-string result as the model reads it: its JSON form — `toJSON()` honoured (a
+   * Date, a moment, any date library's object → its ISO string), functions and `undefined`
+   * dropped, `undefined` itself → null. The one owner of JSON-safety for tool results: the value
+   * rides the step transcript, and every fresh prompt built over that transcript (the bounded
+   * utterance, the side utterance) is validated by the SDK as a prompt — a raw Date or an object
+   * with methods fails that validation (InvalidPromptError) before any provider call. Tools return
+   * what they return; nothing they return can put an unserializable value into the transcript.
+   */
+  private static jsonSafeToolOutput(output: unknown): unknown {
+    const json = JSON.stringify(output);
+    return json === undefined ? null : JSON.parse(json);
   }
 
   /**

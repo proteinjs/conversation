@@ -73,7 +73,8 @@ export type ToolBudgetOutcome =
  * boundary, so the round continues and the next input reaches the one mind within the bar. The
  * promise runs on; its later settlement is the host's to deliver as an input (I3). No per-tool
  * special case and no timer-as-fallback: the budget IS the contract; a tool's optional hints
- * (`background`, `hardBudgetMs`, `dedupe`/`dedupeKey`) only tune it (D2). One instance per call.
+ * (`background`, `softBudgetMs` — its own N, `Infinity` = always awaited — `hardBudgetMs`,
+ * `dedupe`/`dedupeKey`) only tune it (D2). One instance per call.
  *
  * The job's NAME is a task in plain English (the founder's ruling, FREE_AGENT §M): under a budgeted
  * executor every tool's schema offers the model a `task` label ({@link ToolBudget.TASK_PARAMETER}
@@ -137,7 +138,9 @@ export class ToolBudget {
         signal: controller.signal,
         onPhase: (phase) => this.reportPhase(phase),
       }))();
-    const budgetMs = fn.background ? 0 : host.softBudgetMs ?? ToolBudget.softBudgetMs();
+    // This call's N: `background: true` → 0; else the tool's own soft budget (`Infinity` = awaited
+    // inline, never converted — a deliverable write); else the loop's.
+    const budgetMs = fn.background ? 0 : fn.softBudgetMs ?? host.softBudgetMs ?? ToolBudget.softBudgetMs();
     const raced = await ToolBudget.race(promise, budgetMs);
     if (raced.settled) {
       return { kind: 'settled', result: raced.value };
@@ -286,7 +289,9 @@ export class ToolBudget {
   /**
    * The race: the call's own settlement wins under N; the budget wins past it (the call keeps
    * running — nothing is cancelled by the yield, §2.3 #1). A rejection under N propagates to the
-   * executor's failure path exactly as an unbudgeted call's would.
+   * executor's failure path exactly as an unbudgeted call's would. A non-finite N is no race at
+   * all: the call is awaited (the `softBudgetMs: Infinity` tool — never a timer, which Node would
+   * clamp to 1 ms and fire at once).
    */
   private static race<T>(
     promise: Promise<T>,
@@ -294,6 +299,9 @@ export class ToolBudget {
   ): Promise<{ settled: true; value: T } | { settled: false }> {
     if (budgetMs <= 0) {
       return Promise.resolve({ settled: false });
+    }
+    if (!Number.isFinite(budgetMs)) {
+      return promise.then((value) => ({ settled: true, value }));
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => resolve({ settled: false }), budgetMs);

@@ -891,3 +891,128 @@ describe('the server-tool boundary guards every door — the side utterance, its
     TIMEOUT
   );
 });
+
+/**
+ * TOOL RESULTS REACH THE TRANSCRIPT JSON-SAFE. The bounded utterance replays the step transcript
+ * into a fresh provider request, and the SDK validates that request as a prompt: a tool-result
+ * part of type `json` must carry a JSON value — a `Date`, or a date library's object (an object
+ * with functions and a nested Date), is refused with InvalidPromptError before any provider call,
+ * and the step then runs without its line. The executor is the one owner of what the model reads
+ * as a tool's result (`toModelOutput`): a non-string result is projected to its JSON form there —
+ * `toJSON()` honoured (a Date, a moment → its ISO string), functions dropped — so no tool can put
+ * an unserializable value into the transcript.
+ *
+ * RED at the pre-fix executor: the raw object rides the transcript; the utterance's request fails
+ * validation (the model never sees the utterance call — three calls, not four), and the next step
+ * runs with the note as a bare user message, no framing.
+ */
+describe('tool results reach the transcript JSON-safe — the utterance replays them', () => {
+  /** A date library's object as tools return it: a nested Date, methods, and its own `toJSON`. */
+  class Stamp {
+    constructor(private readonly at: Date) {}
+    isValid(): boolean {
+      return !Number.isNaN(this.at.getTime());
+    }
+    toJSON(): string {
+      return this.at.toISOString();
+    }
+  }
+
+  const stampedRead = () => ({
+    lastUpdated: new Date('2026-09-12T00:00:00.000Z'),
+    stamp: new Stamp(new Date('2026-09-12T01:00:00.000Z')),
+    entries: [{ title: 'GERD notes', updated: new Stamp(new Date('2026-09-12T02:00:00.000Z')) }],
+  });
+
+  const readingConversation = (name: string) =>
+    new Conversation({
+      modelData: fixtureModelData,
+      name,
+      logLevel: 'error',
+      limits: { enforceLimits: false },
+      skills: [
+        {
+          getId: () => 'stamped-read',
+          getName: () => 'StampedRead',
+          getSystemMessages: () => [],
+          getMessageModerators: () => [],
+          getFunctions: () => [
+            {
+              definition: {
+                name: 'stampedRead',
+                description: 'reads the index',
+                parameters: { type: 'object', properties: {} },
+              },
+              call: async () => {
+                toolHooks.onCall?.();
+                return stampedRead();
+              },
+            },
+          ],
+        } as never,
+      ],
+    });
+
+  test(
+    'a tool that returns a Date and a date-library object: the transcript carries ISO strings, the utterance after it is asked and its line frames the next step — never an InvalidPromptError',
+    async () => {
+      const NOTE = 'and the newest one?';
+      const inbox = new Inbox();
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            return { stream: textStep(mainStep === 0 ? 'Looking.' : 'Noted — the newest too.') };
+          }
+          mainStep++;
+          if (mainStep === 1) {
+            return { stream: toolCallStep('tc-1', 'stampedRead') };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      // The note lands DURING the read; the boundary after it drains the note and utters over the
+      // transcript that now carries the read's result.
+      toolHooks.onCall = () => inbox.push(NOTE);
+      const result = await readingConversation('utterance-json-safe').generateStream({
+        messages: ['what changed?'],
+        model: model as never,
+        ...inbox.params(),
+      });
+      const { parts } = await collect(result.fullStream);
+      toolHooks.onCall = undefined;
+
+      // utterance(idle) · step 1 · utterance(note) · step 2 — the second utterance was ASKED.
+      expect(calls).toHaveLength(4);
+      expect(Utterance.isRequest(calls[2].prompt)).toBe(true);
+      expect(messageText(calls[2].prompt[calls[2].prompt.length - 1] as never)).toContain(NOTE);
+      expectFraming(calls[3].prompt, 'Noted — the newest too.', NOTE);
+      // The line reached the stream as its own step.
+      const utteranceFinishes = parts.filter((part) => part.type === 'step-finish' && part.utterance);
+      expect(utteranceFinishes).toHaveLength(2);
+
+      // The tool-result part the transcript carries is JSON-safe: ISO strings where the tool
+      // returned a Date or a date-library object — in the utterance's request and the next step's.
+      for (const prompt of [calls[2].prompt, calls[3].prompt]) {
+        const toolMessage = prompt.find((m) => m.role === 'tool');
+        expect(toolMessage).toBeDefined();
+        const part = (
+          toolMessage!.content as Array<{ type?: string; output?: { type?: string; value?: unknown } }>
+        ).find((p) => p?.type === 'tool-result');
+        expect(part?.output?.type).toBe('json');
+        expect(part?.output?.value).toEqual({
+          lastUpdated: '2026-09-12T00:00:00.000Z',
+          stamp: '2026-09-12T01:00:00.000Z',
+          entries: [{ title: 'GERD notes', updated: '2026-09-12T02:00:00.000Z' }],
+        });
+      }
+      // The tool's own record keeps the value the tool returned (the projection is the model's view).
+      const invocations = await result.toolInvocations;
+      expect(invocations).toHaveLength(1);
+      expect((invocations[0].data as { lastUpdated: unknown }).lastUpdated).toBeInstanceOf(Date);
+    },
+    TIMEOUT
+  );
+});
