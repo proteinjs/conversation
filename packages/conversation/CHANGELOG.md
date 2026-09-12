@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.6.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.5.0...@proteinjs/conversation@6.6.0) (2026-09-12)
+
+
+### Features
+
+* **conversation:** a tool's own soft budget (`softBudgetMs`), and JSON-safe tool outputs on the model's view ([9665180](https://github.com/proteinjs/conversation/commit/966518096451abcaa822ca47ec7dc4ced2fa6a28))
+
+
+
+
+
 # [6.5.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.4.0...@proteinjs/conversation@6.5.0) (2026-09-10)
 
 
