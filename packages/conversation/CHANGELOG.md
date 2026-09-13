@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.6.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.6.0...@proteinjs/conversation@6.6.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **conversation:** the bounded utterance never yields a fragment — a cut or failed call keeps only its whole sentences, or has no line ([fc61577](https://github.com/proteinjs/conversation/commit/fc615777e32b816bfbc711552482200649c3ed1c))
+
+
+
+
+
 # [6.6.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.5.0...@proteinjs/conversation@6.6.0) (2026-09-12)
 
 
