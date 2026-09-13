@@ -3760,11 +3760,11 @@ export class Conversation {
 
   /**
    * The bounded utterance (plans/FREE_AGENT.md §M.3 part 2c; {@link Utterance}): one no-tools,
-   * no-thinking call over `transcript` + `inputs` + the instruction, its text streamed as
-   * text-delta parts and closed by a step-finish flagged `utterance`. Returns the line, or nothing
-   * when the call produced no whole sentence — no text, a failure or the ceiling before the first
-   * sentence end (logged — the step then runs without its line, and the consumer's acknowledgment
-   * window commits that step's own first text as before).
+   * no-thinking call over `transcript` + `inputs` + the instruction, its line yielded as ONE
+   * text-delta part and closed by a step-finish flagged `utterance`. Returns the line, or nothing
+   * when the call produced no line — no text, a failure, or the provider's output limit reached
+   * before the line's end (logged — the step then runs without its line, and the consumer's
+   * acknowledgment window commits that step's own first text as before).
    */
   private async *utter(args: {
     model: LanguageModel;
@@ -3777,30 +3777,26 @@ export class Conversation {
   }): AsyncGenerator<any, string | undefined> {
     const request = Utterance.request(args.transcript, args.inputs);
     const startedAt = Date.now();
-    // The LINE is the first paragraph of what the model writes (plans/FREE_AGENT.md §M.16 found
-    // (1)): text reaches the consumer sentence by sentence (a sentence still arriving is held
-    // back), the model's own paragraph break ends the line (the rest of the call is read for its
-    // usage and never shown), and a call that hits its ceiling — or fails mid-stream — keeps only
-    // the whole sentences already on the wire: with none, it has NO line (prod 2026-09-13: the
-    // old last-whole-word fallback persisted "Right — a cat changes the options," as a reply's
-    // body). What the user reads and what the framing quotes back to the mind are then the same
-    // whole line, or nothing — never a fragment.
+    // The LINE is the first paragraph of what the model writes, WHOLE or nothing (the ruling
+    // 2026-09-13: the length is guidance in the ask — Utterance.INSTRUCTION's "one short sentence
+    // — two at most" — never a cut). No output cap rides the request; the line is held until it
+    // is complete — the model's own paragraph break, or the model's own stop — and yielded as one
+    // delta. At the paragraph break the line is DONE: it is yielded at once and the rest of the
+    // call (a caveat the model wrote past the ask) drains in the background — never shown, never
+    // waited for by the step that follows, still read to its end so its usage rides the turn's
+    // (the cap's latency role, owned here instead). A call that reaches the provider's output
+    // limit before the line ended ('length' — a failure, never a normal stop) or fails mid-stream
+    // has NO line: nothing reaches the consumer, no utterance step, no framing, not even the whole
+    // sentences before the cut. Retries stay off (maxRetries 0): a retry would hold the main step
+    // at the boundary for the backoff on top of the failed attempt, while the degradation is free
+    // — the step runs and its own first text is the acknowledgment.
     let text = '';
-    let sent = 0;
     let lineEnded = false;
-    let cutShort = false;
-    const flushTo = function* (end: number) {
-      if (end > sent) {
-        const delta = text.slice(sent, end);
-        sent = end;
-        yield { type: 'text-delta', delta };
-      }
-    };
+    let failure: string | undefined;
     try {
       const result = streamText({
         model: args.model,
         messages: request,
-        maxOutputTokens: Utterance.MAX_OUTPUT_TOKENS,
         maxRetries: 0,
         abortSignal: args.abortSignal,
         providerOptions: this.buildProviderOptions(args.provider, { reasoningEffort: 'none' }, args.modelString),
@@ -3808,11 +3804,12 @@ export class Conversation {
       args.onResult(result);
       Promise.resolve(result.response).catch(() => {});
       Promise.resolve(result.finishReason).catch(() => {});
-      for await (const part of result.fullStream as AsyncIterable<any>) {
+      // A manual iterator: leaving the loop at the paragraph break must NOT close the stream (a
+      // `for await` break would), so the tail can drain behind the step that follows.
+      const iterator = (result.fullStream as AsyncIterable<any>)[Symbol.asyncIterator]();
+      for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+        const part = next.value;
         if (part.type === 'text-delta') {
-          if (lineEnded) {
-            continue;
-          }
           const delta = String(part.delta ?? part.text ?? part.textDelta ?? '');
           if (!delta) {
             continue;
@@ -3822,13 +3819,14 @@ export class Conversation {
           if (end >= 0) {
             text = text.slice(0, end);
             lineEnded = true;
-            yield* flushTo(text.length);
-            continue;
+            Conversation.drainInBackground(iterator);
+            break;
           }
-          yield* flushTo(Utterance.sentenceEnd(text));
         } else if (part.type === 'finish-step' || part.type === 'finish') {
           const reason = String(part.finishReason?.unified ?? part.finishReason ?? '');
-          cutShort ||= reason === 'length';
+          if (reason === 'length') {
+            failure = "the provider's output limit was reached before the line ended";
+          }
         } else if (part.type === 'error') {
           const cause = (part as { error?: unknown }).error;
           throw cause instanceof Error ? cause : new Error(String((cause as { message?: string })?.message ?? cause));
@@ -3838,39 +3836,46 @@ export class Conversation {
       if (args.abortSignal.aborted) {
         return undefined;
       }
-      cutShort = true;
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (failure) {
       this.logger.warn({
-        message:
-          'The bounded utterance failed — its whole sentences so far are the line; with none, the step runs without its acknowledgment line',
-        obj: {
-          error: error instanceof Error ? error.message : String(error),
-          inputCount: args.inputs.length,
-          sentenceChars: Utterance.atCeiling(text).length,
-        },
+        message: 'The bounded utterance has no line — the step runs without its acknowledgment line',
+        obj: { failure, partialChars: text.length, inputCount: args.inputs.length },
       });
-    }
-    if (!lineEnded && cutShort) {
-      // The whole sentences already on the wire, or nothing — the sentence-by-sentence flush above
-      // never sent more, so no consumer holds a fragment either way.
-      text = Utterance.atCeiling(text);
-    }
-    yield* flushTo(text.length);
-    const line = text.trim();
-    if (!line) {
-      if (cutShort) {
-        this.logger.info({
-          message: 'Bounded utterance dropped — cut before its first sentence end; the step carries the acknowledgment',
-          obj: { ms: Date.now() - startedAt, inputCount: args.inputs.length },
-        });
-      }
       return undefined;
     }
+    const line = text.trim();
+    if (!line) {
+      return undefined;
+    }
+    yield { type: 'text-delta', delta: line };
     yield { type: 'finish-step', finishReason: 'stop', utterance: true };
     this.logger.info({
       message: 'Bounded utterance',
-      obj: { ms: Date.now() - startedAt, chars: line.length, inputCount: args.inputs.length, cutShort },
+      obj: {
+        ms: Date.now() - startedAt,
+        chars: line.length,
+        inputCount: args.inputs.length,
+        endedBy: lineEnded ? 'paragraph-break' : 'stop',
+      },
     });
     return line;
+  }
+
+  /** Read a provider stream to its end without holding anyone: the tail of an utterance call past
+   *  the line's paragraph break — never shown, read so the call's usage resolves and rides the
+   *  turn's; the turn's abort ends it (the call carries that signal). */
+  private static drainInBackground(iterator: AsyncIterator<any>): void {
+    void (async () => {
+      try {
+        for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
+          // discarded
+        }
+      } catch {
+        // the turn's abort, or a provider error on the tail — the line already stands
+      }
+    })();
   }
 
   /** The utterance streamed into a boundary queue (the `prepareStep` seam) instead of yielded. */

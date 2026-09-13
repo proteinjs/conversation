@@ -4,10 +4,12 @@ import type { ModelMessage } from 'ai';
  * The BOUNDED UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c — the load-bearing guarantee of the
  * 10-second bar): before the mind takes an input into its next step, the harness asks it for ONE
  * LINE — a separate call on the same model over the same transcript (a prompt-cache hit) with the
- * input appended and this instruction, no tools, thinking off, a small output ceiling. The line is
- * the acknowledgment the user is owed at once, in the agent's own words; its turnaround is a
- * no-thinking completion on a cached prefix (1–2 s), whatever the main step's adaptive thinking
- * decides. The main step then runs with the input spliced and the line riding as the agent's OWN
+ * input appended and this instruction, no tools, thinking off, NO output cap: the length is
+ * guidance in the ask ("one short sentence — two at most"), never a cut (the ruling 2026-09-13:
+ * "it needs to be a guidance on how long the response should be, but we should never cut off a
+ * response"). The line is the acknowledgment the user is owed at once, in the agent's own words;
+ * its turnaround is a no-thinking completion on a cached prefix (1–2 s), whatever the main step's
+ * adaptive thinking decides. The main step then runs with the input spliced and the line riding as the agent's OWN
  * prior utterance followed by the continue framing — roles alternate, so it works with thinking
  * on (a prefill would not), and the mind never acknowledges twice.
  *
@@ -37,22 +39,10 @@ export class Utterance {
    * from the main step by it.
    */
   static readonly INSTRUCTION =
-    'Before you continue: acknowledge, in one short line and in your own words, what you are taking ' +
-    'in from the message above and that it is handled — nothing about your plan, your tools, or what ' +
-    `comes next, and no time estimate. That single line reaches the user right away; you continue ` +
-    `the work after it. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`;
-
-  /**
-   * The output ceiling of the utterance REQUEST — a cost and latency bound, not the line's
-   * definition. The line is the first paragraph of what comes back ({@link Utterance.lineEnd}); a
-   * call that hits this ceiling ends its line at its last sentence end ({@link Utterance.atCeiling})
-   * or has NO line — never a fragment (plans/FREE_AGENT.md §M.16 found (1): Opus 5 writes a caveat
-   * as a second paragraph and the ceiling cut it mid-word — "…and its tr" — onto the screen and into
-   * the framing, so the main step continued the broken sentence; prod 2026-09-13: a cut with no
-   * sentence end persisted to its last whole word — "Right — a cat changes the options," — as the
-   * reply's body).
-   */
-  static readonly MAX_OUTPUT_TOKENS = 80;
+    'Before you continue: acknowledge, in one short sentence — two at most — and in your own words, ' +
+    'what you are taking in from the message above and that it is handled — nothing about your plan, ' +
+    'your tools, or what comes next, and no time estimate. That single line reaches the user right ' +
+    `away; you continue the work after it. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`;
 
   /** The break that ends the line: the model's own paragraph break. */
   static readonly PARAGRAPH_BREAK = '\n\n';
@@ -148,38 +138,11 @@ export class Utterance {
    * Where the line ends inside the model's text: the index of the first paragraph break past any
    * leading whitespace, or −1 while none has arrived. The line is the FIRST paragraph — a model
    * that writes a second one (a caveat, a plan) has written past the ask, and that text is never
-   * the line.
+   * the line; the call is ended there (`Conversation.utter`).
    */
   static lineEnd(text: string): number {
     const lead = text.length - text.trimStart().length;
     return text.indexOf(Utterance.PARAGRAPH_BREAK, lead);
-  }
-
-  /**
-   * The longest prefix of `text` that ends at a sentence end — a terminator (`.`, `!`, `?`, `…`)
-   * with any closing quote or bracket, followed by whitespace or the end of the text. What may
-   * reach the screen while the rest of the line is still arriving, and where a line cut by the
-   * output ceiling ends. 0 when none has arrived.
-   */
-  static sentenceEnd(text: string): number {
-    const terminators = /[.!?…]+["'”’)\]]*(?=\s|$)/g;
-    let end = 0;
-    for (let match = terminators.exec(text); match !== null; match = terminators.exec(text)) {
-      end = match.index + match[0].length;
-    }
-    return end;
-  }
-
-  /**
-   * The line a call that hit its output ceiling — or failed mid-stream — still has: the text to
-   * its last sentence end, the whole sentences already on the wire. Empty when no sentence
-   * completed: a cut line is NO line, never a fragment to its last whole word (prod 2026-09-13,
-   * the long-chat ticket: "Right — a cat changes the options," and "…running straight into the
-   * month's" persisted as replies — a reply that reads cut off is worse than no acknowledgment
-   * line, and the step that follows carries the acknowledgment in its own first text).
-   */
-  static atCeiling(text: string): string {
-    return text.slice(0, Utterance.sentenceEnd(text));
   }
 
   /** Inputs as {@link DrainedInput}s — a bare string is an input with the default ask. */

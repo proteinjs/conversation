@@ -215,7 +215,7 @@ const expectFraming = (prompt: Prompt, line: string, input?: string): void => {
 
 describe('the bounded utterance — one line before every step that takes an input in (FREE_AGENT §M.3 part 2c)', () => {
   test(
-    'IDLE PATH: the take-in line is a separate no-tools, no-thinking, 80-token call over the request — streamed first, flagged utterance, then the first step runs under the framing',
+    'IDLE PATH: the take-in line is a separate no-tools, no-thinking, UNCAPPED call over the request whose ask carries the length guidance — streamed first, flagged utterance, then the first step runs under the framing',
     async () => {
       const calls: CallOptions[] = [];
       const model = new MockLanguageModelV3({
@@ -242,7 +242,13 @@ describe('the bounded utterance — one line before every step that takes an inp
       expect(Utterance.isRequest(utterance.prompt)).toBe(true);
       expect(messageText(utterance.prompt[utterance.prompt.length - 1] as never)).toContain('compare sql and nosql');
       expect(utterance.tools ?? []).toHaveLength(0);
-      expect(utterance.maxOutputTokens).toBe(Utterance.MAX_OUTPUT_TOKENS);
+      // No output cap on the request: the length is guidance in the ask (the ruling 2026-09-13 —
+      // never a cut), so the line is never truncated by the harness.
+      expect(utterance.maxOutputTokens).toBeUndefined();
+      // The ask carries the guidance, at its owner.
+      const askText = messageText(utterance.prompt[utterance.prompt.length - 1] as never);
+      expect(askText).toContain('one short sentence');
+      expect(askText).toContain('two at most');
       // The main step: tools on, the framing at the tail.
       const main = calls[1];
       expect((main.tools ?? []).length).toBeGreaterThan(0);
@@ -669,15 +675,97 @@ describe('the line is the FIRST PARAGRAPH, whole — never a word broken by the 
   );
 
   test(
-    'THE CEILING INSIDE THE FIRST PARAGRAPH: the line ends at its last sentence end — text reaches the stream sentence by sentence, so a sentence still arriving is never shown cut',
+    "A LENGTH FINISH BEFORE THE LINE'S END IS A FAILURE (the ruling 2026-09-13: never a cut): no line at all — not even the whole sentence before the cut — no utterance step, no framing",
     async () => {
       const { calls, parts } = await run(
-        'utterance-ceiling-in-paragraph',
+        'utterance-length-is-failure',
         ['Got it. I will treat this as a solid', ' picture of the landscape and its tr'],
         'length'
       );
-      expect(utteranceDeltas(parts)).toEqual(['Got it.']);
-      expectFraming(calls[1].prompt, 'Got it.');
+      expect(parts.some((part) => (part.textDelta ?? '').includes('Got it'))).toBe(false);
+      expect(parts.filter((part) => part.utterance)).toHaveLength(0);
+      expect(calls[1].prompt.some((message) => message.role === 'assistant')).toBe(false);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'THE LINE ENDS THE WAIT: at the model’s paragraph break the line is yielded and the next step starts at once — the caveat the model writes past the ask drains behind it, never shown, its usage still counted',
+    async () => {
+      const calls: Array<{ at: number; options: CallOptions }> = [];
+      const TAIL_STALL_MS = 600;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push({ at: Date.now(), options });
+          if (Utterance.isRequest(options.prompt)) {
+            // The line, its break, then a caveat that takes TAIL_STALL_MS to arrive.
+            const queue: unknown[] = [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 't1' },
+              { type: 'text-delta', id: 't1', delta: PARAGRAPH_1 },
+              { type: 'text-delta', id: 't1', delta: '\n\n' },
+              'stall',
+              { type: 'text-delta', id: 't1', delta: 'Caveat up front: my knowledge has a cutoff.' },
+              { type: 'text-end', id: 't1' },
+              { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage },
+            ];
+            return {
+              stream: new ReadableStream<any>({
+                async pull(controller) {
+                  let next = queue.shift();
+                  if (next === 'stall') {
+                    await new Promise((resolve) => setTimeout(resolve, TAIL_STALL_MS));
+                    next = queue.shift();
+                  }
+                  if (next === undefined) {
+                    controller.close();
+                  } else {
+                    controller.enqueue(next);
+                  }
+                },
+              }),
+            };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      const result = await conversation('utterance-line-ends-the-wait').generateStream({
+        messages: ['give me the state of the art'],
+        model: model as never,
+        ...new Inbox().params(),
+      });
+      const { parts } = await collect(result.fullStream);
+      expect(calls).toHaveLength(2);
+      expect(utteranceDeltas(parts)).toEqual([PARAGRAPH_1]);
+      expect(parts.some((part) => (part.textDelta ?? '').includes('Caveat'))).toBe(false);
+      expectFraming(calls[1].options.prompt, PARAGRAPH_1);
+      // The main step was asked before the tail arrived — not after it.
+      expect(calls[1].at - calls[0].at).toBeLessThan(TAIL_STALL_MS);
+      // The tail was still read to its end: both calls' usage ride the turn's.
+      const usageData = await result.usage;
+      expect(usageData.totalTokenUsage.inputTokens).toBe(2);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'NO OUTPUT CAP: a long acknowledgment (~300 tokens, one paragraph, the model stopping on its own) completes WHOLE — one delta, the framing quoting all of it',
+    async () => {
+      const sentences = Array.from(
+        { length: 24 },
+        (_, i) => `Sentence ${i + 1} of the acknowledgment carries a few more words about the trip and the cat.`
+      );
+      const LONG = sentences.join(' ');
+      expect(LONG.length).toBeGreaterThan(1_500);
+      const { calls, parts } = await run(
+        'utterance-uncapped',
+        sentences.map((sentence, i) => (i === 0 ? sentence : ` ${sentence}`)),
+        'stop'
+      );
+      expect(calls[0].maxOutputTokens).toBeUndefined();
+      expect(utteranceDeltas(parts)).toEqual([LONG]);
+      expect(parts.filter((part) => part.utterance)).toHaveLength(1);
+      expectFraming(calls[1].prompt, LONG);
     },
     TIMEOUT
   );
@@ -768,7 +856,7 @@ describe('the line is the FIRST PARAGRAPH, whole — never a word broken by the 
   );
 
   test(
-    'A CALL THAT FAILS AFTER A WHOLE SENTENCE: the sentences already on the wire are the line; the fragment after them never is',
+    'A CALL THAT FAILS AFTER A WHOLE SENTENCE: still NO line — nothing partial is ever the acknowledgment (the ruling 2026-09-13)',
     async () => {
       const calls: CallOptions[] = [];
       const model = new MockLanguageModelV3({
@@ -794,27 +882,20 @@ describe('the line is the FIRST PARAGRAPH, whole — never a word broken by the 
         ...new Inbox().params(),
       });
       const { parts } = await collect(result.fullStream);
-      expect(utteranceDeltas(parts)).toEqual(['Got it.']);
-      expect(parts.filter((part) => part.utterance)).toHaveLength(1);
-      expectFraming(calls[1].prompt, 'Got it.');
+      expect(parts.some((part) => (part.textDelta ?? '').includes('Got it'))).toBe(false);
+      expect(parts.filter((part) => part.utterance)).toHaveLength(0);
+      expect(calls[1].prompt.some((message) => message.role === 'assistant')).toBe(false);
     },
     TIMEOUT
   );
 
-  test('Utterance.lineEnd / sentenceEnd / atCeiling — the shapes', () => {
+  test('Utterance.lineEnd — the shape; the instruction carries the length as guidance, never a cut', () => {
     expect(Utterance.lineEnd('Got it.\n\nCaveat')).toBe(7);
     expect(Utterance.lineEnd('\n\nGot it.')).toBe(-1);
     expect(Utterance.lineEnd('Got it — no break yet')).toBe(-1);
-    expect(Utterance.sentenceEnd('Got it. I will')).toBe(7);
-    expect(Utterance.sentenceEnd('Got it — no end')).toBe(0);
-    expect(Utterance.sentenceEnd('Version 3.5 is out')).toBe(0);
-    expect(Utterance.sentenceEnd('He said "go." Then')).toBe(13);
-    expect(Utterance.atCeiling('Got it. I will treat this as a solid picture and its tr')).toBe('Got it.');
-    // A cut with no sentence end has NO line — never the text to its last whole word (prod
-    // 2026-09-13: "Right — a cat changes the options," persisted as a reply).
-    expect(Utterance.atCeiling('Got it — a solid picture of the landscape and its tr')).toBe('');
-    expect(Utterance.atCeiling('Right — a cat changes the options, so')).toBe('');
-    expect(Utterance.atCeiling('Unbroken')).toBe('');
+    expect(Utterance.INSTRUCTION).toContain('one short sentence');
+    expect(Utterance.INSTRUCTION).toContain('two at most');
+    expect((Utterance as unknown as { MAX_OUTPUT_TOKENS?: number }).MAX_OUTPUT_TOKENS).toBeUndefined();
   });
 });
 
