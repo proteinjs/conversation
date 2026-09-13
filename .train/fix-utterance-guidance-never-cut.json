@@ -1,8 +1,0 @@
-{
-  "branch": "fix/utterance-guidance-never-cut",
-  "packages": ["conversation"],
-  "suites": [
-    "packages/conversation/test/conversation/utterance.test.ts"
-  ],
-  "removes": []
-}
