@@ -45,10 +45,12 @@ export class Utterance {
   /**
    * The output ceiling of the utterance REQUEST — a cost and latency bound, not the line's
    * definition. The line is the first paragraph of what comes back ({@link Utterance.lineEnd}); a
-   * call that hits this ceiling ends its line at a sentence end ({@link Utterance.atCeiling}),
-   * never inside a word (plans/FREE_AGENT.md §M.16 found (1): Opus 5 writes a caveat as a second
-   * paragraph and the ceiling cut it mid-word — "…and its tr" — onto the screen and into the
-   * framing, so the main step continued the broken sentence).
+   * call that hits this ceiling ends its line at its last sentence end ({@link Utterance.atCeiling})
+   * or has NO line — never a fragment (plans/FREE_AGENT.md §M.16 found (1): Opus 5 writes a caveat
+   * as a second paragraph and the ceiling cut it mid-word — "…and its tr" — onto the screen and into
+   * the framing, so the main step continued the broken sentence; prod 2026-09-13: a cut with no
+   * sentence end persisted to its last whole word — "Right — a cat changes the options," — as the
+   * reply's body).
    */
   static readonly MAX_OUTPUT_TOKENS = 80;
 
@@ -169,17 +171,15 @@ export class Utterance {
   }
 
   /**
-   * The line a call that hit its output ceiling still has: the text to its last sentence end, else
-   * to its last whole word — never a word the ceiling broke. Empty when nothing whole arrived.
+   * The line a call that hit its output ceiling — or failed mid-stream — still has: the text to
+   * its last sentence end, the whole sentences already on the wire. Empty when no sentence
+   * completed: a cut line is NO line, never a fragment to its last whole word (prod 2026-09-13,
+   * the long-chat ticket: "Right — a cat changes the options," and "…running straight into the
+   * month's" persisted as replies — a reply that reads cut off is worse than no acknowledgment
+   * line, and the step that follows carries the acknowledgment in its own first text).
    */
   static atCeiling(text: string): string {
-    const sentence = Utterance.sentenceEnd(text);
-    if (sentence > 0) {
-      return text.slice(0, sentence);
-    }
-    const trimmed = text.trimEnd();
-    const lastWord = trimmed.search(/\s\S*$/);
-    return lastWord > 0 ? trimmed.slice(0, lastWord) : '';
+    return text.slice(0, Utterance.sentenceEnd(text));
   }
 
   /** Inputs as {@link DrainedInput}s — a bare string is an input with the default ask. */

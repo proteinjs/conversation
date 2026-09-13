@@ -1,0 +1,8 @@
+{
+  "branch": "fix/utterance-never-partial",
+  "packages": ["conversation"],
+  "suites": [
+    "packages/conversation/test/conversation/utterance.test.ts"
+  ],
+  "removes": []
+}

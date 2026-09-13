@@ -3762,8 +3762,9 @@ export class Conversation {
    * The bounded utterance (plans/FREE_AGENT.md §M.3 part 2c; {@link Utterance}): one no-tools,
    * no-thinking call over `transcript` + `inputs` + the instruction, its text streamed as
    * text-delta parts and closed by a step-finish flagged `utterance`. Returns the line, or nothing
-   * when the call produced no text or failed (logged — the step then runs without its line, and
-   * the consumer's acknowledgment window commits that step's own first text as before).
+   * when the call produced no whole sentence — no text, a failure or the ceiling before the first
+   * sentence end (logged — the step then runs without its line, and the consumer's acknowledgment
+   * window commits that step's own first text as before).
    */
   private async *utter(args: {
     model: LanguageModel;
@@ -3779,9 +3780,11 @@ export class Conversation {
     // The LINE is the first paragraph of what the model writes (plans/FREE_AGENT.md §M.16 found
     // (1)): text reaches the consumer sentence by sentence (a sentence still arriving is held
     // back), the model's own paragraph break ends the line (the rest of the call is read for its
-    // usage and never shown), and a call that hits its ceiling — or fails mid-stream — ends the
-    // line at its last sentence end, never inside a word. What the user reads and what the framing
-    // quotes back to the mind are then the same whole line.
+    // usage and never shown), and a call that hits its ceiling — or fails mid-stream — keeps only
+    // the whole sentences already on the wire: with none, it has NO line (prod 2026-09-13: the
+    // old last-whole-word fallback persisted "Right — a cat changes the options," as a reply's
+    // body). What the user reads and what the framing quotes back to the mind are then the same
+    // whole line, or nothing — never a fragment.
     let text = '';
     let sent = 0;
     let lineEnded = false;
@@ -3837,22 +3840,35 @@ export class Conversation {
       }
       cutShort = true;
       this.logger.warn({
-        message: 'The bounded utterance failed — the step runs without its acknowledgment line',
-        obj: { error: error instanceof Error ? error.message : String(error), inputCount: args.inputs.length },
+        message:
+          'The bounded utterance failed — its whole sentences so far are the line; with none, the step runs without its acknowledgment line',
+        obj: {
+          error: error instanceof Error ? error.message : String(error),
+          inputCount: args.inputs.length,
+          sentenceChars: Utterance.atCeiling(text).length,
+        },
       });
     }
     if (!lineEnded && cutShort) {
+      // The whole sentences already on the wire, or nothing — the sentence-by-sentence flush above
+      // never sent more, so no consumer holds a fragment either way.
       text = Utterance.atCeiling(text);
     }
     yield* flushTo(text.length);
     const line = text.trim();
     if (!line) {
+      if (cutShort) {
+        this.logger.info({
+          message: 'Bounded utterance dropped — cut before its first sentence end; the step carries the acknowledgment',
+          obj: { ms: Date.now() - startedAt, inputCount: args.inputs.length },
+        });
+      }
       return undefined;
     }
     yield { type: 'finish-step', finishReason: 'stop', utterance: true };
     this.logger.info({
       message: 'Bounded utterance',
-      obj: { ms: Date.now() - startedAt, chars: line.length, inputCount: args.inputs.length },
+      obj: { ms: Date.now() - startedAt, chars: line.length, inputCount: args.inputs.length, cutShort },
     });
     return line;
   }

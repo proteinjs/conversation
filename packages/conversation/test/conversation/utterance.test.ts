@@ -692,6 +692,115 @@ describe('the line is the FIRST PARAGRAPH, whole — never a word broken by the 
     TIMEOUT
   );
 
+  /**
+   * PROD 2026-09-13 (the long-chat ticket, app v1.26.0 / conversation 6.6.0): two replies persisted
+   * as a take-in line cut at a WORD boundary mid-sentence — "Right — a cat changes the options," and
+   * "…a legitimate need running straight into the month's" — the old `atCeiling` fallback (a cut or
+   * failed call kept its text to the last whole word) committed as the acknowledgment. A line the
+   * user reads must be whole sentences or nothing: a cut with no sentence end is NO line — nothing
+   * reaches the stream, no utterance step, no framing — and the step runs as it would without one
+   * (the consumer's acknowledgment window commits that step's own first text).
+   */
+  test(
+    'THE CEILING BEFORE ANY SENTENCE END (the prod shape): no fragment reaches the stream, no utterance step is yielded, the main step runs without a framing',
+    async () => {
+      const { calls, parts } = await run(
+        'utterance-ceiling-before-sentence',
+        ['Right — a cat changes', ' the options, so the'],
+        'length'
+      );
+      expect(calls).toHaveLength(2);
+      expect(parts.filter((part) => part.utterance)).toHaveLength(0);
+      expect(parts.some((part) => (part.textDelta ?? '').includes('cat changes'))).toBe(false);
+      // The first step-finish on the stream is the MAIN step's — no utterance step ahead of it.
+      const firstFinish = parts.findIndex((part) => part.type === 'step-finish');
+      expect(
+        parts
+          .slice(0, firstFinish)
+          .filter((part) => part.type === 'text-delta')
+          .map((p) => p.textDelta)
+      ).toEqual(['THE ANSWER']);
+      // No framing: the main step's prompt ends on the request itself, no assistant line before it.
+      const main = calls[1].prompt;
+      expect(main[main.length - 1].role).toBe('user');
+      expect(main.some((message) => message.role === 'assistant')).toBe(false);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'A CALL THAT FAILS MID-STREAM before any sentence end: the same — no fragment, no utterance step, no framing',
+    async () => {
+      const calls: CallOptions[] = [];
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                { type: 'text-start' as const, id: 't1' },
+                {
+                  type: 'text-delta' as const,
+                  id: 't1',
+                  delta: "That's a real bind — a legitimate need running straight into the month's bud",
+                },
+                { type: 'error' as const, error: new Error('overloaded') },
+              ]),
+            };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      const result = await conversation('utterance-failed-mid-line').generateStream({
+        messages: ['can we fit the trip in?'],
+        model: model as never,
+        ...new Inbox().params(),
+      });
+      const { parts } = await collect(result.fullStream);
+      expect(calls).toHaveLength(2);
+      expect(parts.filter((part) => part.utterance)).toHaveLength(0);
+      expect(parts.some((part) => (part.textDelta ?? '').includes('real bind'))).toBe(false);
+      const main = calls[1].prompt;
+      expect(main.some((message) => message.role === 'assistant')).toBe(false);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'A CALL THAT FAILS AFTER A WHOLE SENTENCE: the sentences already on the wire are the line; the fragment after them never is',
+    async () => {
+      const calls: CallOptions[] = [];
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                { type: 'text-start' as const, id: 't1' },
+                { type: 'text-delta' as const, id: 't1', delta: 'Got it. ' },
+                { type: 'text-delta' as const, id: 't1', delta: 'Then the rest of the li' },
+                { type: 'error' as const, error: new Error('overloaded') },
+              ]),
+            };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      const result = await conversation('utterance-failed-after-sentence').generateStream({
+        messages: ['can we fit the trip in?'],
+        model: model as never,
+        ...new Inbox().params(),
+      });
+      const { parts } = await collect(result.fullStream);
+      expect(utteranceDeltas(parts)).toEqual(['Got it.']);
+      expect(parts.filter((part) => part.utterance)).toHaveLength(1);
+      expectFraming(calls[1].prompt, 'Got it.');
+    },
+    TIMEOUT
+  );
+
   test('Utterance.lineEnd / sentenceEnd / atCeiling — the shapes', () => {
     expect(Utterance.lineEnd('Got it.\n\nCaveat')).toBe(7);
     expect(Utterance.lineEnd('\n\nGot it.')).toBe(-1);
@@ -701,9 +810,10 @@ describe('the line is the FIRST PARAGRAPH, whole — never a word broken by the 
     expect(Utterance.sentenceEnd('Version 3.5 is out')).toBe(0);
     expect(Utterance.sentenceEnd('He said "go." Then')).toBe(13);
     expect(Utterance.atCeiling('Got it. I will treat this as a solid picture and its tr')).toBe('Got it.');
-    expect(Utterance.atCeiling('Got it — a solid picture of the landscape and its tr')).toBe(
-      'Got it — a solid picture of the landscape and its'
-    );
+    // A cut with no sentence end has NO line — never the text to its last whole word (prod
+    // 2026-09-13: "Right — a cat changes the options," persisted as a reply).
+    expect(Utterance.atCeiling('Got it — a solid picture of the landscape and its tr')).toBe('');
+    expect(Utterance.atCeiling('Right — a cat changes the options, so')).toBe('');
     expect(Utterance.atCeiling('Unbroken')).toBe('');
   });
 });
