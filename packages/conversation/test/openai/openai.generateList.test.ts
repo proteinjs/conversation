@@ -7,6 +7,8 @@ import { fixtureModelData } from '../conversation/fixtureModelData';
  */
 const hasApiKey = !!process.env.OPENAI_API_KEY;
 const testIfKey = hasApiKey ? test : test.skip;
+/** A live model call answers in seconds, not under jest's 5 s unit budget. */
+const LIVE_CALL_TIMEOUT_MS = 60_000;
 
 testIfKey('generateList should return an array of numbers, counting to 10', async () => {
   const numbers = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
@@ -14,4 +16,4 @@ testIfKey('generateList should return an array of numbers, counting to 10', asyn
     messages: [`Create a list of numbers spelled out, from 1 to 10`],
   });
   expect(result.map((s) => s.toLowerCase()).join(' ')).toBe(numbers.join(' '));
-});
+}, LIVE_CALL_TIMEOUT_MS);
