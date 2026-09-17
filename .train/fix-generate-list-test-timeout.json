@@ -1,2 +1,0 @@
-{ "branch": "fix/generate-list-test-timeout", "packages": ["conversation"],
-  "suites": ["packages/conversation/test/openai/openai.generateList.test.ts"], "removes": [] }
