@@ -100,6 +100,38 @@ export type ReasoningEffort = 'auto' | 'none' | 'low' | 'medium' | 'high' | 'max
 /** How the round loop takes a note that lands mid-text — see {@link GenerateStreamParams.interjection}. */
 export type InterjectionShape = 'cut-and-continue' | 'after-generation';
 
+/**
+ * A model step the provider REFUSED — what the refusal ladder ({@link RefusalLadder}) is handed
+ * when it decides the next rung. `modelId` is the model the refused step ran on, as this call
+ * named it (the id string, or the instance's `modelId`); `declined` is every model that has
+ * declined this same step, in order, the requested model first — the ladder walks DOWN from
+ * the last of them and never names one of them again.
+ */
+export type RefusedStep = {
+  modelId: string;
+  declined: readonly string[];
+  provider: string;
+  /** The SDK's provider-normalized finish reason of the refused step (`content-filter`). */
+  finishReason: string;
+  /**
+   * The provider's own stop reason when the SDK exposed it — Anthropic `refusal`, OpenAI
+   * `content_filter`, Google `SAFETY` / `PROHIBITED_CONTENT` / `BLOCKLIST`, xAI `content_filter`.
+   */
+  rawFinishReason?: string;
+  /** The provider's stop details when it gave any (Anthropic `stop_details.category`). */
+  category?: string;
+  /** The provider's stop details when it gave any (Anthropic `stop_details.explanation`). */
+  explanation?: string;
+};
+
+/**
+ * THE REFUSAL LADDER (see {@link GenerateStreamParams.refusalLadder}): asked once per refused step,
+ * answers the model to re-run that step on — or undefined when nothing sits below the model that
+ * declined, in which case the refusal surfaces as it stands. The rungs are the CALLER's data
+ * (its own model catalog, its own order); this loop only walks what it is handed.
+ */
+export type RefusalLadder = (refused: RefusedStep) => LanguageModel | string | undefined;
+
 export type GenerateStreamParams = {
   messages: ConversationMessage[];
   model?: LanguageModel | string;
@@ -245,6 +277,22 @@ export type GenerateStreamParams = {
    * raced while a round is being consumed. Streaming consumers under `utterance`.
    */
   sideUtterance?: () => Promise<DrainedInput>;
+  /**
+   * The REFUSAL LADDER: when the provider REFUSES a model step of this call (the SDK's
+   * `content-filter` finish — Anthropic `stop_reason: refusal`, OpenAI / xAI `content_filter`,
+   * Google's safety finish reasons — on a step that produced NOTHING: no text, no tool call), the
+   * loop asks the ladder for the next rung and re-runs THAT STEP on it, over the same transcript
+   * the refused step was sent: prior steps' tool calls and results stay exactly as they ran (a
+   * tool is never re-run — only the model step that declined is), and the response the consumer
+   * sees stays ONE response: the refused attempt yields no text and no `step-finish`; a
+   * `model-rerun` part records the switch for surfaces that show it (a timeline detail). Walked
+   * rung by rung, one re-run per rung, never re-sending to a model that already declined this
+   * step. When the ladder has nothing below (or is absent), the refusal surfaces exactly as it
+   * does without one: the `content-filter` `step-finish`, carrying `declined` when rungs were
+   * walked. A step the filter ended AFTER text or a tool call keeps what it produced — that text
+   * was shown, that tool ran — and is never re-run. Streaming consumers only (the round loop).
+   */
+  refusalLadder?: RefusalLadder;
 
   // OpenAI-specific
   backgroundMode?: boolean;
@@ -346,6 +394,12 @@ export type StreamPart =
        * the response as the acknowledgment part, whatever the window says.
        */
       utterance?: true;
+      /**
+       * A `content-filter` finish after the refusal ladder ({@link GenerateStreamParams.refusalLadder})
+       * was walked and EVERY rung declined this step: the models that declined, in the order they
+       * were tried, the requested model first. Absent when no rung was walked.
+       */
+      declined?: string[];
     }
   | {
       /**
@@ -356,6 +410,21 @@ export type StreamPart =
        */
       type: 'side-utterance';
       text: string;
+    }
+  | {
+      /**
+       * A model step the provider REFUSED is being re-run on the next rung of the refusal ladder
+       * ({@link GenerateStreamParams.refusalLadder}): `from` declined it, `to` runs it now over the
+       * same transcript, `declined` is every model that has declined this step so far (the requested
+       * model first). Emitted at the step boundary, before the re-run's first part; the refused
+       * attempt contributed no text and no `step-finish`, so the response stays one response — this
+       * part is for the surfaces that show what happened (a timeline detail), never for the body.
+       */
+      type: 'model-rerun';
+      reason: 'refusal';
+      from: string;
+      to: string;
+      declined: string[];
     };
 
 /** The result of generateStream. All properties are available immediately for streaming consumption. */
@@ -456,6 +525,17 @@ export function totalTokensReach(budget: number): (opts: { steps: Array<{ usage?
     return total >= budget;
   };
 }
+
+/**
+ * The model a round of `generateStream` dispatches to, with what depends on it: the requested
+ * model for every round until the refusal ladder moves a refused step one rung down.
+ */
+type DispatchRung = {
+  model: LanguageModel;
+  modelString: string;
+  provider: string;
+  providerOptions: Record<string, any>;
+};
 
 // ────────────────────────────────────────────────────────────────
 // Conversation class
@@ -636,9 +716,15 @@ export class Conversation {
     // assertInputWithinModelCap).
     this.assertInputWithinModelCap(messages, modelString);
 
-    const startCall = (callMessages: ModelMessage[], roundSignal?: AbortSignal) =>
+    // The model a round dispatches to. The requested model for every round of the call, until
+    // the refusal ladder (params.refusalLadder) moves a refused step one rung down: from then
+    // on the call's rounds run on that rung (its own provider options; the call's tools, tool
+    // choice and stop conditions unchanged — the step is the same step).
+    let rung: DispatchRung = { model, modelString, provider, providerOptions };
+
+    const startCall = (callMessages: ModelMessage[], roundSignal?: AbortSignal, callRung: DispatchRung = rung) =>
       streamText({
-        model,
+        model: callRung.model,
         messages: callMessages,
         tools: Object.keys(allTools).length > 0 ? allTools : undefined,
         toolChoice: webSearchToolChoice,
@@ -654,7 +740,7 @@ export class Conversation {
         // The per-round signal exists for the thinking-phase restart (peekInjectedContext): it
         // aborts ONE round's call without touching the turn-level signal or the liveness guard.
         abortSignal: roundSignal ? Conversation.anySignal([combinedAbortSignal, roundSignal]) : combinedAbortSignal,
-        providerOptions,
+        providerOptions: callRung.providerOptions,
         prepareStep: async ({ messages: stepMessages }) => {
           latestStepMessages = stepMessages;
           let next = stepMessages;
@@ -792,9 +878,12 @@ export class Conversation {
       pendingSideFramings.push(...Utterance.framing([ask], line));
       this.logger.info({ message: 'Side utterance said mid-round', obj: { chars: line.length } });
     };
-    const startRound = (roundMessages: ModelMessage[]): ReturnType<typeof startCall> => {
+    const startRound = (roundMessages: ModelMessage[], roundRung?: DispatchRung): ReturnType<typeof startCall> => {
+      if (roundRung) {
+        rung = roundRung;
+      }
       roundController = new AbortController();
-      const round = startCall(roundMessages, roundController.signal);
+      const round = startCall(roundMessages, roundController.signal, rung);
       // The round's promises are read lazily, or never (a restarted or cut round's reject with
       // the abort) — no unhandled rejections from them.
       Promise.resolve(round.finishReason).catch(() => {});
@@ -931,6 +1020,9 @@ export class Conversation {
       // terminate). Distinct from `rounds`: note absorption and length continuation are
       // different budgets.
       let lengthContinuations = 0;
+      // The refusal ladder's record for this call (params.refusalLadder): every model that
+      // refused a step, in the order tried — the requested model first. Never re-sent to.
+      const refusalDeclined: string[] = [];
       // The step budget's clocks (plans/FREE_AGENT.md §M.2, §M.3 part 2b, §M.16): N is the tool
       // budget's one number; a note that lands while text streams gets N for the generation to
       // finish on its own, then the cut at the next paragraph break; past N + the grace (the
@@ -1013,11 +1105,14 @@ export class Conversation {
           // continuation must land its joiner INSIDE the finished step's text (before the commit),
           // and a cut round has no step-finish of its own.
           let heldFinish: any;
+          // The current step carried a tool part (a call began, ran, or settled): the step is
+          // user-material whatever it finished on — a refusal after it is never re-run.
+          let stepTool = false;
           // Between steps (after a step-finish, or before the round's first part): where the
           // boundary utterance queue may be yielded.
           let atBoundary = true;
           const iterator = self
-            .guardStreamLiveness(current.fullStream, livenessController, modelString, locallyExecutedToolNames)
+            .guardStreamLiveness(current.fullStream, livenessController, rung.modelString, locallyExecutedToolNames)
             [Symbol.asyncIterator]();
           let pendingNext: Promise<IteratorResult<any>> | undefined;
           let wake: Promise<void> | undefined;
@@ -1164,6 +1259,7 @@ export class Conversation {
               }
               if (partType === 'tool-input-start' || partType === 'tool-call' || partType === 'tool-result') {
                 turnMaterial = true;
+                stepTool = true;
                 streamingText = false;
                 noteSeenAt = undefined;
                 cutClock = undefined;
@@ -1212,9 +1308,13 @@ export class Conversation {
                 atBoundary = true;
                 const reason = String(part.finishReason?.unified ?? part.finishReason ?? '');
                 if (reason !== 'tool-calls') {
-                  heldFinish = part;
+                  // A refused step that produced nothing is the ladder's case (decided below, once
+                  // the round ends); the tool flag rides the held part so that decision sees it.
+                  heldFinish = stepTool ? { ...part, stepTool: true } : part;
+                  stepTool = false;
                   continue;
                 }
+                stepTool = false;
                 yield part;
                 continue;
               }
@@ -1298,6 +1398,70 @@ export class Conversation {
           const heldReason = heldFinish
             ? String(heldFinish.finishReason?.unified ?? heldFinish.finishReason ?? '')
             : '';
+          // THE REFUSAL LADDER (params.refusalLadder): the provider refused the step and the step
+          // produced NOTHING — no text was shown, no tool ran — so nothing the user saw is lost by
+          // running it again. The ladder names the next rung; the SAME transcript the refused step
+          // was sent (prior steps' tool calls and results included — the tool never re-runs; the
+          // mid-turn notes drained at that boundary materialized once, as the cut path does) goes to
+          // that model, and the response stays one response: the refused attempt yields no
+          // step-finish, a `model-rerun` part records the switch. A model that declined this step
+          // is never sent it again — a ladder answering one of them is treated as having nothing
+          // below. Nothing below = the refusal surfaces as it stands, the step-finish carrying the
+          // models that declined.
+          if (
+            heldFinish &&
+            !combinedAbortSignal.aborted &&
+            !finalized &&
+            heldReason === 'content-filter' &&
+            !heldFinish.stepTool &&
+            finishedStepText.trim().length === 0 &&
+            params.refusalLadder
+          ) {
+            refusalDeclined.push(rung.modelString);
+            const refused = self.refusedStep(heldFinish, rung, refusalDeclined);
+            const next = params.refusalLadder(refused);
+            const nextModelString = next === undefined ? undefined : self.getModelString(next);
+            if (next !== undefined && nextModelString !== undefined && !refusalDeclined.includes(nextModelString)) {
+              const nextRung = self.dispatchRung(next, params);
+              heldFinish = undefined;
+              yield {
+                type: 'model-rerun',
+                reason: 'refusal',
+                from: rung.modelString,
+                to: nextRung.modelString,
+                declined: [...refusalDeclined],
+              };
+              let nextMessages = [...latestStepMessages];
+              if (injectedContextSplices.length > 0) {
+                nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
+                injectedContextSplices.length = 0;
+              }
+              self.logger.warn({
+                message: 'Provider refused the step — re-running it on the next rung of the refusal ladder',
+                obj: {
+                  from: rung.modelString,
+                  to: nextRung.modelString,
+                  declined: [...refusalDeclined],
+                  rawFinishReason: refused.rawFinishReason,
+                  category: refused.category,
+                },
+              });
+              current = startRound(nextMessages, nextRung);
+              currentMessages = nextMessages;
+              continue;
+            }
+            self.logger.error({
+              message: 'Provider refused the step and the refusal ladder has nothing below — surfacing the refusal',
+              obj: {
+                declined: [...refusalDeclined],
+                rawFinishReason: refused.rawFinishReason,
+                category: refused.category,
+              },
+            });
+            if (refusalDeclined.length > 1) {
+              heldFinish = { ...heldFinish, declined: [...refusalDeclined] };
+            }
+          }
           if (
             heldFinish &&
             !combinedAbortSignal.aborted &&
@@ -3356,6 +3520,42 @@ export class Conversation {
     return (model as any).modelId ?? 'unknown';
   }
 
+  /**
+   * The rung a re-run dispatches to (see `GenerateStreamParams.refusalLadder`): the ladder's
+   * model resolved through the same transport choke point as the requested one (the transport
+   * retry layer wraps it; the caller's retry observer rides along), with the provider options
+   * this call would have built for it.
+   */
+  private dispatchRung(model: LanguageModel | string, params: GenerateStreamParams): DispatchRung {
+    const modelString = this.getModelString(model);
+    const provider = inferProvider(model);
+    return {
+      model: this.resolveModelInstance(model, params.onTransportRetry),
+      modelString,
+      provider,
+      providerOptions: this.buildProviderOptions(provider, params, modelString),
+    };
+  }
+
+  /**
+   * What the refusal ladder is handed for a refused step: the raw SDK `finish-step` part's
+   * normalized and provider finish reasons, and the stop details when the provider gave any
+   * (Anthropic's `stop_details` ride the step's provider metadata).
+   */
+  private refusedStep(finishPart: any, rung: DispatchRung, declined: readonly string[]): RefusedStep {
+    const rawFinishReason = finishPart?.rawFinishReason ?? finishPart?.finishReason?.raw;
+    const stopDetails = finishPart?.providerMetadata?.anthropic?.stopDetails;
+    return {
+      modelId: rung.modelString,
+      declined: [...declined],
+      provider: rung.provider,
+      finishReason: String(finishPart?.finishReason?.unified ?? finishPart?.finishReason ?? 'content-filter'),
+      ...(typeof rawFinishReason === 'string' ? { rawFinishReason } : {}),
+      ...(typeof stopDetails?.category === 'string' ? { category: stopDetails.category } : {}),
+      ...(typeof stopDetails?.explanation === 'string' ? { explanation: stopDetails.explanation } : {}),
+    };
+  }
+
   // ────────────────────────────────────────────────────────────
   // Hard input-cap guard
   // ────────────────────────────────────────────────────────────
@@ -4008,6 +4208,17 @@ export class Conversation {
                 type: 'step-finish' as const,
                 finishReason: String(finishReason),
                 ...(part.utterance ? { utterance: true as const } : {}),
+                ...(Array.isArray(part.declined) && part.declined.length > 0 ? { declined: [...part.declined] } : {}),
+              };
+            } else if (part.type === 'model-rerun') {
+              // The refusal ladder moved a refused step one rung down (see
+              // GenerateStreamParams.refusalLadder) — passes through for the surfaces that show it.
+              yield {
+                type: 'model-rerun' as const,
+                reason: 'refusal' as const,
+                from: String(part.from ?? ''),
+                to: String(part.to ?? ''),
+                declined: Array.isArray(part.declined) ? part.declined.map(String) : [],
               };
             } else if (part.type === 'side-utterance') {
               // The side utterance (plans/FREE_AGENT.md §M.3 part 5): one line said mid-round at
