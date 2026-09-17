@@ -1,0 +1,2 @@
+{ "branch": "fix/generate-list-test-needs-key", "packages": ["conversation"],
+  "suites": ["packages/conversation/test/openai/openai.generateList.test.ts"], "removes": [] }
