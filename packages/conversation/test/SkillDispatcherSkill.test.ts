@@ -230,4 +230,57 @@ describe('SkillDispatcherSkill', () => {
       expect(onSkillUsed).not.toHaveBeenCalled();
     });
   });
+
+  describe('useSkill timeline', () => {
+    const useSkillTool = (dispatcher: SkillDispatcherSkill) =>
+      dispatcher.getFunctions().find((f) => f.definition.name === 'useSkill')!;
+
+    it("carries the dispatched tool's own subject line when the tool provides one", async () => {
+      const fn: ConvFunction = {
+        ...makeFn('createEntry', 'c', async () => 'ok'),
+        getTimelineDetail: (args: { title?: string }) => args.title,
+      };
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'journal', name: 'Journal', functions: [fn] })]);
+      const detail = await useSkillTool(dispatcher).getTimelineDetail!({
+        skill: 'journal',
+        tool: 'createEntry',
+        args: { title: 'Monday morning' },
+      });
+      expect(detail).toBe('Monday morning');
+    });
+
+    it('falls back to the display name and tool — never the skill id — when the tool has no subject', async () => {
+      const fn = makeFn('plain', 'p', async () => 'ok');
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'j-9f1c', name: 'Journal', functions: [fn] })]);
+      const detail = await useSkillTool(dispatcher).getTimelineDetail!({ skill: 'j-9f1c', tool: 'plain', args: {} });
+      expect(detail).toBe('Journal → plain');
+      // An empty subject from the tool also falls back.
+      const blank: ConvFunction = { ...makeFn('blank', 'b', async () => 'ok'), getTimelineDetail: () => '' };
+      const dispatcher2 = new SkillDispatcherSkill([makeSkill({ id: 'j', name: 'Journal', functions: [blank] })]);
+      expect(await useSkillTool(dispatcher2).getTimelineDetail!({ skill: 'j', tool: 'blank', args: {} })).toBe(
+        'Journal → blank'
+      );
+    });
+
+    it("settles with the dispatched tool's outcome (ok/detail), keeping its own node name", async () => {
+      const fn: ConvFunction = {
+        ...makeFn('save', 's', async () => 'Refused: nothing saved'),
+        getTimelineOutcome: (_args: unknown, result: unknown) =>
+          typeof result === 'string' && result.startsWith('Refused')
+            ? { ok: false, name: 'save:refused', detail: 'not saved' }
+            : undefined,
+      };
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'j', name: 'Journal', functions: [fn] })]);
+      const outcome = await useSkillTool(dispatcher).getTimelineOutcome!(
+        { skill: 'j', tool: 'save', args: {} },
+        'Refused: nothing saved'
+      );
+      expect(outcome).toEqual({ ok: false, detail: 'not saved' });
+      expect(
+        await useSkillTool(dispatcher).getTimelineOutcome!({ skill: 'j', tool: 'save', args: {} }, 'saved')
+      ).toBeUndefined();
+      const plain = new SkillDispatcherSkill([makeSkill({ id: 'j', functions: [makeFn('x', 'x', async () => 'ok')] })]);
+      expect(await useSkillTool(plain).getTimelineOutcome!({ skill: 'j', tool: 'x', args: {} }, 'ok')).toBeUndefined();
+    });
+  });
 });
