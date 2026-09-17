@@ -1,0 +1,2 @@
+{ "branch": "feat/turn-refusal-ladder", "packages": ["conversation"],
+  "suites": ["packages/conversation/test/conversation/conversation.refusalLadder.test.ts"], "removes": [] }
