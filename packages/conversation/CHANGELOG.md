@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.7.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.6.2...@proteinjs/conversation@6.7.0) (2026-09-17)
+
+
+### Features
+
+* **conversation:** the refusal ladder — a model step the provider refuses (the content-filter finish on a step that produced nothing) re-runs on the next rung the caller's refusalLadder names, over the same transcript: prior tool calls and results stay as they ran, the tool never re-runs, the response stays one response (the refused attempt yields no text and no step-finish; a model-rerun part records the switch), a model that declined is never sent the step again, and every rung declining surfaces the refusal as before with the models that declined on the step-finish ([3959013](https://github.com/proteinjs/conversation/commit/3959013461952f06ab7924048e8638397930ca51))
+* **dispatcher:** a dispatched tool's own subject and outcome ride the useSkill timeline node ([5336bed](https://github.com/proteinjs/conversation/commit/5336bed8e5e800699eb18f7edcd4b506159fc863))
+
+
+
+
+
 ## [6.6.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.6.1...@proteinjs/conversation@6.6.2) (2026-09-13)
 
 
