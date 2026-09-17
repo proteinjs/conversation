@@ -1,2 +1,0 @@
-{ "branch": "feat/skill-author-kevin-slice", "packages": ["conversation"],
-  "suites": ["packages/conversation/test/SkillDispatcherSkill.test.ts"], "removes": [] }
