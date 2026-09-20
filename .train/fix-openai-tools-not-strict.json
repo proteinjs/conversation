@@ -1,2 +1,0 @@
-{ "branch": "fix/openai-tools-not-strict", "packages": ["conversation"],
-  "suites": ["packages/conversation/test/conversation/conversation.toolStrictness.test.ts", "packages/conversation/test/conversation/conversation.generateObjectToolLoop.test.ts"], "removes": [] }
