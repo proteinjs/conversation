@@ -27,6 +27,15 @@ export * from './src/LlmTransportRetry';
 export * from './src/TransientProviderError';
 export * from './src/ProviderBillingError';
 
+// Pictures
+export * from './src/image/ImageGenerator';
+export * from './src/image/ImageGenerationRequest';
+export * from './src/image/ImageGenerationOutcome';
+export * from './src/image/ImageProviderAdapter';
+export * from './src/image/FetchImageTransport';
+export * from './src/image/OpenAiImageAdapter';
+export * from './src/image/ImageCostCalculator';
+
 // Conversation modules
 export * from './src/fs/conversation_fs/ConversationFsSkill';
 export * from './src/fs/conversation_fs/FsFunctions';
