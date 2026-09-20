@@ -8,6 +8,7 @@ import type { ModelDataResolver } from './ModelData';
 import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamFactory';
 import { OpenAiCitationMarkers, type CitationSource } from './OpenAiCitationMarkers';
 import { LlmTransportRetry } from './LlmTransportRetry';
+import { ToolStrictness } from './ToolStrictness';
 import type { GenerateResponseReturn, ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import { TiktokenModel } from 'tiktoken';
 
@@ -930,7 +931,9 @@ export class OpenAiResponses {
         name: def.name,
         description: def.description,
         parameters: def.parameters,
-        // strict: true,
+        // Optional properties stay optional: a tool that states nothing is read as strict and has
+        // every optional property force-filled (see ToolStrictness).
+        ...ToolStrictness.statementFor('openai', def),
       });
     }
 

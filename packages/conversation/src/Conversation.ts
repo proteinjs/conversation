@@ -20,6 +20,7 @@ import { UsageData, UsageDataAccumulator, TokenUsage, StepUsage } from './UsageD
 import type { ModelDataResolver } from './ModelData';
 import { resolveModel, inferProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
+import { ToolStrictness } from './ToolStrictness';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
 import { CutBoundary, type CutBoundaryKind } from './CutBoundary';
 import { Utterance, type DrainedInput } from './Utterance';
@@ -617,7 +618,7 @@ export class Conversation {
     // Calls the tool-call budget converted to jobs this loop (by tool-call id) — the settle part
     // of each carries its job so timeline consumers know the node's kind moved (§M.3 part 3).
     const convertedCalls = new Map<string, { jobId: string; title: string; deduped?: boolean }>();
-    const tools = this.buildAiSdkTools(allFunctions, {
+    const tools = this.buildAiSdkTools(allFunctions, provider, {
       pendingImageInjections,
       onToolInvocation: params.onToolInvocation,
       recordInvocation: (r) => capturedInvocations.push(r),
@@ -1842,8 +1843,12 @@ export class Conversation {
         name: 'submit_result',
         description:
           'Submit the FINAL structured result. Call exactly once, when your investigation is complete — it ends the loop.',
-        // Same provider split as the direct path: strict-mode rewriting is OpenAI-only.
-        parameters: args.provider === 'openai' ? this.strictifyJsonSchema(params.schema) : params.schema,
+        // Same provider split as the direct path: strict-mode rewriting is OpenAI-only — and the
+        // rewritten schema is DECLARED strict (the one tool here whose schema is written for strict
+        // mode; every other tool is non-strict — see ToolStrictness).
+        ...(args.provider === 'openai'
+          ? { parameters: this.strictifyJsonSchema(params.schema), strict: true }
+          : { parameters: params.schema }),
       },
       call: async (input: unknown) => {
         submitted = input as T;
@@ -1852,7 +1857,7 @@ export class Conversation {
     };
 
     const capturedInvocations: ToolInvocationResult[] = [];
-    const tools = this.buildAiSdkTools([...args.loopFunctions, submitFunction], {
+    const tools = this.buildAiSdkTools([...args.loopFunctions, submitFunction], args.provider, {
       onToolInvocation: params.onToolInvocation,
       recordInvocation: (r) => capturedInvocations.push(r),
     });
@@ -2218,6 +2223,8 @@ export class Conversation {
    */
   private buildAiSdkTools(
     functions: Function[],
+    /** The provider the tools are handed to — it decides what each tool says about strict mode. */
+    provider: string,
     options?: {
       pendingImageInjections?: Map<string, Array<TextPart | ImagePart | FilePart>>;
       onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
@@ -2268,6 +2275,9 @@ export class Conversation {
         // A budgeted executor offers the model the `task` label on every tool (the job's plain-
         // English name should the call convert); an unbudgeted one sends the schema untouched.
         inputSchema: jsonSchema(toolBudget ? ToolBudget.withTaskParameter(parameters) : parameters),
+        // Optional properties stay optional: OpenAI reads a tool that states nothing as strict and
+        // force-fills every optional property (see ToolStrictness).
+        ...ToolStrictness.statementFor(provider, def),
         execute: async (rawArgs: any, executionOptions: { toolCallId: string }) => {
           const toolStartedAt = new Date();
           // The `task` label is the harness's, never the tool's: split off before anything reads
