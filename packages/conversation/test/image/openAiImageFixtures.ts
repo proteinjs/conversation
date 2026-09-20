@@ -106,6 +106,19 @@ export const documentedModerationBlocked = (): ImageTransportResponse => ({
   },
 });
 
+/** DOCUMENTED — the vendor's moderation withholding a picture it had already made. */
+export const documentedModerationBlockedAtOutput = (): ImageTransportResponse => ({
+  status: 400,
+  requestId: 'req_fixture_moderation_output',
+  json: {
+    error: {
+      type: 'image_generation_user_error',
+      code: 'moderation_blocked',
+      moderation_details: { moderation_stage: 'output', categories: ['violence'] },
+    },
+  },
+});
+
 /** DOCUMENTED — an ordinary rate limit. */
 export const documentedRateLimit = (): ImageTransportResponse => ({
   status: 429,

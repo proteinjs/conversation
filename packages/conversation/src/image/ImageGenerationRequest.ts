@@ -41,15 +41,17 @@ export type ImageGenerationRequest = {
   inputs?: ImageInput[];
   /** How many pictures to make. Default 1. */
   count?: number;
-  /** `WIDTHxHEIGHT` or `auto`; the vendor's rules decide what is valid. */
+  /** `WIDTHxHEIGHT` or `auto`; the adapter checks the vendor's rules before anything is sent. */
   size?: string;
   quality?: ImageQuality;
   background?: ImageBackground;
   /** Default `png`. */
   outputFormat?: ImageOutputFormat;
   /**
-   * The caller's stop. It is threaded to the wire; once it fires, `generate()` REJECTS with the
-   * signal's reason and no picture is ever surfaced — not even one the vendor had already sent.
+   * The caller's stop. It is threaded to the wire; once it fires, `generate()` resolves with a
+   * `stopped` outcome. No picture is ever surfaced — one the vendor had already sent is
+   * discarded — but what is known about the spend (`sent`, `usage`, `cost`) still is, so the
+   * caller can record it.
    */
   signal?: AbortSignal;
 };

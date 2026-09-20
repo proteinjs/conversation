@@ -17,12 +17,16 @@ const TOKENS_PER_1M = 1_000_000;
  *   output at `outputUsdPer1M`; a cached count bills at its cached rate, or at the full rate of
  *   its class where the row has none;
  * - billed by the picture (the row carries `perImageUsd` and no token rate for pictures):
- *   `perImageUsd` × the pictures actually made.
+ *   `perImageUsd` × the pictures the VENDOR'S ANSWER held (`imageCount`) — what it made and
+ *   bills, which can be more than could be read back; no count → no price.
+ *
+ * A KNOWN zero is a price too, and is not this class's to infer: `nothing()` is what a caller
+ * records when it knows nothing was billed (nothing was sent; the vendor made nothing).
  */
 export class ImageCostCalculator {
   constructor(private readonly modelData: ModelDataResolver) {}
 
-  cost(ask: { model: string; usage?: ImageUsage; imageCount: number }): ImageCostUsd | undefined {
+  cost(ask: { model: string; usage?: ImageUsage; imageCount?: number }): ImageCostUsd | undefined {
     const rates = this.modelData.pricing(ask.model, 'standard');
     if (!rates) {
       return undefined;
@@ -34,6 +38,11 @@ export class ImageCostCalculator {
       return this.byPicture(rates.perImageUsd, ask.imageCount);
     }
     return undefined;
+  }
+
+  /** The known zero: nothing was billed. Never a stand-in for "not known" — that is `undefined`. */
+  nothing(): ImageCostUsd {
+    return { textInputUsd: 0, imageInputUsd: 0, outputUsd: 0, totalUsd: 0 };
   }
 
   private byToken(
@@ -65,8 +74,8 @@ export class ImageCostCalculator {
     return { textInputUsd, imageInputUsd, outputUsd, totalUsd: textInputUsd + imageInputUsd + outputUsd };
   }
 
-  private byPicture(perImageUsd: number, imageCount: number): ImageCostUsd | undefined {
-    if (!Number.isFinite(imageCount) || imageCount < 0) {
+  private byPicture(perImageUsd: number, imageCount: number | undefined): ImageCostUsd | undefined {
+    if (imageCount === undefined || !Number.isFinite(imageCount) || imageCount < 0) {
       return undefined;
     }
     const outputUsd = perImageUsd * imageCount;

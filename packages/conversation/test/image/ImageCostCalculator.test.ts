@@ -110,6 +110,16 @@ describe('a row billed by the picture', () => {
     ).toBeCloseTo(0.16, 10);
     expect(calculator.cost({ model: 'by-the-picture', imageCount: 0 })?.totalUsd).toBe(0);
   });
+
+  test('a flat price with no count of what the vendor made has no price — never a guess at one picture', () => {
+    expect(calculator.cost({ model: 'by-the-picture' })).toBeUndefined();
+    expect(calculator.cost({ model: 'by-the-picture', usage: { imageOutputTokens: 9999 } })).toBeUndefined();
+  });
+
+  test('the known zero is a price — every field 0 — and is not what "no price" answers', () => {
+    expect(calculator.nothing()).toEqual({ textInputUsd: 0, imageInputUsd: 0, outputUsd: 0, totalUsd: 0 });
+    expect(calculator.cost({ model: 'no-such-model', imageCount: 1 })).toBeUndefined();
+  });
 });
 
 describe('no price to give', () => {
