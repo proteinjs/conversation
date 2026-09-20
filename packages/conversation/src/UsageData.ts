@@ -25,6 +25,21 @@ export type ModelApiCost = {
   cacheWriteUsdPer1M?: number;
   /** USD per 1M output tokens */
   outputUsdPer1M: number;
+  /**
+   * The picture arms — present only on a model that makes pictures, and read only by
+   * `ImageCostCalculator`. A vendor that bills pictures by the token carries the `image*` rates
+   * (its text input still bills at `inputUsdPer1M` / `cachedInputUsdPer1M`); a vendor that bills a
+   * flat price per picture carries `perImageUsd`. An arm a vendor does not publish stays absent —
+   * a picture whose usage needs an absent rate has no price, never a borrowed one.
+   */
+  /** USD per 1M image input tokens (the reference pictures sent with an ask) */
+  imageInputUsdPer1M?: number;
+  /** USD per 1M cached image input tokens (if supported) */
+  cachedImageInputUsdPer1M?: number;
+  /** USD per 1M image output tokens (the pictures made) */
+  imageOutputUsdPer1M?: number;
+  /** USD per picture made, for a vendor with a flat price per picture */
+  perImageUsd?: number;
 };
 
 export type UsageCostUsd = {
