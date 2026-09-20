@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.7.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.0...@proteinjs/conversation@6.7.1) (2026-09-20)
+
+
+### Bug Fixes
+
+* **conversation:** function tools are declared non-strict to OpenAI — optional tool properties stay optional ([2f0906e](https://github.com/proteinjs/conversation/commit/2f0906e080c1f4a68f1e71ee05801e2e067e0374))
+
+
+
+
+
 # [6.7.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.6.2...@proteinjs/conversation@6.7.0) (2026-09-17)
 
 
