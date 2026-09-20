@@ -1,9 +1,11 @@
+import { jsonSchema, tool, type ToolSet } from 'ai';
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation } from '../../src/Conversation';
 import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
 import { OpenAiResponses } from '../../src/OpenAiResponses';
+import { ToolStrictness } from '../../src/ToolStrictness';
 import { fixtureModelData } from './fixtureModelData';
 
 /**
@@ -222,5 +224,162 @@ describe('tool strictness — optional tool properties stay optional on every pr
     const reminder = handed.find((tool) => tool.name === 'setReminder');
     expect(reminder?.strict).toBe(false);
     expect(reminder?.inputSchema?.required).toEqual(['title']);
+  });
+});
+
+/**
+ * The two ways a function tool could still reach OpenAI without the statement.
+ *
+ * (1) A skill may hand in tools ALREADY BUILT as AI SDK tools through `getProviderDefinedTools`
+ *     (a provider's native tool — or an ordinary function tool standing in for one on the other
+ *     providers). Those never pass through the library's own tool builder.
+ * (2) A bare model name no pattern recognizes is ROUTED to OpenAI by `resolveModel`. The provider
+ *     the tools are stated for must be the provider that receives the call — the same routing
+ *     decision — not a separate guess from the name (which answered "unknown" and said nothing).
+ *
+ * RED at the pre-fix library: the built tool reaches the OpenAI model with no `strict`; the
+ * unrecognized model's request body carries tools with no `strict`.
+ */
+describe('tool strictness — every path to OpenAI', () => {
+  /** A portable file reader with an OPTIONAL array — the shape a skill hands non-Anthropic providers. */
+  const builtTools = (options?: { withNativeTool: boolean }): ToolSet =>
+    ({
+      ReadFile: tool({
+        description: 'Read a file.',
+        inputSchema: jsonSchema<{ path: string; viewRange?: number[] }>({
+          type: 'object',
+          properties: { path: { type: 'string' }, viewRange: { type: 'array', items: { type: 'number' } } },
+          required: ['path'],
+          additionalProperties: false,
+        }),
+        execute: async () => 'contents',
+      }),
+      StrictByChoice: tool({
+        description: 'A tool whose author wrote its schema for strict mode.',
+        inputSchema: jsonSchema<{ path: string }>({
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path'],
+          additionalProperties: false,
+        }),
+        strict: true,
+        execute: async () => 'ok',
+      }),
+      // A provider's native tool: no function schema, nothing to be strict about.
+      ...(options?.withNativeTool === false
+        ? {}
+        : { native_tool: { type: 'provider', id: 'acme.native_tool', args: { maxUses: 1 } } }),
+    }) as unknown as ToolSet;
+
+  const builtToolSkill = (tools: ToolSet): ConversationSkill => ({
+    ...skill([]),
+    getProviderDefinedTools: () => tools,
+  });
+
+  type WireTool = ProviderTool & { id?: string; args?: unknown };
+
+  const handedWithBuiltTools = async (modelId: string, tools: ToolSet): Promise<WireTool[]> => {
+    let handed: WireTool[] = [];
+    const model = new MockLanguageModelV3({
+      modelId,
+      doStream: async (options: { tools?: WireTool[] }) => {
+        handed = options.tools ?? [];
+        return { stream: textStep('done') };
+      },
+    });
+    const conversation = new Conversation({
+      modelData: fixtureModelData,
+      name: 'tool-strictness-test',
+      logLevel: 'error',
+      limits: { enforceLimits: false },
+      skills: [builtToolSkill(tools)],
+    });
+    const result = await conversation.generateStream({ messages: ['read a file'], model: model as never });
+    for await (const part of result.fullStream) {
+      void part;
+    }
+    return handed;
+  };
+
+  test('a function tool a skill hands in already built is stated strict: false on OpenAI — its own strict: true is kept, a native provider tool is untouched, the skill’s objects are not mutated', async () => {
+    const tools = builtTools();
+    const handed = await handedWithBuiltTools('gpt-5.6-sol', tools);
+
+    const readFile = handed.find((entry) => entry.name === 'ReadFile');
+    expect(readFile?.type).toBe('function');
+    expect(readFile?.strict).toBe(false);
+    expect(readFile?.inputSchema?.required).toEqual(['path']);
+
+    expect(handed.find((entry) => entry.name === 'StrictByChoice')?.strict).toBe(true);
+
+    const native = handed.find((entry) => entry.name === 'native_tool');
+    expect(native).toEqual({ type: 'provider', name: 'native_tool', id: 'acme.native_tool', args: { maxUses: 1 } });
+
+    expect('strict' in (tools.ReadFile as object)).toBe(false);
+    // The native tool is handed on as the very object the skill built — nothing is said on it.
+    expect(ToolStrictness.statedOn('openai', tools).native_tool).toBe(tools.native_tool);
+  });
+
+  test("the other providers' built tools carry only what the skill said (their wire is unchanged)", async () => {
+    for (const modelId of ['claude-sonnet-5', 'gemini-3.1-pro-preview', 'grok-4.5']) {
+      const handed = await handedWithBuiltTools(modelId, builtTools());
+      const readFile = handed.find((entry) => entry.name === 'ReadFile');
+      expect(readFile).toBeDefined();
+      expect(readFile && 'strict' in readFile ? readFile.strict : undefined).toBeUndefined();
+      expect(handed.find((entry) => entry.name === 'StrictByChoice')?.strict).toBe(true);
+    }
+  });
+
+  test('a model name no pattern recognizes is routed to OpenAI — and its tools are told what OpenAI is told', async () => {
+    // The real routing: a STRING model id goes through `resolveModel`, which builds an OpenAI
+    // Responses model for it. No request leaves the process — `fetch` is replaced for this test and
+    // answers 400 once it has the request body; the key env var only has to exist.
+    const prevKey = process.env.OPENAI_API_KEY;
+    const prevFetch = globalThis.fetch;
+    process.env.OPENAI_API_KEY = 'test-key-never-used';
+    const bodies: Array<{ url: string; tools: Array<{ type: string; name: string; strict?: boolean }> }> = [];
+    globalThis.fetch = (async (url: unknown, init?: { body?: unknown }) => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as { tools?: Array<{ type: string; name: string }> };
+      bodies.push({ url: String(url), tools: body.tools ?? [] });
+      return new Response(JSON.stringify({ error: { message: 'stop here', type: 'invalid_request_error' } }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    try {
+      const conversation = new Conversation({
+        modelData: fixtureModelData,
+        name: 'tool-strictness-test',
+        logLevel: 'error',
+        limits: { enforceLimits: false },
+        skills: [{ ...skill([setReminder]), getProviderDefinedTools: () => builtTools({ withNativeTool: false }) }],
+      });
+      try {
+        const result = await conversation.generateStream({
+          messages: ['set a reminder'],
+          model: 'acme-house-model-v2',
+        });
+        for await (const part of result.fullStream) {
+          void part;
+        }
+      } catch {
+        // The 400 is the point at which this test stops the call.
+      }
+    } finally {
+      globalThis.fetch = prevFetch;
+      if (prevKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = prevKey;
+      }
+    }
+
+    expect(bodies.length).toBeGreaterThan(0);
+    expect(bodies[0].url).toContain('api.openai.com');
+    const functionTools = bodies[0].tools.filter((entry) => entry.type === 'function');
+    expect(functionTools.map((entry) => entry.name).sort()).toEqual(['ReadFile', 'StrictByChoice', 'setReminder']);
+    expect(functionTools.find((entry) => entry.name === 'setReminder')?.strict).toBe(false);
+    expect(functionTools.find((entry) => entry.name === 'ReadFile')?.strict).toBe(false);
+    expect(functionTools.find((entry) => entry.name === 'StrictByChoice')?.strict).toBe(true);
   });
 });

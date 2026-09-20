@@ -35,9 +35,14 @@ export interface ConversationSkill {
    * directly into the AI SDK tool set — bypassing `buildAiSdkTools` — the same
    * way `getWebSearchTools` injects provider-executed web search.
    *
-   * `provider` is the resolved provider of the active model (e.g. `anthropic`,
-   * `openai`), so a skill can return only the tools that provider natively
-   * supports and an empty set otherwise.
+   * `provider` is the provider the active model's calls are routed to (e.g.
+   * `anthropic`, `openai`), so a skill can return only the tools that provider
+   * natively supports and an empty set otherwise.
+   *
+   * A skill may also return ordinary FUNCTION tools here (a portable stand-in
+   * for a native tool on the other providers). Those are told what every other
+   * function tool is told about strict mode (see `ToolStrictness`): non-strict
+   * unless the tool itself sets `strict`.
    */
   getProviderDefinedTools?(provider: string): ToolSet;
 }
