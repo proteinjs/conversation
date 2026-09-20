@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.7.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.1...@proteinjs/conversation@6.7.2) (2026-09-20)
+
+
+### Bug Fixes
+
+* **conversation:** every path to OpenAI states tool strictness — tools a skill hands in already built, and model names routed to OpenAI by default ([7bb792a](https://github.com/proteinjs/conversation/commit/7bb792a02201da9c7dd140d80c5f21d99e1a88e9))
+
+
+
+
+
 ## [6.7.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.0...@proteinjs/conversation@6.7.1) (2026-09-20)
 
 
