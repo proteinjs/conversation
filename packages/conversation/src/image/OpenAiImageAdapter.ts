@@ -24,7 +24,9 @@ type AdapterFailure = Extract<ImageAdapterResult, { kind: 'failed' }>;
  * read on 2026-09-20:
  * - https://developers.openai.com/api/docs/guides/image-generation — the parameters, a transparent
  *   background only with png or webp, `moderation_blocked` and its `moderation_details`, "up to 2
- *   minutes" for a complex prompt, masking described as prompt-based guidance;
+ *   minutes" for a complex prompt, masking described as prompt-based guidance, the size rules
+ *   (width and height multiples of 16, neither edge above 3840, an aspect ratio between 1:3 and
+ *   3:1, 655,360 to 8,294,400 pixels in all) and an input picture "less than 50MB in size";
  * - https://developers.openai.com/api/reference/resources/images — `POST /images/generations`
  *   (`n` between 1 and 10), `POST /images/edits` (multipart `image[]`, "up to 16 images"), and the
  *   answer `{ created, data: [{ b64_json, revised_prompt }], output_format, usage }`;
@@ -37,10 +39,24 @@ type AdapterFailure = Extract<ImageAdapterResult, { kind: 'failed' }>;
  *   `invalid_input_fidelity_model`, recorded 2026-09-16), so what each reference is for, and how
  *   closely to hold to it, is said in words at the end of the prompt instead;
  * - `mask` — not part of this version.
+ *
+ * What an ask that made no picture can have cost (`billable`): the vendor bills for pictures it
+ * makes, so an ERROR answer (a rejected parameter or credential, a rate or spend limit, an
+ * outage, moderation of the ask itself at the `input` stage) cost nothing. Three endings may have
+ * been billed and say so: a picture made and then withheld (moderation at the `output` stage, or
+ * at a stage the vendor did not name), a 2xx answer with nothing readable in it, and a request
+ * that went out and was never answered. The vendor's pages do not state a price for those three.
  */
 export class OpenAiImageAdapter implements ImageProviderAdapter {
   static readonly MAX_INPUTS = 16;
   static readonly MAX_COUNT = 10;
+  /** An input picture must be "less than 50MB in size". */
+  static readonly MAX_INPUT_BYTES = 50 * 1024 * 1024;
+  static readonly SIZE_STEP = 16;
+  static readonly MAX_EDGE = 3840;
+  static readonly MAX_ASPECT_RATIO = 3;
+  static readonly MIN_PIXELS = 655_360;
+  static readonly MAX_PIXELS = 8_294_400;
 
   readonly provider = 'openai';
   private readonly apiKey?: string;
@@ -73,6 +89,8 @@ export class OpenAiImageAdapter implements ImageProviderAdapter {
         errorKind: 'network',
         transient: true,
         sent: true,
+        // The request went out and no answer came back: the vendor may have made the pictures.
+        billable: true,
         message: error instanceof Error ? error.message : String(error),
       };
     }
@@ -100,8 +118,42 @@ export class OpenAiImageAdapter implements ImageProviderAdapter {
         `At most ${OpenAiImageAdapter.MAX_INPUTS} reference pictures can be sent; got ${inputs}.`
       );
     }
+    const tooBig = (request.inputs ?? []).findIndex(
+      (input) => input.bytes.length >= OpenAiImageAdapter.MAX_INPUT_BYTES
+    );
+    if (tooBig >= 0) {
+      return this.notSent('invalid_request', `Reference picture ${tooBig + 1} is 50 MB or more; it must be smaller.`);
+    }
     if (request.background === 'transparent' && request.outputFormat === 'jpeg') {
       return this.notSent('invalid_request', 'A transparent background needs png or webp, not jpeg.');
+    }
+    const badSize = this.sizeProblem(request.size);
+    return badSize ? this.notSent('invalid_request', badSize) : undefined;
+  }
+
+  /** What is wrong with `size` by the vendor's documented rules, or `undefined` when it can be sent. */
+  private sizeProblem(size: string | undefined): string | undefined {
+    if (size === undefined || size === 'auto') {
+      return undefined;
+    }
+    const match = /^(\d+)x(\d+)$/.exec(size);
+    if (!match) {
+      return `size must be WIDTHxHEIGHT or auto; got "${size}".`;
+    }
+    const [width, height] = [Number(match[1]), Number(match[2])];
+    const { SIZE_STEP, MAX_EDGE, MAX_ASPECT_RATIO, MIN_PIXELS, MAX_PIXELS } = OpenAiImageAdapter;
+    if (width % SIZE_STEP !== 0 || height % SIZE_STEP !== 0) {
+      return `size ${size}: width and height must be multiples of ${SIZE_STEP}.`;
+    }
+    if (width > MAX_EDGE || height > MAX_EDGE) {
+      return `size ${size}: neither edge may exceed ${MAX_EDGE}.`;
+    }
+    if (width > height * MAX_ASPECT_RATIO || height > width * MAX_ASPECT_RATIO) {
+      return `size ${size}: the aspect ratio must be between 1:${MAX_ASPECT_RATIO} and ${MAX_ASPECT_RATIO}:1.`;
+    }
+    const pixels = width * height;
+    if (pixels < MIN_PIXELS || pixels > MAX_PIXELS) {
+      return `size ${size}: the picture must be between ${MIN_PIXELS} and ${MAX_PIXELS} pixels in all.`;
     }
     return undefined;
   }
@@ -193,20 +245,25 @@ export class OpenAiImageAdapter implements ImageProviderAdapter {
         images.push({ bytes, mimeType, ...(revisedPrompt ? { revisedPrompt } : {}) });
       }
     }
-    const vendorRequestId = response.requestId;
+    // What the vendor says it used is read whether or not a picture could be: it bills either way.
+    const usage = this.readUsage(body?.usage);
+    const reported = {
+      ...(usage ? { usage } : {}),
+      ...(response.requestId ? { vendorRequestId: response.requestId } : {}),
+    };
     if (images.length === 0) {
       return {
         kind: 'failed',
         errorKind: 'malformed_response',
         transient: false,
         sent: true,
+        billable: true,
         statusCode: response.status,
         message: 'The vendor answered without a readable picture.',
-        ...(vendorRequestId ? { vendorRequestId } : {}),
+        ...reported,
       };
     }
-    const usage = this.readUsage(body?.usage);
-    return { kind: 'ok', images, ...(usage ? { usage } : {}), ...(vendorRequestId ? { vendorRequestId } : {}) };
+    return { kind: 'ok', sent: true, images, answeredCount: entries.length, ...reported };
   }
 
   /**
@@ -246,6 +303,10 @@ export class OpenAiImageAdapter implements ImageProviderAdapter {
       const categories = named.filter((category): category is string => typeof category === 'string');
       return {
         kind: 'refused',
+        sent: true,
+        // Declined at the `input` stage, nothing was made. At `output` — or a stage the vendor did
+        // not name — a picture may have been made and withheld.
+        billable: stage !== 'input',
         reason: code,
         ...(stage === 'input' || stage === 'output' || stage === 'unknown' ? { stage } : {}),
         ...(categories.length > 0 ? { categories } : {}),
@@ -259,6 +320,8 @@ export class OpenAiImageAdapter implements ImageProviderAdapter {
       errorKind,
       transient,
       sent: true,
+      // An error answer: the vendor made nothing, so it billed nothing.
+      billable: false,
       statusCode: response.status,
       ...(code ? { code } : {}),
       message,
@@ -284,7 +347,7 @@ export class OpenAiImageAdapter implements ImageProviderAdapter {
   }
 
   private notSent(errorKind: AdapterFailure['errorKind'], message: string): AdapterFailure {
-    return { kind: 'failed', errorKind, transient: false, sent: false, message };
+    return { kind: 'failed', errorKind, transient: false, sent: false, billable: false, message };
   }
 
   private extensionOf(mimeType: string): string {
