@@ -18,7 +18,7 @@ import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
 import { UsageData, UsageDataAccumulator, TokenUsage, StepUsage } from './UsageData';
 import type { ModelDataResolver } from './ModelData';
-import { resolveModel, inferProvider } from './resolveModel';
+import { resolveModel, routedProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import { ToolStrictness } from './ToolStrictness';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
@@ -586,7 +586,7 @@ export class Conversation {
 
     const model = this.resolveModelInstance(params.model, params.onTransportRetry);
     const modelString = this.getModelString(params.model);
-    const provider = inferProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
+    const provider = routedProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
 
     this.logger.info({
       message: `generateStream`,
@@ -1716,7 +1716,7 @@ export class Conversation {
 
     const model = this.resolveModelInstance(params.model);
     const modelString = this.getModelString(params.model);
-    const provider = inferProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
+    const provider = routedProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
 
     // Check if we should use background/polling mode (OpenAI-specific)
     if (provider === 'openai' && this.shouldUseBackgroundMode(modelString, params)) {
@@ -3267,7 +3267,10 @@ export class Conversation {
         });
       }
     }
-    return result;
+    // A skill may hand in ordinary FUNCTION tools here too (a portable stand-in for a provider's
+    // native tool). They skip `buildAiSdkTools`, so this is where they say what every other
+    // function tool says about strict mode (see ToolStrictness).
+    return ToolStrictness.statedOn(provider, result);
   }
 
   /**
@@ -3538,7 +3541,7 @@ export class Conversation {
    */
   private dispatchRung(model: LanguageModel | string, params: GenerateStreamParams): DispatchRung {
     const modelString = this.getModelString(model);
-    const provider = inferProvider(model);
+    const provider = routedProvider(model);
     return {
       model: this.resolveModelInstance(model, params.onTransportRetry),
       modelString,

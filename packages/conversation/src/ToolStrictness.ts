@@ -1,9 +1,14 @@
-import type { Function } from './Function';
+import type { ToolSet } from 'ai';
 
 /**
  * What a function tool says about STRICT mode to the provider it is handed to — the one owner of
- * that statement, read by every path that builds a provider's tool list (`Conversation`'s AI SDK
- * tools, `OpenAiResponses`' polling-mode tools).
+ * that statement, read by every path that puts a function tool in a provider's tool list
+ * (`Conversation`'s AI SDK tools, the tools a skill hands in already built through
+ * `ConversationSkill.getProviderDefinedTools`, `OpenAiResponses`' polling-mode tools).
+ *
+ * `provider` is always the provider that RECEIVES the call — `routedProvider(model)`, the same
+ * routing decision `resolveModel` builds the model from — never a guess from the model's name: a
+ * name no pattern recognizes is routed to OpenAI, and must be told what OpenAI is told.
  *
  * Why it must be said: OpenAI's Responses API reads a function tool that states nothing as
  * STRICT. It rewrites the tool's schema so every property is required, and the model then fills
@@ -23,11 +28,30 @@ export class ToolStrictness {
   /** Providers whose API treats a function tool that states nothing as strict. */
   private static readonly DEFAULTS_TO_STRICT: ReadonlySet<string> = new Set(['openai']);
 
-  /** The `strict` statement to spread onto the provider's tool entry (empty = say nothing). */
-  static statementFor(provider: string, definition: Function['definition']): { strict?: boolean } {
+  /**
+   * The `strict` statement to spread onto the provider's tool entry (empty = say nothing).
+   * `tool` is whatever declares the tool — a `Function`'s definition or an AI SDK tool.
+   */
+  static statementFor(provider: string, tool: { strict?: boolean | null }): { strict?: boolean } {
     if (!ToolStrictness.DEFAULTS_TO_STRICT.has(provider)) {
       return {};
     }
-    return { strict: definition.strict === true };
+    return { strict: tool.strict === true };
+  }
+
+  /**
+   * The same statement on tools that arrive ALREADY BUILT as AI SDK tools (a skill's
+   * `getProviderDefinedTools`), which never pass through the library's own tool builder. Every
+   * tool the provider reads as a FUNCTION (an AI SDK tool whose `type` is absent, `'function'` or
+   * `'dynamic'`) carries it; a provider's native tool (`type: 'provider'` — a text editor, a web
+   * search) has no function schema to be strict about and is handed on untouched. The skill's own
+   * tool objects are never mutated.
+   */
+  static statedOn(provider: string, tools: ToolSet): ToolSet {
+    const stated: ToolSet = {};
+    for (const [name, tool] of Object.entries(tools)) {
+      stated[name] = tool.type === 'provider' ? tool : { ...tool, ...ToolStrictness.statementFor(provider, tool) };
+    }
+    return stated;
   }
 }

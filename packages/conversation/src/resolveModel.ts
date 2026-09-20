@@ -65,21 +65,19 @@ const MODEL_PROVIDER_PATTERNS: Array<{ test: RegExp; provider: string }> = [
   { test: /^grok/i, provider: 'xai' },
 ];
 
-/**
- * Resolve a model identifier to a concrete `LanguageModel` instance.
- *
- * Accepted inputs:
- * - A `LanguageModel` instance (returned as-is)
- * - A prefixed string like `"openai:gpt-5"` or `"anthropic:claude-sonnet-4-20250514"`
- * - A bare model name like `"gpt-5"`, `"claude-sonnet-4-20250514"`, `"gemini-2.5-pro"`, `"grok-3"`
- *   (provider inferred from name patterns)
- */
-export function resolveModel(model: LanguageModel | string): LanguageModel {
-  // Already a model instance
-  if (typeof model !== 'string') {
-    return model;
-  }
+/** The provider an unrecognized bare model name is handed to (it has the most model aliases). */
+const DEFAULT_PROVIDER = 'openai';
 
+/**
+ * THE routing decision for a model string — its one owner. `resolveModel` builds the model from
+ * it and `routedProvider` reports it, so whatever a conversation says to "the provider" (how
+ * strict its tools are, its provider options) is said to the provider that receives the call.
+ *
+ * - `"provider:model-id"` goes to the named provider (an unknown prefix is an error);
+ * - a bare name goes to the provider whose name pattern it matches;
+ * - a bare name no pattern recognizes goes to the default provider.
+ */
+function routeModelString(model: string): { provider: string; modelId: string } {
   const raw = model.trim();
   if (!raw) {
     throw new Error('resolveModel: empty model string');
@@ -89,38 +87,75 @@ export function resolveModel(model: LanguageModel | string): LanguageModel {
   const colonIdx = raw.indexOf(':');
   if (colonIdx > 0) {
     const prefix = raw.slice(0, colonIdx).toLowerCase();
-    const modelId = raw.slice(colonIdx + 1);
-    const factory = PROVIDER_FACTORIES[prefix];
-    if (!factory) {
+    if (!PROVIDER_FACTORIES[prefix]) {
       throw new Error(
         `resolveModel: unknown provider prefix "${prefix}" in "${raw}". ` +
           `Known providers: ${Object.keys(PROVIDER_FACTORIES).join(', ')}`
       );
     }
-    return factory(modelId);
+    return { provider: prefix, modelId: raw.slice(colonIdx + 1) };
   }
 
-  // Infer provider from model name patterns
-  for (const { test, provider } of MODEL_PROVIDER_PATTERNS) {
-    if (test.test(raw)) {
-      return PROVIDER_FACTORIES[provider](raw);
-    }
-  }
+  return { provider: providerByNamePattern(raw) ?? DEFAULT_PROVIDER, modelId: raw };
+}
 
-  // Default to OpenAI for unrecognized model names
-  // (OpenAI has the most model aliases and is the most common provider)
-  return PROVIDER_FACTORIES.openai(raw);
+/** The provider whose name pattern a bare model name matches (first match wins), if any. */
+function providerByNamePattern(raw: string): string | undefined {
+  return MODEL_PROVIDER_PATTERNS.find(({ test }) => test.test(raw))?.provider;
 }
 
 /**
- * Extract the provider name from a model identifier string.
- * Returns 'openai', 'anthropic', 'google', 'xai', or 'unknown'.
+ * Resolve a model identifier to a concrete `LanguageModel` instance.
+ *
+ * Accepted inputs:
+ * - A `LanguageModel` instance (returned as-is)
+ * - A prefixed string like `"openai:gpt-5"` or `"anthropic:claude-sonnet-4-20250514"`
+ * - A bare model name like `"gpt-5"`, `"claude-sonnet-4-20250514"`, `"gemini-2.5-pro"`, `"grok-3"`
+ *   (provider inferred from name patterns; an unrecognized name goes to OpenAI)
+ */
+export function resolveModel(model: LanguageModel | string): LanguageModel {
+  // Already a model instance
+  if (typeof model !== 'string') {
+    return model;
+  }
+  const { provider, modelId } = routeModelString(model);
+  return PROVIDER_FACTORIES[provider](modelId);
+}
+
+/**
+ * The provider that RECEIVES a model's calls — the answer `resolveModel` acts on, from the same
+ * routing decision. Ask this (never `inferProvider`) before saying anything provider-specific to a
+ * model: an unrecognized bare name is routed to OpenAI, and must be spoken to as OpenAI.
+ *
+ * A `LanguageModel` instance is not routed (it is used as-is), so it is read for who it says it
+ * is: its own `provider` family (`"openai.responses"` → `openai`) when that is a provider this
+ * library knows, else its model id's name pattern, else `'unknown'`.
+ */
+export function routedProvider(model: LanguageModel | string): string {
+  if (typeof model === 'string') {
+    return routeModelString(model).provider;
+  }
+  const instance = model as { provider?: unknown; modelId?: unknown };
+  const family = String(instance.provider ?? '')
+    .split('.')[0]
+    .toLowerCase();
+  if (PROVIDER_FACTORIES[family]) {
+    return family;
+  }
+  return providerByNamePattern(String(instance.modelId ?? '').trim()) ?? 'unknown';
+}
+
+/**
+ * The provider a model NAME belongs to — for callers that classify names (usage ledgers, "this
+ * must be an Anthropic model" guards). Returns 'openai', 'anthropic', 'google', 'xai', or
+ * 'unknown' when neither a known prefix nor a name pattern recognizes it. It never throws.
+ *
+ * This is NOT where a call goes: an unrecognized bare name is 'unknown' here and is routed to
+ * OpenAI by `resolveModel`. To know which provider receives a model's calls, ask `routedProvider`.
  */
 export function inferProvider(model: LanguageModel | string): string {
   if (typeof model !== 'string') {
-    // Try to extract from the model's provider property if available
-    const modelId = (model as any).modelId ?? '';
-    return inferProvider(modelId);
+    return inferProvider(String((model as { modelId?: unknown }).modelId ?? ''));
   }
 
   const raw = model.trim();
@@ -134,12 +169,5 @@ export function inferProvider(model: LanguageModel | string): string {
     }
   }
 
-  // Pattern match
-  for (const { test, provider } of MODEL_PROVIDER_PATTERNS) {
-    if (test.test(raw)) {
-      return provider;
-    }
-  }
-
-  return 'unknown';
+  return providerByNamePattern(raw) ?? 'unknown';
 }
