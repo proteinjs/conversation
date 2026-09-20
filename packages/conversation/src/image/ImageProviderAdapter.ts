@@ -1,16 +1,14 @@
 import type { ImageGenerationRequest } from './ImageGenerationRequest';
-import type {
-  GeneratedImage,
-  ImageGenerationFailed,
-  ImageGenerationRefused,
-  ImageUsage,
-} from './ImageGenerationOutcome';
+import type { ImageGenerationFailed, ImageGenerationOk, ImageGenerationRefused } from './ImageGenerationOutcome';
 
 /**
  * One vendor's way of making pictures. An adapter turns the vendor-neutral ask into that vendor's
  * request, sends it through the transport it is handed, and reads the answer back into the three
  * outcome kinds. It never prices anything (`ImageGenerator` does, from the usage the adapter
  * reports) and it never opens a connection of its own — so a test, or CI, never calls a vendor.
+ *
+ * An adapter REJECTS only when its context's `signal` fired before an answer arrived. Every
+ * other ending — a vendor error, a dropped connection, an ask it would not send — is a result.
  */
 export interface ImageProviderAdapter {
   /** The key an ask's `provider` is matched on, e.g. `'openai'`. */
@@ -24,11 +22,22 @@ export type ImageAdapterContext = {
   signal?: AbortSignal;
 };
 
-/** An outcome before it is priced and stamped with the provider and model. */
+type Unpriced<Outcome> = Omit<Outcome, 'provider' | 'model' | 'latencyMs' | 'cost'>;
+
+/**
+ * An outcome before it is priced and stamped with the provider and model. The adapter states the
+ * two vendor facts pricing needs and only it can know:
+ * - on `ok`, `answeredCount` — how many pictures the vendor's answer held, readable or not (a
+ *   flat price bills what the vendor made, not what could be read back);
+ * - on `refused` / `failed`, `billable` — true when the vendor may have charged although no
+ *   picture came back (a picture made and then withheld, a 2xx with nothing readable, a request
+ *   that went out and was never answered); false when it cannot have (nothing was sent, or the
+ *   vendor answered with an error before making anything).
+ */
 export type ImageAdapterResult =
-  | { kind: 'ok'; images: GeneratedImage[]; usage?: ImageUsage; vendorRequestId?: string }
-  | Omit<ImageGenerationRefused, 'provider' | 'model' | 'latencyMs'>
-  | Omit<ImageGenerationFailed, 'provider' | 'model' | 'latencyMs'>;
+  | (Unpriced<ImageGenerationOk> & { answeredCount: number })
+  | (Unpriced<ImageGenerationRefused> & { billable: boolean })
+  | (Unpriced<ImageGenerationFailed> & { billable: boolean });
 
 /**
  * The wire, as a seam. The body is described (JSON, or named multipart parts) rather than

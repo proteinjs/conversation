@@ -1,15 +1,24 @@
 /**
- * What an ask for pictures came to. Three kinds, and only three, so a ledger can record each ask
- * as `ok`, `refused` or `failed` without re-reading a vendor's error:
+ * What an ask for pictures came to. Four kinds, and only four, so a ledger can record each ask
+ * without re-reading a vendor's error:
  *
  * - `ok` — at least one picture was made;
  * - `refused` — the vendor's moderation declined the ask (its reason is carried, in its words);
  * - `failed` — nothing was made for any other reason; `transient` says whether asking again
- *   later could work (a rate limit, a vendor outage, a dropped connection, a timeout).
+ *   later could work (a rate limit, a vendor outage, a dropped connection, a timeout);
+ * - `stopped` — the caller's `AbortSignal` fired. No picture is surfaced, not even one the
+ *   vendor had already made (those bytes are discarded inside the generator).
  *
- * A stop (the caller's `AbortSignal`) is none of these: `generate()` rejects.
+ * EVERY kind says what is known about the spend — `sent`, `usage`, `cost` — because a vendor
+ * bills for what it made whether or not the caller still wants it. `generate()` resolves with
+ * one of these for every ask it accepts; an ask is never ended by a rejection that would take
+ * its spend with it.
  */
-export type ImageGenerationOutcome = ImageGenerationOk | ImageGenerationRefused | ImageGenerationFailed;
+export type ImageGenerationOutcome =
+  | ImageGenerationOk
+  | ImageGenerationRefused
+  | ImageGenerationFailed
+  | ImageGenerationStopped;
 
 /** The vendor's own count of what an ask used. Every field is absent when the vendor did not report it. */
 export type ImageUsage = {
@@ -44,15 +53,27 @@ type ImageGenerationOutcomeBase = {
   /** The vendor's id for the request, for a support ticket. Never a credential. */
   vendorRequestId?: string;
   latencyMs?: number;
+  /**
+   * False when the ask never left this process (nothing was sent, so nothing can have been
+   * billed); true once a request went out.
+   */
+  sent: boolean;
+  /** What the vendor said the ask used — carried on ANY kind whose answer reported it. */
+  usage?: ImageUsage;
+  /**
+   * What the ask cost. PRESENT = known — including a known zero (all four fields 0): nothing
+   * was sent, or the vendor turned the ask away before making anything. ABSENT = NOT KNOWN: the
+   * vendor may have billed and the amount cannot be established (no usage in its answer, no
+   * rate for the model, no answer at all after the request went out). Never a guess — a record
+   * of spend writes an absent cost as "not priced", never as zero.
+   */
+  cost?: ImageCostUsd;
 };
 
 export type ImageGenerationOk = ImageGenerationOutcomeBase & {
   kind: 'ok';
   /** The pictures actually made — may be fewer than asked for; an unreadable one is left out. */
   images: GeneratedImage[];
-  usage?: ImageUsage;
-  /** Absent = the price is NOT KNOWN (no usage from the vendor, or no rate for it). Never a guess. */
-  cost?: ImageCostUsd;
 };
 
 export type ImageGenerationRefused = ImageGenerationOutcomeBase & {
@@ -81,20 +102,30 @@ export type ImageGenerationFailureKind =
   | 'network'
   | 'timeout'
   /** The vendor answered 2xx with no readable picture. */
-  | 'malformed_response';
+  | 'malformed_response'
+  /** The adapter itself threw — a defect on this side, not an answer from the vendor. */
+  | 'adapter_error';
 
 export type ImageGenerationFailed = ImageGenerationOutcomeBase & {
   kind: 'failed';
   errorKind: ImageGenerationFailureKind;
   /** True when asking again later could work. */
   transient: boolean;
-  /**
-   * False when the ask never left this process (nothing was sent, so nothing can have been
-   * billed); true once a request went out.
-   */
-  sent: boolean;
   statusCode?: number;
   /** The vendor's error code, when it gave one. */
   code?: string;
   message: string;
+};
+
+/**
+ * The caller stopped the ask. There is no `images` field on purpose: whatever the vendor had
+ * already made is discarded before this outcome exists and is only counted here. The spend is
+ * still reported — `sent: false` with a zero cost when the stop landed before anything went
+ * out; the answer's own `usage` and `cost` when it arrived anyway; `sent: true` with no cost
+ * when the request was cut off mid-flight (the vendor may have finished and billed it).
+ */
+export type ImageGenerationStopped = ImageGenerationOutcomeBase & {
+  kind: 'stopped';
+  /** Pictures the vendor had made that were thrown away because of the stop. */
+  discardedImages: number;
 };
