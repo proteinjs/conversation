@@ -1,9 +1,10 @@
 import type { ChatCompletionContentPart, ChatCompletionMessageParam } from 'openai/resources/chat';
 import { SkillDispatcherSkill } from '../src/SkillDispatcherSkill';
 import { ConversationSkill } from '../src/ConversationSkill';
-import { Function as ConvFunction } from '../src/Function';
+import { Function as ConvFunction, type ToolCallContext, type ToolPhase } from '../src/Function';
 import { ChatCompletionMessageParamFactory } from '../src/ChatCompletionMessageParamFactory';
 import { SdkContentParts } from '../src/sdkContentParts';
+import { ToolBudget, type ToolBudgetConversion } from '../src/ToolBudget';
 
 /**
  * Pure unit tests for SkillDispatcherSkill — no API calls, no model in the loop.
@@ -14,6 +15,7 @@ import { SdkContentParts } from '../src/sdkContentParts';
  *  - useSkill dispatches correctly + fires onSkillUsed for auto-pin
  *  - useSkill hands a structured-content result (a picture) through UNCHANGED, so the executor
  *    converts it exactly as it converts the same tool called directly
+ *  - useSkill hands the dispatched tool the tool-call context (abort signal, phase reporter)
  *  - duplicate ids throw at construction time
  */
 
@@ -539,6 +541,114 @@ describe('SkillDispatcherSkill', () => {
       expect(SdkContentParts.toToolResultContentParts(parts as ChatCompletionContentPart[])).toEqual([
         { type: 'text', text: 'The body of the note.' },
       ]);
+    });
+  });
+
+  // The executor hands a tool its call context beside its arguments: the call's own abort signal
+  // (Stop) and the phase reporter. A tool reached through `useSkill` is still that tool — it gets
+  // the same context, so it can stop and report phases on its first turn too.
+  describe('useSkill — the tool-call context reaches the dispatched tool', () => {
+    const useSkillTool = (dispatcher: SkillDispatcherSkill) =>
+      dispatcher.getFunctions().find((f) => f.definition.name === 'useSkill')!;
+    const contextFor = (controller: AbortController, phases: ToolPhase[] = []): ToolCallContext => ({
+      signal: controller.signal,
+      onPhase: (phase) => phases.push(phase),
+    });
+    /** A skill whose one tool records every context it is called with. */
+    const recordingSkill = (received: Array<ToolCallContext | undefined>) => {
+      const fn: ConvFunction = {
+        ...makeFn('work', 'w', async () => 'ok'),
+        call: async (_args: unknown, ctx?: ToolCallContext) => {
+          received.push(ctx);
+          return 'ok';
+        },
+      };
+      return makeSkill({ id: 'mod', functions: [fn] });
+    };
+
+    it('hands the dispatched tool the SAME context object the executor handed useSkill', async () => {
+      const received: Array<ToolCallContext | undefined> = [];
+      const ctx = contextFor(new AbortController());
+      await useSkillTool(new SkillDispatcherSkill([recordingSkill(received)])).call(
+        { skill: 'mod', tool: 'work', args: {} },
+        ctx
+      );
+      expect(received).toHaveLength(1);
+      expect(received[0]).toBe(ctx);
+    });
+
+    it('a call made without a context still reaches the tool without one', async () => {
+      const received: Array<ToolCallContext | undefined> = [];
+      await useSkillTool(new SkillDispatcherSkill([recordingSkill(received)])).call({
+        skill: 'mod',
+        tool: 'work',
+        args: {},
+      });
+      expect(received).toEqual([undefined]);
+    });
+
+    it('an aborted signal is visible to the dispatched tool, and its phases reach the reporter', async () => {
+      const controller = new AbortController();
+      controller.abort();
+      const phases: ToolPhase[] = [];
+      const fn: ConvFunction = {
+        ...makeFn('work', 'w', async () => 'ok'),
+        call: async (_args: unknown, ctx?: ToolCallContext) => {
+          ctx?.onPhase({ on: 'Checking whether to go on' });
+          return ctx?.signal.aborted ? 'stopped before any work' : 'did the work';
+        },
+      };
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [fn] })]);
+      const output = await useSkillTool(dispatcher).call(
+        { skill: 'mod', tool: 'work', args: {} },
+        contextFor(controller, phases)
+      );
+      expect(output).toBe('stopped before any work');
+      expect(phases).toEqual([{ on: 'Checking whether to go on' }]);
+    });
+
+    it('forwards the context through a dispatcher nested inside a dispatcher', async () => {
+      const received: Array<ToolCallContext | undefined> = [];
+      const ctx = contextFor(new AbortController());
+      const outer = new SkillDispatcherSkill([new SkillDispatcherSkill([recordingSkill(received)])]);
+      await useSkillTool(outer).call(
+        { skill: 'skill-dispatcher', tool: 'useSkill', args: { skill: 'mod', tool: 'work', args: {} } },
+        ctx
+      );
+      expect(received[0]).toBe(ctx);
+    });
+
+    it('under a budgeted executor, a long dispatched tool names its phase and Stop ends it', async () => {
+      const fn: ConvFunction = {
+        ...makeFn('work', 'w', async () => 'ok'),
+        call: (_args: unknown, ctx?: ToolCallContext) =>
+          new Promise<string>((resolve) => {
+            ctx?.onPhase({ on: 'Setting up the workspace' });
+            ctx?.signal.addEventListener('abort', () => resolve('stopped by the signal'));
+          }),
+      };
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [fn] })]);
+      const conversions: ToolBudgetConversion[] = [];
+      const outcome = await new ToolBudget({
+        host: {
+          softBudgetMs: 20,
+          convert: async (call) => {
+            conversions.push(call);
+            return { jobId: 'job-1' };
+          },
+        },
+        fn: useSkillTool(dispatcher),
+        toolCallId: 'call-1',
+        input: { skill: 'mod', tool: 'work', args: {} },
+      }).run();
+
+      // Past its budget the call became a background job, named by the DISPATCHED tool's phase…
+      expect(outcome.kind).toBe('converted');
+      expect(conversions).toHaveLength(1);
+      expect(conversions[0].phase).toEqual({ on: 'Setting up the workspace' });
+      // …and the job's Stop reaches the dispatched tool, which ends.
+      conversions[0].abort();
+      expect(await conversions[0].promise).toBe('stopped by the signal');
     });
   });
 

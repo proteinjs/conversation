@@ -1,5 +1,5 @@
 import { ConversationSkill } from './ConversationSkill';
-import { Function as ConvFunction } from './Function';
+import { Function as ConvFunction, ToolCallContext } from './Function';
 import { MessageModerator } from './history/MessageModerator';
 import { SdkContentParts } from './sdkContentParts';
 
@@ -40,7 +40,9 @@ export interface SkillDispatcherOptions {
  *
  * A dispatched tool's result reaches the model as it would had the tool been
  * called directly: text as text, and structured content (a picture a vision
- * tool returns) as structured content — `useSkill` never serializes it.
+ * tool returns) as structured content — `useSkill` never serializes it. It is also CALLED as it
+ * would be directly: `useSkill` hands it the tool-call context (the abort signal, the phase
+ * reporter) the executor handed `useSkill`.
  *
  * Only function tools (from `getFunctions()`) are dispatcher-reachable.
  * Provider-defined tools (Anthropic's native `text_editor` / `bash`, etc.)
@@ -235,8 +237,8 @@ export class SkillDispatcherSkill implements ConversationSkill {
         const { name: _name, ...rest } = outcome;
         return rest;
       },
-      call: async ({ skill, tool, args }: { skill?: string; tool?: string; args?: unknown }) =>
-        this.dispatch(skill, tool, args),
+      call: async ({ skill, tool, args }: { skill?: string; tool?: string; args?: unknown }, ctx?: ToolCallContext) =>
+        this.dispatch(skill, tool, args, ctx),
     };
   }
 
@@ -321,8 +323,17 @@ export class SkillDispatcherSkill implements ConversationSkill {
    * (image parts in the tool result, or the provider's redirect where a tool result cannot carry
    * one). Stringifying it here would hand the model the picture's base64 as text. Every other
    * result is text, as before: a string as itself, anything else as 2-space JSON.
+   *
+   * The tool-call context the executor handed `useSkill` (the call's abort signal and its phase
+   * reporter) is handed on to the tool as it is: a dispatched tool is still that tool, so it sees
+   * Stop and reports its phases exactly as it does when called directly.
    */
-  private async dispatch(skillId: string | undefined, toolName: string | undefined, args: unknown): Promise<unknown> {
+  private async dispatch(
+    skillId: string | undefined,
+    toolName: string | undefined,
+    args: unknown,
+    ctx: ToolCallContext | undefined
+  ): Promise<unknown> {
     if (!skillId) {
       return this.errorMissing('skill');
     }
@@ -344,7 +355,7 @@ export class SkillDispatcherSkill implements ConversationSkill {
 
     let result: unknown;
     try {
-      result = await tool.call(args ?? {});
+      result = await tool.call(args ?? {}, ctx);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
       return `Error invoking ${skillId}.${toolName}: ${msg}`;
