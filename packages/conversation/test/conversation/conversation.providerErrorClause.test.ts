@@ -11,6 +11,8 @@ import { fixtureModelData } from './fixtureModelData';
  * throw, the streaming egress's throw, the round's log line — used `String(error)`, which reads
  * "[object Object]": the person saw a house line and the log could not name what the provider said
  * (2026-09-22, live: a pro-class model refused one turn in six with a clause nobody could read).
+ * The THROWS carry the provider's words; the LOG LINE carries the error marked — the vendor's code
+ * and the model, never the words (ProviderFailureLine: a provider's message may quote the request).
  */
 const usage = {
   inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
@@ -69,7 +71,7 @@ describe('a provider error that is a plain object keeps its clause', () => {
     expect(await result.failure).toMatchObject({ error: { message: 'The provider said no to this prompt.' } });
   });
 
-  test('the round’s log line names the clause (the structure when there is none)', async () => {
+  test('the round’s log line names the failure by its vendor code and model — never the clause, never "[object Object]"', async () => {
     const lines: string[] = [];
     const spy = jest.spyOn(console, 'error').mockImplementation((...parts: unknown[]) => {
       lines.push(parts.map((p) => (typeof p === 'string' ? p : JSON.stringify(p))).join(' '));
@@ -87,7 +89,11 @@ describe('a provider error that is a plain object keeps its clause', () => {
     }
     const logged = lines.join('\n');
     expect(logged).toContain('The round ended on an error');
-    expect(logged).toContain('The provider said no to this prompt.');
+    // The line carries the error MARKED (ProviderFailureLine): the vendor's code and the model
+    // name the failure; the provider's own words — which may quote the request — never ride it.
+    expect(logged).toContain('invalid_prompt');
+    expect(logged).toContain('gpt-6-astra');
+    expect(logged).not.toContain('The provider said no to this prompt.');
     expect(logged).not.toContain('[object Object]');
   });
 });

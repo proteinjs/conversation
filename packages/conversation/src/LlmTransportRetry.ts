@@ -3,6 +3,7 @@ import { APICallError, wrapLanguageModel } from 'ai';
 import { Logger } from '@proteinjs/logger';
 import { TransientProviderError } from './TransientProviderError';
 import { ProviderBillingError, classifyProviderBillingError } from './ProviderBillingError';
+import { ProviderFailureLine } from './ProviderFailureLine';
 
 export type LlmTransportRetryOptions = {
   /** Total wall-clock budget for one logical call, including backoff sleeps. Default 90s. */
@@ -53,6 +54,8 @@ export type LlmTransportRetryRunOptions = {
   /** The model behind the call when known — rides the surfaced TransientProviderError so any
    *  consumer can name the provider in user-facing copy. */
   modelId?: string;
+  /** The provider as the client library names it, when known — rides a failure's log line. */
+  provider?: string;
   /** See {@link LlmTransportRetryActivity}. */
   onRetryActivity?: (activity: LlmTransportRetryActivity) => void;
 };
@@ -148,6 +151,7 @@ export class LlmTransportRetry {
    */
   wrap(model: LanguageModelV3, options: LlmTransportRetryWrapOptions = {}): LanguageModelV3 {
     const modelId = model.modelId;
+    const provider = model.provider;
     const onRetryActivity = options.onRetryActivity;
     return wrapLanguageModel({
       model,
@@ -158,10 +162,11 @@ export class LlmTransportRetry {
             abortSignal: params.abortSignal,
             isRetryable: LlmTransportRetry.isSdkRetryable,
             modelId,
+            provider,
             onRetryActivity,
           }),
         wrapStream: ({ doStream, params }) =>
-          this.streamWithRetry(doStream, params.abortSignal, modelId, onRetryActivity),
+          this.streamWithRetry(doStream, params.abortSignal, modelId, provider, onRetryActivity),
       },
     });
   }
@@ -179,7 +184,7 @@ export class LlmTransportRetry {
       } catch (error: unknown) {
         const verdict = await this.verdictAfterBackoff(error, attempt, startedAt, options);
         if (verdict !== 'retry') {
-          throw LlmTransportRetry.surfaced(verdict, error, options.modelId);
+          throw LlmTransportRetry.surfaced(verdict, error, options);
         }
       }
     }
@@ -196,6 +201,7 @@ export class LlmTransportRetry {
     doStream: () => PromiseLike<LanguageModelV3StreamResult>,
     abortSignal?: AbortSignal,
     modelId?: string,
+    provider?: string,
     onRetryActivity?: (activity: LlmTransportRetryActivity) => void
   ): Promise<LanguageModelV3StreamResult> {
     const startedAt = Date.now();
@@ -204,6 +210,7 @@ export class LlmTransportRetry {
       abortSignal,
       isRetryable: LlmTransportRetry.isStreamRetryable,
       modelId,
+      provider,
       onRetryActivity,
     };
     const verdictOf = (error: unknown) => this.verdictAfterBackoff(error, attempt++, startedAt, options);
@@ -225,7 +232,7 @@ export class LlmTransportRetry {
         } catch (error: unknown) {
           const verdict = await verdictOf(error);
           if (verdict !== 'retry') {
-            throw LlmTransportRetry.surfaced(verdict, error, modelId);
+            throw LlmTransportRetry.surfaced(verdict, error, options);
           }
         }
       }
@@ -277,14 +284,15 @@ export class LlmTransportRetry {
             read = await reader.read();
           } catch (error: unknown) {
             if (outputStarted) {
-              throw error;
+              // Not replayable, so not judged — but it leaves through this door all the same.
+              throw ProviderFailureLine.mark(error, options);
             }
             const verdict = await verdictOf(error);
             if (verdict === 'retry') {
               await restart();
               continue;
             }
-            throw LlmTransportRetry.surfaced(verdict, error, modelId);
+            throw LlmTransportRetry.surfaced(verdict, error, options);
           }
           if (read.done) {
             emitRecoveredIfRetried();
@@ -294,6 +302,9 @@ export class LlmTransportRetry {
           }
           const part = read.value;
           if (outputStarted) {
+            if (part.type === 'error') {
+              ProviderFailureLine.mark(part.error, options);
+            }
             controller.enqueue(part);
             return;
           }
@@ -311,7 +322,7 @@ export class LlmTransportRetry {
             recoveredEmitted = true;
             outputStarted = true;
             flushPreamble(controller);
-            const surfacedError = LlmTransportRetry.surfaced(verdict, part.error, modelId);
+            const surfacedError = LlmTransportRetry.surfaced(verdict, part.error, options);
             controller.enqueue(surfacedError === part.error ? part : { ...part, error: surfacedError });
             return;
           }
@@ -356,6 +367,9 @@ export class LlmTransportRetry {
     startedAt: number,
     options: LlmTransportRetryRunOptions
   ): Promise<RetryVerdict> {
+    // Every failure the transport judges passes here first: from now on a log line about it —
+    // the lines below, a caller's — carries its status and a sentence, never its payload.
+    ProviderFailureLine.mark(error, options);
     // A surface verdict after retries had begun settles the observer's wait (`gave-up`); a
     // surface with no prior retry emitted nothing, so there is no wait to settle.
     const emitGaveUpIfRetried = (aborted?: true) => {
@@ -436,12 +450,19 @@ export class LlmTransportRetry {
   }
 
   /** The error a non-retry verdict throws: the original, tagged only when classified transient/billing. */
-  private static surfaced(verdict: RetryVerdict, error: unknown, modelId?: string): unknown {
+  private static surfaced(
+    verdict: RetryVerdict,
+    error: unknown,
+    call: { modelId?: string; provider?: string }
+  ): unknown {
     if (verdict === 'surface-transient') {
-      return TransientProviderError.wrap(error, modelId);
+      return ProviderFailureLine.mark(TransientProviderError.wrap(error, call.modelId), call);
     }
     if (verdict === 'surface-billing') {
-      return ProviderBillingError.wrap(error, classifyProviderBillingError(error) ?? 'billing_error', modelId);
+      return ProviderFailureLine.mark(
+        ProviderBillingError.wrap(error, classifyProviderBillingError(error) ?? 'billing_error', call.modelId),
+        call
+      );
     }
     return error;
   }

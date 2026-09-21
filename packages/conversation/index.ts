@@ -29,6 +29,8 @@ export * from './src/RequestedEffort';
 export * from './src/OpenAiModelRules';
 export * from './src/TransientProviderError';
 export * from './src/ProviderBillingError';
+export * from './src/ProviderFailureLine';
+export * from './src/ProviderLogPayloads';
 
 // Conversation modules
 export * from './src/fs/conversation_fs/ConversationFsSkill';

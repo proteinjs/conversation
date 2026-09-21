@@ -151,7 +151,7 @@ export function classifyProviderBillingError(error: unknown): string | undefined
     return 'billing_error';
   }
   const payloads = collectPayloads(error);
-  const codes = payloads.flatMap((p) => collectCodeStrings(p, 0));
+  const codes = providerErrorCodes(error);
   const billingCode = codes.find((code) => BILLING_ERROR_CODES.has(code.toLowerCase()));
   if (billingCode) {
     return billingCode.toLowerCase();
@@ -172,6 +172,19 @@ export function classifyProviderBillingError(error: unknown): string | undefined
     }
   }
   return undefined;
+}
+
+/**
+ * The vendor's own error code/type strings on a provider error — the error object, every parsed
+ * body attached to it and a raw mid-stream payload alike — most specific first. The same walk
+ * the billing table reads, for whoever needs to NAME a failure (a log line's stand-in) rather
+ * than classify it. Never a schema demand; never throws on an odd shape.
+ */
+export function providerErrorCodes(error: unknown): string[] {
+  if (typeof error !== 'object' || error === null) {
+    return [];
+  }
+  return collectPayloads(error).flatMap((payload) => collectCodeStrings(payload, 0));
 }
 
 // ─── optional-field walks (module-private; bounded depth, never throw) ───────────────────────
