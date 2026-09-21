@@ -728,6 +728,7 @@ export class Conversation {
       streamText({
         model: callRung.model,
         messages: callMessages,
+        onError: this.streamErrorLine({ modelId: callRung.modelString, provider: callRung.provider }),
         tools: Object.keys(allTools).length > 0 ? allTools : undefined,
         toolChoice: webSearchToolChoice,
         stopWhen: [
@@ -1906,6 +1907,7 @@ export class Conversation {
     const result = streamText({
       model: args.model,
       messages: loopMessages,
+      onError: this.streamErrorLine({ modelId: args.modelString, provider: args.provider }),
       tools,
       stopWhen: [stepCountIs(params.maxToolCalls ?? 50), hasToolCall('submit_result')],
       // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer.
@@ -4028,6 +4030,7 @@ export class Conversation {
       const result = streamText({
         model: args.model,
         messages: request,
+        onError: this.streamErrorLine({ modelId: args.modelString, provider: args.provider }),
         maxRetries: 0,
         abortSignal: args.abortSignal,
         providerOptions: this.buildProviderOptions(args.provider, { reasoningEffort: 'none' }, args.modelString),
@@ -4110,6 +4113,21 @@ export class Conversation {
   }
 
   /** The utterance streamed into a boundary queue (the `prepareStep` seam) instead of yielded. */
+  /**
+   * What `streamText` is handed as `onError`. The client library's DEFAULT prints the error with
+   * `console.error` — whole, past the logger, request body and all. A stream's failure already
+   * surfaces to the caller as the stream's `error` part; this door only keeps it off the
+   * console: one line through the logger, the error marked first (ProviderFailureLine).
+   */
+  private streamErrorLine(call: { modelId?: string; provider?: string }): (event: { error: unknown }) => void {
+    return ({ error }) => {
+      this.logger.warn({
+        message: 'The model stream reported an error — it reaches the caller as the stream`s error part',
+        obj: { error: ProviderFailureLine.mark(error, call) },
+      });
+    };
+  }
+
   private async utterInto(
     queue: StreamPartQueue,
     args: Parameters<Conversation['utter']>[0]

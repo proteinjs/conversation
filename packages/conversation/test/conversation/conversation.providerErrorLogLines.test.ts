@@ -78,6 +78,19 @@ class CapturedLines {
   }
 }
 
+/** Everything written to the console from here on, as a writer would render it. */
+const consoleWrites = (): string[] => {
+  const written: string[] = [];
+  for (const level of ['error', 'warn', 'info', 'log'] as const) {
+    jest
+      .spyOn(console, level)
+      .mockImplementation(
+        (...parts: unknown[]) => void written.push(parts.map((part) => inspect(part, { depth: 10 })).join(' '))
+      );
+  }
+  return written;
+};
+
 const expectNoMarker = (text: string) => MARKERS.forEach((marker) => expect(text).not.toContain(marker));
 
 const caught = async (work: () => Promise<unknown>): Promise<unknown> => {
@@ -329,8 +342,40 @@ describe('a provider error on a log line never carries the request, the response
   );
 
   test(
+    'generateStream: a failed stream is never printed by the client library itself (its default prints the error whole)',
+    async () => {
+      const written = consoleWrites();
+      const model = new MockLanguageModelV3({
+        provider: 'anthropic.messages',
+        modelId: 'claude-test',
+        doStream: async () => {
+          throw apiError({ message: 'prompt is too long', statusCode: 400, type: 'invalid_request_error' });
+        },
+      });
+      const result = await new Conversation({
+        modelData: fixtureModelData,
+        name: 'provider-error-lines-test',
+        logLevel: 'warn',
+        limits: { enforceLimits: false },
+      }).generateStream({ messages: ['say something'], model: model as never });
+
+      const error = await caught(async () => {
+        for await (const _part of result.fullStream) {
+          // read to the failure
+        }
+      });
+
+      expect(APICallError.isInstance(error)).toBe(true);
+      expect(written.join('\n')).toContain('The model stream reported an error');
+      expectNoMarker(written.join('\n'));
+    },
+    TIMEOUT
+  );
+
+  test(
     'generateObject through the tool loop: a raw payload mid-stream',
     async () => {
+      const written = consoleWrites();
       const error = await caught(() =>
         newConversation().generateObject<{ answer: string }>({
           messages: ['look, then answer'],
@@ -351,6 +396,7 @@ describe('a provider error on a log line never carries the request, the response
       );
 
       expect(error).toBeInstanceOf(Error);
+      expectNoMarker(written.join('\n'));
       const lines = new CapturedLines();
       expectNoMarker(lines.logWhole(error));
       expect(lines.structured()[0].error).toMatchObject({
@@ -358,6 +404,54 @@ describe('a provider error on a log line never carries the request, the response
         modelId: 'claude-test',
         code: 'overloaded_error',
       });
+    },
+    TIMEOUT
+  );
+
+  test(
+    'the bounded utterance: its failed stream is not printed by the client library either',
+    async () => {
+      const written = consoleWrites();
+      const model = new MockLanguageModelV3({
+        provider: 'anthropic.messages',
+        modelId: 'claude-test',
+        doStream: async () => {
+          throw apiError({ message: 'prompt is too long', statusCode: 400, type: 'invalid_request_error' });
+        },
+      });
+      type UtteranceInternals = {
+        utter(args: {
+          model: unknown;
+          transcript: unknown[];
+          inputs: { text: string }[];
+          provider: string;
+          modelString: string;
+          abortSignal: AbortSignal;
+          onResult: (result: unknown) => void;
+        }): AsyncGenerator<unknown, string | undefined>;
+      };
+      const conversation = new Conversation({
+        modelData: fixtureModelData,
+        name: 'provider-error-lines-test',
+        logLevel: 'warn',
+        limits: { enforceLimits: false },
+      }) as unknown as UtteranceInternals;
+
+      const parts = conversation.utter({
+        model: new LlmTransportRetry({ budgetMs: 5_000 }).wrap(model as never),
+        transcript: [{ role: 'user', content: 'and the login page?' }],
+        inputs: [{ text: 'also the header' }],
+        provider: 'anthropic',
+        modelString: 'claude-test',
+        abortSignal: new AbortController().signal,
+        onResult: () => undefined,
+      });
+      for (let next = await parts.next(); !next.done; next = await parts.next()) {
+        // no line is expected: the call failed
+      }
+
+      expect(written.join('\n')).toContain('The model stream reported an error');
+      expectNoMarker(written.join('\n'));
     },
     TIMEOUT
   );
