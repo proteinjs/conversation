@@ -41,6 +41,9 @@ export type SdkToolResultContentPart =
 
 type Target = 'user' | 'tool-result';
 
+/** A factory recognized by shape alone: `instanceof` misses one that crossed a package boundary. */
+type StructuralFactory = { create: () => unknown | Promise<unknown> };
+
 /**
  * Stateless adapters between OpenAI-shape `ChatCompletionContentPart[]` and the
  * Vercel AI SDK's two distinct multimodal shapes (user-message parts vs.
@@ -94,13 +97,13 @@ export class SdkContentParts {
    * backward-compat for tools that return strings/objects today).
    */
   static async extractContentPartsFromToolReturn(result: unknown): Promise<ChatCompletionContentPart[] | undefined> {
-    if (result == null) {
+    if (!SdkContentParts.isStructuredToolReturn(result)) {
       return undefined;
     }
 
     // Direct array-of-parts: `[{type:'text',...}, {type:'image_url',...}]`.
-    if (Array.isArray(result) && result.length > 0 && SdkContentParts.looksLikeContentPart(result[0])) {
-      return result as ChatCompletionContentPart[];
+    if (SdkContentParts.isContentPartArray(result)) {
+      return result;
     }
 
     // Legacy factory shape — includes `getFiles`'s FileContentPartFactory.
@@ -112,9 +115,9 @@ export class SdkContentParts {
     // Some factories inherit via structural typing (`extends` across package
     // boundaries) and instanceof misses them. Duck-type fallback: async
     // `create()` that yields message-like objects.
-    if (typeof (result as { create?: unknown }).create === 'function') {
+    if (SdkContentParts.hasCreate(result)) {
       try {
-        const produced = await (result as { create: () => unknown | Promise<unknown> }).create();
+        const produced = await result.create();
         if (Array.isArray(produced)) {
           // Could be an array of messages OR an array of parts.
           if (produced.length > 0 && SdkContentParts.looksLikeContentPart(produced[0])) {
@@ -130,9 +133,44 @@ export class SdkContentParts {
     return undefined;
   }
 
+  /**
+   * THE shape detection for tool return values — its one owner. True for a value
+   * `extractContentPartsFromToolReturn` would read as structured content: a
+   * non-empty `ChatCompletionContentPart[]`, a `ChatCompletionMessageParamFactory`,
+   * or an object with a `create()` (a factory typed structurally across a package
+   * boundary). Synchronous, and it never calls `create()`.
+   *
+   * Anything that carries a tool's return value on its way to the executor — a
+   * tool that calls another tool on the model's behalf, like `SkillDispatcherSkill`'s
+   * `useSkill` — asks this before it serializes the value, and hands a structured
+   * one through UNCHANGED: the executor owns the one conversion. Serializing it
+   * first turns a picture into its base64 text; the model never sees the picture
+   * and the bytes are counted as input text.
+   */
+  static isStructuredToolReturn(
+    result: unknown
+  ): result is ChatCompletionContentPart[] | ChatCompletionMessageParamFactory | StructuralFactory {
+    if (result == null) {
+      return false;
+    }
+    return (
+      SdkContentParts.isContentPartArray(result) ||
+      result instanceof ChatCompletionMessageParamFactory ||
+      SdkContentParts.hasCreate(result)
+    );
+  }
+
   // ────────────────────────────────────────────────────────────
   // Private helpers
   // ────────────────────────────────────────────────────────────
+
+  private static isContentPartArray(result: unknown): result is ChatCompletionContentPart[] {
+    return Array.isArray(result) && result.length > 0 && SdkContentParts.looksLikeContentPart(result[0]);
+  }
+
+  private static hasCreate(result: unknown): result is StructuralFactory {
+    return typeof (result as { create?: unknown }).create === 'function';
+  }
 
   private static mapPart(part: unknown, target: Target): Record<string, unknown> | undefined {
     if (typeof part !== 'object' || part == null) {

@@ -1,6 +1,7 @@
 import { ConversationSkill } from './ConversationSkill';
 import { Function as ConvFunction } from './Function';
 import { MessageModerator } from './history/MessageModerator';
+import { SdkContentParts } from './sdkContentParts';
 
 export interface SkillDispatcherOptions {
   /**
@@ -36,6 +37,10 @@ export interface SkillDispatcherOptions {
  * comfortably render, the dispatcher can be swapped for a provider-aware
  * implementation without changing the rest of the system — the
  * pinned/unpinned partition stays the same.
+ *
+ * A dispatched tool's result reaches the model as it would had the tool been
+ * called directly: text as text, and structured content (a picture a vision
+ * tool returns) as structured content — `useSkill` never serializes it.
  *
  * Only function tools (from `getFunctions()`) are dispatcher-reachable.
  * Provider-defined tools (Anthropic's native `text_editor` / `bash`, etc.)
@@ -308,7 +313,16 @@ export class SkillDispatcherSkill implements ConversationSkill {
 
   // ─── dispatch ──────────────────────────────────────────────────────────────
 
-  private async dispatch(skillId: string | undefined, toolName: string | undefined, args: unknown): Promise<string> {
+  /**
+   * Run the named tool and hand its result to the executor. A STRUCTURED-CONTENT result — a
+   * picture: a `ChatCompletionMessageParamFactory`, a structurally-typed factory, or a bare
+   * content-part array, as `SdkContentParts.isStructuredToolReturn` reads it — is handed through
+   * UNCHANGED, so the executor converts it exactly as it converts the same tool called directly
+   * (image parts in the tool result, or the provider's redirect where a tool result cannot carry
+   * one). Stringifying it here would hand the model the picture's base64 as text. Every other
+   * result is text, as before: a string as itself, anything else as 2-space JSON.
+   */
+  private async dispatch(skillId: string | undefined, toolName: string | undefined, args: unknown): Promise<unknown> {
     if (!skillId) {
       return this.errorMissing('skill');
     }
@@ -344,7 +358,7 @@ export class SkillDispatcherSkill implements ConversationSkill {
       }
     }
 
-    if (typeof result === 'string') {
+    if (typeof result === 'string' || SdkContentParts.isStructuredToolReturn(result)) {
       return result;
     }
     try {

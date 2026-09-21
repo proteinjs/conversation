@@ -1,6 +1,9 @@
+import type { ChatCompletionContentPart, ChatCompletionMessageParam } from 'openai/resources/chat';
 import { SkillDispatcherSkill } from '../src/SkillDispatcherSkill';
 import { ConversationSkill } from '../src/ConversationSkill';
 import { Function as ConvFunction } from '../src/Function';
+import { ChatCompletionMessageParamFactory } from '../src/ChatCompletionMessageParamFactory';
+import { SdkContentParts } from '../src/sdkContentParts';
 
 /**
  * Pure unit tests for SkillDispatcherSkill — no API calls, no model in the loop.
@@ -9,6 +12,8 @@ import { Function as ConvFunction } from '../src/Function';
  *  - listAvailableSkills returns the catalog of unpinned skills
  *  - describeSkill renders instructions + tool catalog with JSON schemas
  *  - useSkill dispatches correctly + fires onSkillUsed for auto-pin
+ *  - useSkill hands a structured-content result (a picture) through UNCHANGED, so the executor
+ *    converts it exactly as it converts the same tool called directly
  *  - duplicate ids throw at construction time
  */
 
@@ -48,11 +53,47 @@ function makeFn(name: string, description: string, callImpl: (args: any) => Prom
 }
 
 async function callTool(dispatcher: SkillDispatcherSkill, toolName: string, args: unknown): Promise<string> {
+  return (await callToolRaw(dispatcher, toolName, args)) as string;
+}
+
+/** The tool's return value exactly as the executor receives it — no cast to string. */
+async function callToolRaw(dispatcher: SkillDispatcherSkill, toolName: string, args: unknown): Promise<unknown> {
   const tool = dispatcher.getFunctions().find((f) => f.definition.name === toolName);
   if (!tool) {
     throw new Error(`Tool ${toolName} not exposed by dispatcher`);
   }
-  return (await tool.call(args ?? {})) as string;
+  return tool.call(args ?? {});
+}
+
+/** A 1x1 PNG. Small, but a real picture: what a vision tool hands back. */
+const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+const PNG_DATA_URI = `data:image/png;base64,${PNG_BASE64}`;
+
+const pictureParts = (): ChatCompletionContentPart[] => [
+  { type: 'text', text: 'The screen as it looked.' },
+  { type: 'image_url', image_url: { url: PNG_DATA_URI } },
+];
+
+/** A vision tool's result: a factory SUBCLASS carrying its own fields, like a real skill's. */
+class ScreenPictureFactory extends ChatCompletionMessageParamFactory {
+  constructor(
+    private readonly dataUri: string,
+    private readonly caption: string
+  ) {
+    super();
+  }
+
+  async create(): Promise<ChatCompletionMessageParam[]> {
+    return [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: this.caption },
+          { type: 'image_url', image_url: { url: this.dataUri } },
+        ],
+      },
+    ];
+  }
 }
 
 describe('SkillDispatcherSkill', () => {
@@ -227,6 +268,155 @@ describe('SkillDispatcherSkill', () => {
       const output = await callTool(dispatcher, 'useSkill', { skill: 'mod', tool: 'broken', args: {} });
       expect(output).toContain('Error invoking mod.broken: boom');
       // Tool errored — we don't pin a skill that failed.
+      expect(onSkillUsed).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('useSkill — structured content passes through unchanged', () => {
+    const visionDispatcher = (result: () => unknown, options?: { onSkillUsed?: (id: string) => void }) =>
+      new SkillDispatcherSkill(
+        [
+          makeSkill({
+            id: 'vision',
+            name: 'Vision',
+            functions: [makeFn('look', 'Look at the screen.', async () => result())],
+          }),
+        ],
+        options
+      );
+    const look = (dispatcher: SkillDispatcherSkill) =>
+      callToolRaw(dispatcher, 'useSkill', { skill: 'vision', tool: 'look', args: {} });
+
+    it('hands a ChatCompletionMessageParamFactory subclass through as the SAME object, not its JSON', async () => {
+      const factory = new ScreenPictureFactory(PNG_DATA_URI, 'The screen as it looked.');
+      const output = await look(visionDispatcher(() => factory));
+      expect(output).toBe(factory);
+      // What the executor then makes of it: the picture, as the direct call would have produced.
+      expect(await SdkContentParts.extractContentPartsFromToolReturn(output)).toEqual(pictureParts());
+    });
+
+    it('hands a bare content-part array through as the SAME array, not its JSON', async () => {
+      const parts = pictureParts();
+      const output = await look(visionDispatcher(() => parts));
+      expect(output).toBe(parts);
+      expect(await SdkContentParts.extractContentPartsFromToolReturn(output)).toEqual(pictureParts());
+    });
+
+    it('hands a structurally-typed factory (a create() that is not an instance) through unchanged', async () => {
+      const foreign = { create: async () => pictureParts() };
+      const output = await look(visionDispatcher(() => foreign));
+      expect(output).toBe(foreign);
+      expect(await SdkContentParts.extractContentPartsFromToolReturn(output)).toEqual(pictureParts());
+    });
+
+    it('never calls create() itself — the executor owns the one conversion', async () => {
+      const factory = new ScreenPictureFactory(PNG_DATA_URI, 'once');
+      const create = jest.spyOn(factory, 'create');
+      await look(visionDispatcher(() => factory));
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('passes a picture through a dispatcher nested inside a dispatcher', async () => {
+      const factory = new ScreenPictureFactory(PNG_DATA_URI, 'nested');
+      const outer = new SkillDispatcherSkill([visionDispatcher(() => factory)]);
+      const output = await callToolRaw(outer, 'useSkill', {
+        skill: 'skill-dispatcher',
+        tool: 'useSkill',
+        args: { skill: 'vision', tool: 'look', args: {} },
+      });
+      expect(output).toBe(factory);
+    });
+
+    it('still pins the skill when the result is a picture', async () => {
+      const onSkillUsed = jest.fn();
+      await look(visionDispatcher(() => pictureParts(), { onSkillUsed }));
+      expect(onSkillUsed).toHaveBeenCalledTimes(1);
+      expect(onSkillUsed).toHaveBeenCalledWith('vision');
+    });
+
+    it("gives the dispatched tool's outcome hook the tool's own result, as a direct call does", async () => {
+      const factory = new ScreenPictureFactory(PNG_DATA_URI, 'outcome');
+      const seen: unknown[] = [];
+      const fn: ConvFunction = {
+        ...makeFn('look', 'l', async () => factory),
+        getTimelineOutcome: (_args: unknown, result: unknown) => {
+          seen.push(result);
+          return undefined;
+        },
+      };
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'vision', functions: [fn] })]);
+      const useSkill = dispatcher.getFunctions().find((f) => f.definition.name === 'useSkill')!;
+      const result = await useSkill.call({ skill: 'vision', tool: 'look', args: {} });
+      await useSkill.getTimelineOutcome!({ skill: 'vision', tool: 'look', args: {} }, result);
+      expect(seen).toEqual([factory]);
+    });
+  });
+
+  describe('useSkill — everything else is returned exactly as before', () => {
+    const dispatcherReturning = (result: () => unknown) =>
+      new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [makeFn('t', 't', async () => result())] })]);
+    const run = (result: () => unknown) =>
+      callToolRaw(dispatcherReturning(result), 'useSkill', { skill: 'mod', tool: 't', args: {} });
+
+    it('a plain object is stringified byte-for-byte as before (2-space JSON)', async () => {
+      const value = { id: 7, nested: { list: [1, 'two', null], flag: false }, text: 'a "quoted" line\n' };
+      expect(await run(() => value)).toBe(JSON.stringify(value, null, 2));
+      expect(await run(() => ({ got: { value: 'hi' } }))).toBe('{\n  "got": {\n    "value": "hi"\n  }\n}');
+    });
+
+    it('an object that merely LOOKS picture-ish (a type field, no array) is still stringified', async () => {
+      const value = { type: 'image_url', image_url: { url: PNG_DATA_URI } };
+      expect(await run(() => value)).toBe(JSON.stringify(value, null, 2));
+    });
+
+    it('arrays that are not content parts are still stringified', async () => {
+      expect(await run(() => [])).toBe('[]');
+      expect(await run(() => [1, 2])).toBe(JSON.stringify([1, 2], null, 2));
+      expect(await run(() => [{ id: 1 }, { type: 'text', text: 'second' }])).toBe(
+        JSON.stringify([{ id: 1 }, { type: 'text', text: 'second' }], null, 2)
+      );
+    });
+
+    it('a string passes as itself — including one that holds JSON', async () => {
+      expect(await run(() => 'just a string')).toBe('just a string');
+      expect(await run(() => '{"a":1}')).toBe('{"a":1}');
+      expect(await run(() => '')).toBe('');
+    });
+
+    it('undefined stays undefined and null stays the text "null"', async () => {
+      expect(await run(() => undefined)).toBeUndefined();
+      expect(await run(() => null)).toBe('null');
+    });
+
+    it('numbers and booleans are stringified as before', async () => {
+      expect(await run(() => 42)).toBe('42');
+      expect(await run(() => false)).toBe('false');
+    });
+
+    it('a value JSON cannot hold falls back to String(), as before', async () => {
+      const circular: Record<string, unknown> = {};
+      circular.self = circular;
+      expect(await run(() => circular)).toBe('[object Object]');
+    });
+
+    it("a thrown error is still reported as text, and a picture tool's throw does not pin", async () => {
+      const onSkillUsed = jest.fn();
+      const dispatcher = new SkillDispatcherSkill(
+        [
+          makeSkill({
+            id: 'vision',
+            functions: [
+              makeFn('look', 'l', async () => {
+                throw new Error('no screen to look at');
+              }),
+            ],
+          }),
+        ],
+        { onSkillUsed }
+      );
+      expect(await callToolRaw(dispatcher, 'useSkill', { skill: 'vision', tool: 'look', args: {} })).toBe(
+        'Error invoking vision.look: no screen to look at'
+      );
       expect(onSkillUsed).not.toHaveBeenCalled();
     });
   });
