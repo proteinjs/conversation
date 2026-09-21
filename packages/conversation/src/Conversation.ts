@@ -766,16 +766,9 @@ export class Conversation {
         messages: callMessages,
         tools: Object.keys(allTools).length > 0 ? allTools : undefined,
         toolChoice: webSearchToolChoice,
-        onError: ({ error }) => {
+        onError: this.streamErrorLine({ modelId: callRung.modelString, provider: callRung.provider }, (error) => {
           roundFailure = error;
-          this.logger.error({
-            message: 'The round ended on an error',
-            obj: {
-              model: callRung.modelString,
-              error: ProviderFailureLine.mark(error, { modelId: callRung.modelString, provider: callRung.provider }),
-            },
-          });
-        },
+        }),
         stopWhen: [
           stepCountIs(params.maxToolCalls ?? 50),
           ...(params.stopOnToolCalls ?? []).map((name) => hasToolCall(name)),
@@ -1262,7 +1255,12 @@ export class Conversation {
                     .catch((error) =>
                       self.logger.warn({
                         message: 'The side utterance failed',
-                        obj: { error: ProviderFailureLine.mark(error, { modelId: rung.modelString, provider: rung.provider }) },
+                        obj: {
+                          error: ProviderFailureLine.mark(error, {
+                            modelId: rung.modelString,
+                            provider: rung.provider,
+                          }),
+                        },
                       })
                     )
                     .finally(() => {
@@ -1972,6 +1970,7 @@ export class Conversation {
     const result = streamText({
       model: args.model,
       messages: loopMessages,
+      onError: this.streamErrorLine({ modelId: args.modelString, provider: args.provider }),
       tools,
       stopWhen: [stepCountIs(params.maxToolCalls ?? 50), hasToolCall('submit_result')],
       // Retries are owned by LlmTransportRetry (the wrapped model) — disable the SDK's own layer.
@@ -3982,6 +3981,7 @@ export class Conversation {
       const result = streamText({
         model: args.model,
         messages: request,
+        onError: this.streamErrorLine({ modelId: args.modelString, provider: args.provider }),
         maxRetries: 0,
         abortSignal: args.abortSignal,
         providerOptions: this.buildProviderOptions(args.provider, { reasoningEffort: 'none' }, args.modelString),
@@ -4067,6 +4067,28 @@ export class Conversation {
   }
 
   /** The utterance streamed into a boundary queue (the `prepareStep` seam) instead of yielded. */
+  /**
+   * What `streamText` is handed as `onError` — the ONE line about a round that ended on an error,
+   * at every stream the library starts (the writer loop, the object tool loop, the bounded
+   * utterance). The client library's DEFAULT prints the error with `console.error` — whole, past
+   * the logger, request body and all; this door keeps it off the console: one line through the
+   * logger, the error marked first (ProviderFailureLine). The failure still reaches the caller as
+   * the stream's `error` part; a round that must also keep it (the buffered read throws the
+   * error the round ended on) hands in `onFailure`.
+   */
+  private streamErrorLine(
+    call: { modelId?: string; provider?: string },
+    onFailure?: (error: unknown) => void
+  ): (event: { error: unknown }) => void {
+    return ({ error }) => {
+      onFailure?.(error);
+      this.logger.error({
+        message: 'The round ended on an error',
+        obj: { model: call.modelId, error: ProviderFailureLine.mark(error, call) },
+      });
+    };
+  }
+
   private async utterInto(
     queue: StreamPartQueue,
     args: Parameters<Conversation['utter']>[0]
