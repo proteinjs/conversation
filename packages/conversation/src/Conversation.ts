@@ -27,6 +27,7 @@ import { Utterance, type DrainedInput } from './Utterance';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
 import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
+import { ProviderFailureLine } from './ProviderFailureLine';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { TiktokenModel, Tiktoken, encoding_for_model } from 'tiktoken';
 
@@ -1759,6 +1760,8 @@ export class Conversation {
     // assertInputWithinModelCap).
     this.assertInputWithinModelCap(messages, modelString);
 
+    // What the client library raises ABOVE the transport leaves through here (an answer that did
+    // not parse keeps the model's text and the response's headers): marked for log lines.
     const result = await aiGenerateObject({
       model,
       messages,
@@ -1782,6 +1785,8 @@ export class Conversation {
           return null;
         }
       }) as RepairTextFunction,
+    }).catch((error: unknown) => {
+      throw ProviderFailureLine.mark(error, { modelId: modelString, provider });
     });
 
     // Record in history
@@ -1928,10 +1933,7 @@ export class Conversation {
     // to preserve the non-streaming shape's error/retry semantics for callers.
     for await (const part of result.fullStream) {
       if (part.type === 'error') {
-        const cause = (part as { error?: unknown }).error;
-        throw cause instanceof Error
-          ? cause
-          : new Error(String((cause as { message?: string })?.message ?? cause ?? 'LLM stream error'));
+        throw Conversation.streamFailure(part, { modelId: args.modelString, provider: args.provider });
       }
       if (part.type === 'abort') {
         // The non-streaming shape rejected with the signal's reason (timeout/caller abort) —
@@ -3894,6 +3896,22 @@ export class Conversation {
     return 32_000;
   }
 
+  /**
+   * What a stream's `error` part becomes when it is thrown: the error it carries, or an Error
+   * worded from the raw payload a provider sent mid-stream — marked for log lines either way
+   * (ProviderFailureLine), so a line about it never carries the provider's payload.
+   */
+  private static streamFailure(part: { error?: unknown }, call: { modelId?: string; provider?: string }): Error {
+    const cause = part.error;
+    if (cause instanceof Error) {
+      return ProviderFailureLine.mark(cause, call);
+    }
+    const worded = new Error(String((cause as { message?: string })?.message ?? cause ?? 'LLM stream error'));
+    return cause === undefined || cause === null
+      ? worded
+      : ProviderFailureLine.mark(worded, { ...call, wordedFrom: cause });
+  }
+
   private static anySignal(signals: AbortSignal[]): AbortSignal {
     return (AbortSignal as unknown as { any(signals: AbortSignal[]): AbortSignal }).any(signals);
   }
@@ -4354,10 +4372,7 @@ export class Conversation {
               // a transport failure surviving the retry layer SILENTLY truncated the stream: consumers saw
               // an empty message + zero usage and treated it as a (bogus) successful result. Surfacing it
               // lets the visible layers own it — FlowRunner's task retry, then the blocker-ask.
-              const cause = (part as { error?: unknown }).error;
-              throw cause instanceof Error
-                ? cause
-                : new Error(String((cause as { message?: string })?.message ?? cause ?? 'LLM stream error'));
+              throw Conversation.streamFailure(part, { provider });
             }
           }
         } finally {
