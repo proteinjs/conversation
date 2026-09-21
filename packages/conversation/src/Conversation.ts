@@ -30,6 +30,7 @@ import { Utterance, type DrainedInput } from './Utterance';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import type { OpenAiServiceTier } from './OpenAiResponses';
 import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
+import { ProviderFailureLine } from './ProviderFailureLine';
 import { TiktokenModel, Tiktoken, encoding_for_model } from 'tiktoken';
 
 // Re-export for convenience
@@ -769,7 +770,10 @@ export class Conversation {
           roundFailure = error;
           this.logger.error({
             message: 'The round ended on an error',
-            obj: { model: callRung.modelString, error: Conversation.providerErrorClause(error) },
+            obj: {
+              model: callRung.modelString,
+              error: ProviderFailureLine.mark(error, { modelId: callRung.modelString, provider: callRung.provider }),
+            },
           });
         },
         stopWhen: [
@@ -1258,7 +1262,7 @@ export class Conversation {
                     .catch((error) =>
                       self.logger.warn({
                         message: 'The side utterance failed',
-                        obj: { error: Conversation.providerErrorClause(error) },
+                        obj: { error: ProviderFailureLine.mark(error, { modelId: rung.modelString, provider: rung.provider }) },
                       })
                     )
                     .finally(() => {
@@ -1749,7 +1753,7 @@ export class Conversation {
       })(),
       // Liveness is guarded per round INSIDE the combined stream (each continuation call gets its
       // own guarded iteration; one idle window spans them via the shared controller).
-      fullStream: this.mapFullStream(combinedSdkStream, provider, convertedCalls),
+      fullStream: this.mapFullStream(combinedSdkStream, provider, modelString, convertedCalls),
       // Lazy getters: only start consuming the AI SDK stream when accessed.
       // This prevents dual-consumption when the caller uses fullStream instead.
       get text() {
@@ -1822,6 +1826,8 @@ export class Conversation {
     // assertInputWithinModelCap).
     this.assertInputWithinModelCap(messages, modelString);
 
+    // What the client library raises ABOVE the transport leaves through here (an answer that did
+    // not parse keeps the model's text and the response's headers): marked for log lines.
     const result = await aiGenerateObject({
       model,
       messages,
@@ -1845,6 +1851,8 @@ export class Conversation {
           return null;
         }
       }) as RepairTextFunction,
+    }).catch((error: unknown) => {
+      throw ProviderFailureLine.mark(error, { modelId: modelString, provider });
     });
 
     // Record in history
@@ -1991,8 +1999,10 @@ export class Conversation {
     // to preserve the non-streaming shape's error/retry semantics for callers.
     for await (const part of result.fullStream) {
       if (part.type === 'error') {
-        const cause = (part as { error?: unknown }).error;
-        throw cause instanceof Error ? cause : new Error(Conversation.providerErrorClause(cause) || 'LLM stream error');
+        throw Conversation.streamFailure((part as { error?: unknown }).error, {
+          modelId: args.modelString,
+          provider: args.provider,
+        });
       }
       if (part.type === 'abort') {
         // The non-streaming shape rejected with the signal's reason (timeout/caller abort) —
@@ -2047,7 +2057,10 @@ export class Conversation {
       stream.failure,
     ]);
     if (failure !== undefined && !text) {
-      throw failure instanceof Error ? failure : new Error(Conversation.providerErrorClause(failure));
+      throw Conversation.streamFailure(failure, {
+        modelId: this.getModelString(params.model),
+        provider: routedProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL),
+      });
     }
     return { text, reasoning: reasoning || undefined, sources, usage, toolInvocations };
   }
@@ -3752,10 +3765,12 @@ export class Conversation {
    * object's `message` (an HTTP error body); the message nested under `error` (a Responses stream's
    * `error` event — `{ type: 'error', sequence_number, error: { type, code, message } }` — which the
    * SDK enqueues as-is and the transport surfaces when its type is not one it retries); else the
-   * structure itself, compact and bounded. Never "[object Object]": every throw and every log line
-   * that names a failure reads through here, so the person's card and the server's log carry what
-   * the provider said (2026-09-22, live: one turn in six on a pro-class model died on a clause
-   * nobody could read).
+   * structure itself, compact and bounded. Never "[object Object]": every THROW that words a failure
+   * reads through here (`streamFailure`), so the person's card and the caller carry what the
+   * provider said (2026-09-22, live: one turn in six on a pro-class model died on a clause nobody
+   * could read). A LOG LINE never reads through here: it carries the error itself, marked
+   * (ProviderFailureLine), and prints as its status, the vendor's code and a sentence of the
+   * library's — the provider's words, and the request they may quote, stay off the line.
    */
   static providerErrorClause(error: unknown): string {
     if (error instanceof Error) {
@@ -3825,6 +3840,26 @@ export class Conversation {
     }
     // Unknown/legacy (e.g. Opus 4.1 at 32k): the safe floor — over-asking is a hard API error.
     return 32_000;
+  }
+
+  /**
+   * What a failure becomes when it is THROWN — a stream's `error` part, the error the buffered
+   * read ended on: the Error it already is, or an Error worded from the raw payload a provider
+   * sent (`providerErrorClause` — the person's card and the caller read the provider's words).
+   * Marked for log lines either way (ProviderFailureLine), so a line about it never carries the
+   * provider's payload: the two owners meet here and nowhere else.
+   */
+  private static streamFailure(cause: unknown, call: { modelId?: string; provider?: string }): Error {
+    if (cause instanceof Error) {
+      return ProviderFailureLine.mark(cause, call);
+    }
+    if (cause === undefined || cause === null) {
+      return new Error('LLM stream error');
+    }
+    return ProviderFailureLine.mark(new Error(Conversation.providerErrorClause(cause) || 'LLM stream error'), {
+      ...call,
+      wordedFrom: cause,
+    });
   }
 
   private static anySignal(signals: AbortSignal[]): AbortSignal {
@@ -3942,7 +3977,7 @@ export class Conversation {
     // the line arrives and no later turn pays the refused request.
     let text = '';
     let lineEnded = false;
-    let failure: string | undefined;
+    let failure: unknown;
     try {
       const result = streamText({
         model: args.model,
@@ -3978,15 +4013,18 @@ export class Conversation {
             failure = "the provider's output limit was reached before the line ended";
           }
         } else if (part.type === 'error') {
-          const cause = (part as { error?: unknown }).error;
-          throw cause instanceof Error ? cause : new Error(Conversation.providerErrorClause(cause));
+          throw Conversation.streamFailure((part as { error?: unknown }).error, {
+            modelId: args.modelString,
+            provider: args.provider,
+          });
         }
       }
     } catch (error) {
       if (args.abortSignal.aborted) {
         return undefined;
       }
-      failure = Conversation.providerErrorClause(error);
+      // The error itself, marked: the line below carries its status, code and a house sentence.
+      failure = ProviderFailureLine.mark(error, { modelId: args.modelString, provider: args.provider });
     }
     if (failure) {
       this.logger.warn({
@@ -4121,6 +4159,7 @@ export class Conversation {
   private mapFullStream(
     aiSdkFullStream: AsyncIterable<any>,
     provider: string,
+    modelString: string,
     convertedCalls?: ReadonlyMap<string, { jobId: string; title: string; deduped?: boolean }>
   ): AsyncIterable<StreamPart> {
     const logger = this.logger;
@@ -4319,10 +4358,7 @@ export class Conversation {
               // a transport failure surviving the retry layer SILENTLY truncated the stream: consumers saw
               // an empty message + zero usage and treated it as a (bogus) successful result. Surfacing it
               // lets the visible layers own it — FlowRunner's task retry, then the blocker-ask.
-              const cause = (part as { error?: unknown }).error;
-              throw cause instanceof Error
-                ? cause
-                : new Error(Conversation.providerErrorClause(cause) || 'LLM stream error');
+              throw Conversation.streamFailure((part as { error?: unknown }).error, { modelId: modelString, provider });
             }
           }
         } finally {
