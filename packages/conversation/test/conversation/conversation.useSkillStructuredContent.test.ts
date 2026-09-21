@@ -425,6 +425,60 @@ describe('useSkill — inside a multi-tool step', () => {
 });
 
 /**
+ * A result the detector reads as a factory, but that yields no picture, reaches the model exactly
+ * as the direct call's does: `useSkill` hands it through and the executor's one handling applies.
+ */
+describe('useSkill — a factory-shaped result with no picture reaches the model as the direct call’s', () => {
+  class FailingPictureFactory extends ChatCompletionMessageParamFactory {
+    async create(): Promise<ChatCompletionMessageParam[]> {
+      throw new Error('no screen to look at');
+    }
+  }
+
+  const play = async (provider: ProviderCase, result: () => unknown) => {
+    const direct = await secondRequestPrompt({
+      ...provider,
+      skills: [skill('vision', [takeScreenshot(result)])],
+      calls: [{ id: 'call-1', name: 'takeScreenshot', input: {} }],
+    });
+    const dispatched = await secondRequestPrompt({
+      ...provider,
+      skills: [new SkillDispatcherSkill([skill('vision', [takeScreenshot(result)])])],
+      calls: [{ id: 'call-1', name: 'useSkill', input: { skill: 'vision', tool: 'takeScreenshot', args: {} } }],
+    });
+    return { direct, dispatched };
+  };
+
+  for (const provider of PROVIDERS) {
+    it(
+      `${provider.name}: a record that merely has a create() method arrives as its own fields`,
+      async () => {
+        const { direct, dispatched } = await play(provider, () => ({
+          id: 1,
+          name: 'ledger',
+          create: () => ({ id: 2 }),
+        }));
+        expect(toolResult(dispatched, 'call-1').output).toEqual({ type: 'json', value: { id: 1, name: 'ledger' } });
+        expect(afterTheToolCalls(dispatched)).toEqual(afterTheToolCalls(direct));
+      },
+      TIMEOUT
+    );
+
+    it(
+      `${provider.name}: a factory whose create() throws arrives as the tool's error`,
+      async () => {
+        const { direct, dispatched } = await play(provider, () => new FailingPictureFactory());
+        const output = toolResult(dispatched, 'call-1').output;
+        expect(output?.type).toBe('error-text');
+        expect(String(output?.value)).toContain('no screen to look at');
+        expect(afterTheToolCalls(dispatched)).toEqual(afterTheToolCalls(direct));
+      },
+      TIMEOUT
+    );
+  }
+});
+
+/**
  * The library's two own OpenAI clients call tools themselves and each has its own, older handling
  * of a factory result (Chat Completions: the factory's messages follow the tool message; the
  * polled Responses client: the factory's TEXT only). Through `useSkill` each now gets the value

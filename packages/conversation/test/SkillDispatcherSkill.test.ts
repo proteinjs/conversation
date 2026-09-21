@@ -309,6 +309,22 @@ describe('SkillDispatcherSkill', () => {
       expect(await SdkContentParts.extractContentPartsFromToolReturn(output)).toEqual(pictureParts());
     });
 
+    it('hands through an array whose FIRST part is the picture', async () => {
+      const parts: ChatCompletionContentPart[] = [{ type: 'image_url', image_url: { url: PNG_DATA_URI } }];
+      const output = await look(visionDispatcher(() => parts));
+      expect(output).toBe(parts);
+      expect(await SdkContentParts.extractContentPartsFromToolReturn(output)).toEqual(parts);
+    });
+
+    it('hands through a structurally-typed factory whose create() is synchronous and yields messages', async () => {
+      const foreign = { create: () => [{ role: 'user', content: 'The screen as it looked.' }] };
+      const output = await look(visionDispatcher(() => foreign));
+      expect(output).toBe(foreign);
+      expect(await SdkContentParts.extractContentPartsFromToolReturn(output)).toEqual([
+        { type: 'text', text: 'The screen as it looked.' },
+      ]);
+    });
+
     it('never calls create() itself — the executor owns the one conversion', async () => {
       const factory = new ScreenPictureFactory(PNG_DATA_URI, 'once');
       const create = jest.spyOn(factory, 'create');
@@ -368,6 +384,47 @@ describe('SkillDispatcherSkill', () => {
       const value = { type: 'image_url', image_url: { url: PNG_DATA_URI } };
       expect(await run(() => value)).toBe(JSON.stringify(value, null, 2));
     });
+
+    // Only a `create` that can be CALLED makes a factory. A record with a field that happens to be
+    // named `create` is data.
+    it('a record whose `create` field is a string is still stringified', async () => {
+      const value = { create: 'a new record', id: 1 };
+      expect(await run(() => value)).toBe('{\n  "create": "a new record",\n  "id": 1\n}');
+      expect(SdkContentParts.isStructuredToolReturn(value)).toBe(false);
+      expect(await SdkContentParts.extractContentPartsFromToolReturn(value)).toBeUndefined();
+    });
+
+    it('a record whose `create` field is null is still stringified', async () => {
+      const value = { create: null };
+      expect(await run(() => value)).toBe('{\n  "create": null\n}');
+      expect(SdkContentParts.isStructuredToolReturn(value)).toBe(false);
+      expect(await SdkContentParts.extractContentPartsFromToolReturn(value)).toBeUndefined();
+    });
+
+    const ORDINARY_DATA: Array<[string, unknown]> = [
+      [
+        'a list of plain records',
+        [
+          { id: 1, name: 'first' },
+          { id: 2, name: 'second' },
+        ],
+      ],
+      ['one record whose `type` is "text" (an object, not a list)', { type: 'text', id: 'r1', title: 'A note' }],
+      ['an object that holds parts under a key', { parts: [{ type: 'text', text: 'inside' }] }],
+      ['a list of strings', ['first', 'second']],
+      ['a list holding null', [null]],
+      ['a Date', new Date(0)],
+    ];
+
+    for (const [name, value] of ORDINARY_DATA) {
+      it(`${name} is ordinary data: 2-space JSON text, and the detector refuses it`, async () => {
+        const output = await run(() => value);
+        expect(typeof output).toBe('string');
+        expect(output).toBe(JSON.stringify(value, null, 2));
+        expect(SdkContentParts.isStructuredToolReturn(value)).toBe(false);
+        expect(await SdkContentParts.extractContentPartsFromToolReturn(value)).toBeUndefined();
+      });
+    }
 
     it('arrays that are not content parts are still stringified', async () => {
       expect(await run(() => [])).toBe('[]');
