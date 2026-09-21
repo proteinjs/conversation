@@ -478,6 +478,70 @@ describe('SkillDispatcherSkill', () => {
     });
   });
 
+  // A list is content parts only when EVERY element is a part the extractor can carry to the model:
+  // a text part with a string `text`, an image_url part with a non-empty `image_url.url`. Reading
+  // only the first element's `type` took a list of records for parts, dropped every record, and
+  // handed the model an empty result.
+  describe('useSkill — a list is content parts only when every element is a valid part', () => {
+    const dispatcherReturning = (result: () => unknown) =>
+      new SkillDispatcherSkill([makeSkill({ id: 'mod', functions: [makeFn('t', 't', async () => result())] })]);
+    const run = (result: () => unknown) =>
+      callToolRaw(dispatcherReturning(result), 'useSkill', { skill: 'mod', tool: 't', args: {} });
+
+    const NOT_PARTS: Array<[string, unknown[]]> = [
+      ['records typed "text" (no `text` field)', [{ type: 'text', id: 'r1', title: 'A note' }]],
+      ['records typed "file"', [{ type: 'file', id: 'f1', name: 'report.pdf', size: 12 }]],
+      ['records typed "image"', [{ type: 'image', id: 'i1', name: 'diagram.png' }]],
+      ['records typed "image_url" (no `image_url.url`)', [{ type: 'image_url', id: 'u1', name: 'banner.png' }]],
+      ['records typed "input_audio"', [{ type: 'input_audio', id: 'a1', name: 'memo.wav' }]],
+      ['a text part whose `text` is not a string', [{ type: 'text', text: 5 }]],
+      ['an image_url part with no url', [{ type: 'image_url', image_url: {} }]],
+      ['an image_url part with an empty url', [{ type: 'image_url', image_url: { url: '' } }]],
+      // Part kinds the extractor cannot carry yet: data, rather than an empty result.
+      ['an `image` part', [{ type: 'image', image: PNG_DATA_URI }]],
+      ['a `file` part', [{ type: 'file', file: { file_data: PNG_DATA_URI, filename: 'diagram.png' } }]],
+      ['an `input_audio` part', [{ type: 'input_audio', input_audio: { data: 'AAAA', format: 'wav' } }]],
+      // The strict reading of a mixed list: one element that is not a valid part makes it data.
+      ['valid parts followed by a record', [...pictureParts(), { type: 'text', id: 'r1', title: 'A note' }]],
+      [
+        'valid parts followed by a part kind the extractor cannot carry',
+        [...pictureParts(), { type: 'file', file: {} }],
+      ],
+      ['valid parts followed by null', [...pictureParts(), null]],
+    ];
+
+    for (const [name, value] of NOT_PARTS) {
+      it(`${name}: ordinary data — 2-space JSON text, never an empty result`, async () => {
+        expect(await run(() => value)).toBe(JSON.stringify(value, null, 2));
+        expect(SdkContentParts.isStructuredToolReturn(value)).toBe(false);
+        expect(await SdkContentParts.extractContentPartsFromToolReturn(value)).toBeUndefined();
+      });
+    }
+
+    it('every list the detector accepts maps to as many parts as it has elements', async () => {
+      const accepted: unknown[][] = [
+        pictureParts(),
+        [{ type: 'text', text: 'only words' }],
+        [{ type: 'text', text: '' }],
+        [{ type: 'image_url', image_url: { url: 'https://example.com/diagram.png' } }],
+      ];
+      for (const parts of accepted) {
+        expect(await run(() => parts)).toBe(parts);
+        const extracted = await SdkContentParts.extractContentPartsFromToolReturn(parts);
+        expect(extracted).toBe(parts);
+        expect(SdkContentParts.toToolResultContentParts(extracted!)).toHaveLength(parts.length);
+      }
+    });
+
+    it('a record that has the FULL shape of a part is a part — shape is all there is to go on', async () => {
+      const parts = [{ type: 'text', text: 'The body of the note.', id: 'r1' }];
+      expect(await run(() => parts)).toBe(parts);
+      expect(SdkContentParts.toToolResultContentParts(parts as ChatCompletionContentPart[])).toEqual([
+        { type: 'text', text: 'The body of the note.' },
+      ]);
+    });
+  });
+
   describe('useSkill timeline', () => {
     const useSkillTool = (dispatcher: SkillDispatcherSkill) =>
       dispatcher.getFunctions().find((f) => f.definition.name === 'useSkill')!;

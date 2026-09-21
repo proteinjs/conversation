@@ -140,6 +140,14 @@ export class SdkContentParts {
    * or an object with a `create()` (a factory typed structurally across a package
    * boundary). Synchronous, and it never calls `create()`.
    *
+   * An array is content parts only when EVERY element is a part `mapPart` can carry
+   * to the model (a text part with a string `text`; an `image_url` part with a
+   * non-empty `image_url.url`) — so an accepted array always maps to as many parts as
+   * it has elements, never to an empty result. The elements' `type` alone decides
+   * nothing: a list of plain records whose `type` happens to be 'text' or 'file' is
+   * data. One element that is not a valid part makes the whole array data (the strict
+   * reading): it is serialized whole, and no element is dropped on its way to the model.
+   *
    * Anything that carries a tool's return value on its way to the executor — a
    * tool that calls another tool on the model's behalf, like `SkillDispatcherSkill`'s
    * `useSkill` — asks this before it serializes the value, and hands a structured
@@ -165,7 +173,12 @@ export class SdkContentParts {
   // ────────────────────────────────────────────────────────────
 
   private static isContentPartArray(result: unknown): result is ChatCompletionContentPart[] {
-    return Array.isArray(result) && result.length > 0 && SdkContentParts.looksLikeContentPart(result[0]);
+    return Array.isArray(result) && result.length > 0 && result.every((part) => SdkContentParts.isMappablePart(part));
+  }
+
+  /** A part this class can carry to the model: valid is exactly what `mapPart` maps, so the two cannot drift. */
+  private static isMappablePart(part: unknown): boolean {
+    return SdkContentParts.mapPart(part, 'tool-result') !== undefined;
   }
 
   private static hasCreate(result: unknown): result is StructuralFactory {

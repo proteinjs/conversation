@@ -479,6 +479,99 @@ describe('useSkill — a factory-shaped result with no picture reaches the model
 });
 
 /**
+ * A list of plain records is DATA, whatever its records' `type` field says. Records whose `type`
+ * happens to be 'text', 'file', 'image', 'image_url' or 'input_audio' carry none of a content
+ * part's own fields, so none of them maps to a part.
+ *
+ * RED at the pre-fix detector, which read only the first element's `type`: the list was taken for
+ * content parts, every record was dropped, and the model received an EMPTY result
+ * (`{ type: 'content', value: [] }`) — called directly, and through `useSkill`.
+ */
+describe('a list of records whose `type` collides with a content-part kind reaches the model as data', () => {
+  const listRecords = (result: () => unknown): Function => ({
+    definition: { name: 'listRecords', description: 'List the records.', parameters: noParameters },
+    call: async () => result(),
+  });
+
+  const play = async (provider: ProviderCase, result: () => unknown) => {
+    const direct = await secondRequestPrompt({
+      ...provider,
+      skills: [skill('records', [listRecords(result)])],
+      calls: [{ id: 'call-1', name: 'listRecords', input: {} }],
+    });
+    const dispatched = await secondRequestPrompt({
+      ...provider,
+      skills: [new SkillDispatcherSkill([skill('records', [listRecords(result)])])],
+      calls: [{ id: 'call-1', name: 'useSkill', input: { skill: 'records', tool: 'listRecords', args: {} } }],
+    });
+    return { direct, dispatched };
+  };
+
+  const RECORD_LISTS: Array<{ kind: string; records: Array<Record<string, unknown>>; marker: string }> = [
+    {
+      kind: 'text',
+      records: [
+        { type: 'text', id: 'r1', title: 'Quarterly summary' },
+        { type: 'text', id: 'r2', title: 'Meeting minutes' },
+      ],
+      marker: 'Quarterly summary',
+    },
+    { kind: 'file', records: [{ type: 'file', id: 'f1', name: 'report.pdf', size: 12 }], marker: 'report.pdf' },
+    { kind: 'image', records: [{ type: 'image', id: 'i1', name: 'diagram.png' }], marker: 'diagram.png' },
+    { kind: 'image_url', records: [{ type: 'image_url', id: 'u1', name: 'banner.png' }], marker: 'banner.png' },
+    { kind: 'input_audio', records: [{ type: 'input_audio', id: 'a1', name: 'memo.wav' }], marker: 'memo.wav' },
+  ];
+
+  for (const provider of PROVIDERS) {
+    for (const list of RECORD_LISTS) {
+      it(
+        `${provider.name}: records typed "${list.kind}" arrive whole — called directly, and through useSkill`,
+        async () => {
+          const { direct, dispatched } = await play(provider, () => list.records);
+
+          // Directly: the records as JSON. Through useSkill: the same records as 2-space JSON text.
+          expect({
+            direct: toolResult(direct, 'call-1').output,
+            dispatched: toolResult(dispatched, 'call-1').output,
+          }).toEqual({
+            direct: { type: 'json', value: list.records },
+            dispatched: { type: 'text', value: JSON.stringify(list.records, null, 2) },
+          });
+
+          // …and they are on the wire, both ways.
+          for (const prompt of [direct, dispatched]) {
+            const body = await wireBody(provider, prompt);
+            expect(stringsIn(body).filter((s) => s.includes(list.marker))).not.toEqual([]);
+          }
+        },
+        TIMEOUT
+      );
+    }
+
+    // The strict reading: ONE element that is not a valid part makes the whole list data, so no
+    // element is ever dropped on its way to the model.
+    it(
+      `${provider.name}: a list that mixes valid parts with a record arrives whole, as data`,
+      async () => {
+        const mixed = [
+          { type: 'text', text: CAPTION },
+          { type: 'text', id: 'r1', title: 'Quarterly summary' },
+        ];
+        const { direct, dispatched } = await play(provider, () => mixed);
+        expect({
+          direct: toolResult(direct, 'call-1').output,
+          dispatched: toolResult(dispatched, 'call-1').output,
+        }).toEqual({
+          direct: { type: 'json', value: mixed },
+          dispatched: { type: 'text', value: JSON.stringify(mixed, null, 2) },
+        });
+      },
+      TIMEOUT
+    );
+  }
+});
+
+/**
  * The library's two own OpenAI clients call tools themselves and each has its own, older handling
  * of a factory result (Chat Completions: the factory's messages follow the tool message; the
  * polled Responses client: the factory's TEXT only). Through `useSkill` each now gets the value
