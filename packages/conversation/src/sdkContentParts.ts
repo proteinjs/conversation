@@ -173,7 +173,17 @@ export class SdkContentParts {
   // ────────────────────────────────────────────────────────────
 
   private static isContentPartArray(result: unknown): result is ChatCompletionContentPart[] {
-    return Array.isArray(result) && result.length > 0 && result.every((part) => SdkContentParts.isMappablePart(part));
+    if (!Array.isArray(result) || result.length === 0) {
+      return false;
+    }
+    // `for…of` reads a hole in a sparse list as `undefined`, exactly as the mapping loops do;
+    // `every` would skip it, accept the list, and the hole would map to no part.
+    for (const part of result) {
+      if (!SdkContentParts.isMappablePart(part)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** A part this class can carry to the model: valid is exactly what `mapPart` maps, so the two cannot drift. */

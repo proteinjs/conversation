@@ -568,6 +568,23 @@ describe('a list of records whose `type` collides with a content-part kind reach
       },
       TIMEOUT
     );
+
+    // A hole in a sparse list maps to no part. A detector that skips holes accepts the list and
+    // the model receives an EMPTY result.
+    it(
+      `${provider.name}: a sparse list arrives as data, never as an empty result`,
+      async () => {
+        const { direct, dispatched } = await play(provider, () => new Array(2));
+        expect({
+          direct: toolResult(direct, 'call-1').output,
+          dispatched: toolResult(dispatched, 'call-1').output,
+        }).toEqual({
+          direct: { type: 'json', value: [null, null] },
+          dispatched: { type: 'text', value: '[\n  null,\n  null\n]' },
+        });
+      },
+      TIMEOUT
+    );
   }
 });
 

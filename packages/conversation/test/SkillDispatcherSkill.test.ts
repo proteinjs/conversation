@@ -510,6 +510,9 @@ describe('SkillDispatcherSkill', () => {
         [...pictureParts(), { type: 'file', file: {} }],
       ],
       ['valid parts followed by null', [...pictureParts(), null]],
+      // A hole in a sparse list is an element too: it maps to no part, so the list is data.
+      ['a sparse list that is all holes', new Array(2)],
+      ['a valid part beside a hole', Object.assign(new Array(2), [pictureParts()[0]])],
     ];
 
     for (const [name, value] of NOT_PARTS) {
