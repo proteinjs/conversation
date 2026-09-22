@@ -34,10 +34,9 @@ describeIfKey('Conversation.generateStream — OpenAI reasoning + web search', (
       // ZERO summary deltas (observed as CI release flake) — the model just
       // doesn't have enough to summarize. The assertion stays strict (it
       // guards the reasoningSummary-not-requested regression), so make the
-      // reasoning reliably non-empty instead of weakening the check. NOTE:
-      // 'high'/'xhigh'/'max' would reroute to the background/polling path
-      // (shouldUseBackgroundMode) — 'medium' is the max effort that stays on
-      // the streaming Responses path this test pins.
+      // reasoning reliably non-empty instead of weakening the check. Every effort
+      // streams through the same Responses path since 2026-09-22 (the polling
+      // reroute at high/xhigh/max is gone); 'medium' keeps this live check cheap.
       const result = await conversation.generateStream({
         messages: [
           'A farmer has chickens and rabbits: 35 heads and 94 legs in total. How many chickens and how many rabbits? ' +
