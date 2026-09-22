@@ -10,7 +10,7 @@ import { TINY_PNG_BASE64 } from './openAiImageFixtures';
  * https://ai.google.dev/gemini-api/docs/image-generation (read 2026-09-22): the picture under
  * `interaction.output_image { mime_type, data }`, the follow-up handle under `interaction.id`, the
  * count of what was used under `usage` by modality. The token counts are the probe's RECORDED room
- * ask of 2026-09-16 on `gemini-3.1-flash-image` (IMAGE_GENERATION_PLAN §4: 356 in, 1,120 picture
+ * ask of 2026-09-16 on `gemini-3.1-flash-image` (as measured: 356 in, 1,120 picture
  * out, the rest of the output text — $0.0686 at the pricing page's rates); the bytes are a 1×1 PNG
  * stand-in and the id is made up.
  *

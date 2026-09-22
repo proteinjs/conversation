@@ -181,7 +181,7 @@ describe('before the wire', () => {
     expect(outcome.cost).toEqual(NOTHING);
   });
 
-  test('no key is an auth failure with nothing sent — the leg that waits on the founder’s act', async () => {
+  test('no key is an auth failure with nothing sent — the leg that waits on a key', async () => {
     const saved = process.env.RECRAFT_API_KEY;
     delete process.env.RECRAFT_API_KEY;
     try {
