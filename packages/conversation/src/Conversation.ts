@@ -21,6 +21,7 @@ import type { ModelDataResolver } from './ModelData';
 import { resolveModel, routedProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import { ForcedToolChoice } from './ForcedToolChoice';
+import { RequestedEffort } from './RequestedEffort';
 import { OpenAiModelRules, type OpenAiReasoningEffort } from './OpenAiModelRules';
 import { ToolStrictness } from './ToolStrictness';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
@@ -3393,9 +3394,13 @@ export class Conversation {
     // The single transport choke point: streamText, generateObject, and every per-step tool-loop
     // request run through the wrapped model, so transient provider failures retry invisibly here.
     // `onRetryActivity` (when the caller passed one) observes those retries without owning them.
-    // Under the retry layer, a forced tool choice follows the provider's verdict for the model
-    // (ForcedToolChoice): a refusal is heard once and the request re-issued softened.
-    return this.transportRetry.wrap(ForcedToolChoice.follow(resolveModel(m) as never), { onRetryActivity });
+    // Under the retry layer, the request follows the provider's verdict for the model: a forced
+    // tool choice it refuses is re-issued softened (ForcedToolChoice), a reasoning effort it
+    // refuses is re-issued at the nearest level it accepts (RequestedEffort) — each heard once,
+    // each remembered for the process, no list of ids.
+    return this.transportRetry.wrap(RequestedEffort.follow(ForcedToolChoice.follow(resolveModel(m) as never)), {
+      onRetryActivity,
+    });
   }
 
   private getModelString(model?: LanguageModel | string): string {
@@ -3925,7 +3930,11 @@ export class Conversation {
     // has NO line: nothing reaches the consumer, no utterance step, no framing, not even the whole
     // sentences before the cut. Retries stay off (maxRetries 0): a retry would hold the main step
     // at the boundary for the backoff on top of the failed attempt, while the degradation is free
-    // — the step runs and its own first text is the acknowledgment.
+    // — the step runs and its own first text is the acknowledgment. The call asks for NO thinking
+    // (`reasoningEffort: 'none'`) like any other model's; a model whose provider refuses that value
+    // (GPT-6 Astra lists no `none`) is not this call's to know — `RequestedEffort` (under the
+    // transport layer) hears the refusal once, re-issues at the model's floor and remembers it, so
+    // the line arrives and no later turn pays the refused request.
     let text = '';
     let lineEnded = false;
     let failure: string | undefined;
