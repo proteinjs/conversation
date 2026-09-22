@@ -3,6 +3,7 @@
   "packages": ["conversation"],
   "suites": [
     "packages/conversation/test/conversation/conversation.oneGenerationPath.test.ts",
+    "packages/conversation/test/conversation/conversation.heartbeatsOnEveryStream.test.ts",
     "packages/conversation/test/conversation/conversation.streamLiveness.test.ts",
     "packages/conversation/test/conversation/conversation.transportRetry.test.ts",
     "packages/conversation/test/conversation/conversation.citationMarkers.test.ts",
