@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.7.4](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.3...@proteinjs/conversation@6.7.4) (2026-09-22)
+
+
+### Bug Fixes
+
+* forced tool choice follows the model; OpenAI rules read the generation; a buffered read throws the provider's refusal ([4564654](https://github.com/proteinjs/conversation/commit/45646544830ee7683bf01af0b3826608ee1d025d))
+
+
+
+
+
 ## [6.7.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.2...@proteinjs/conversation@6.7.3) (2026-09-22)
 
 
