@@ -586,9 +586,17 @@ export class Conversation {
    * Returns a `StreamResult` with async iterables for text and reasoning chunks,
    * plus promises that resolve when generation completes.
    *
-   * For OpenAI models with high reasoning effort or pro models, this may
-   * fall back to background/polling mode via `OpenAiResponses` and return
-   * the full result as a single-chunk stream.
+   * ONE generation path per provider, at every effort and for every model id. Until 2026-09-22
+   * OpenAI calls at high · xhigh · max effort — and every id carrying "pro" — were routed to the
+   * polling transport (`generateStreamViaPolling`), which answered in one piece, asked for no
+   * reasoning summary, attached no web-search tool and flattened image parts to text: a second,
+   * lesser product behind the same setting (measured live on GPT-6 Sol and Astra: 80 reasoning
+   * pieces streamed at medium, none at high). The heuristic is gone; the Responses API streams
+   * long high-effort runs as it streams short ones. The polling transport survives only as the
+   * explicit `backgroundMode: true` opt-in (OpenAI's background responses — the docs at
+   * https://developers.openai.com/api/docs/guides/background — can also be streamed and resumed
+   * by response id + `starting_after`; the installed provider exposes neither, so that resume is
+   * the transport's next survival mechanism for very long runs, not this path's).
    */
   async generateStream(params: GenerateStreamParams): Promise<StreamResult> {
     await this.ensureSkillsProcessed();
@@ -602,8 +610,8 @@ export class Conversation {
       obj: { model: modelString, provider, reasoningEffort: params.reasoningEffort, webSearch: params.webSearch },
     });
 
-    // Check if we should use background/polling mode (OpenAI-specific)
-    if (provider === 'openai' && this.shouldUseBackgroundMode(modelString, params)) {
+    // The named case only: a caller that asked for background mode (OpenAI-specific).
+    if (provider === 'openai' && params.backgroundMode === true) {
       return this.generateStreamViaPolling(params, modelString);
     }
 
@@ -3369,7 +3377,10 @@ export class Conversation {
   }
 
   // ────────────────────────────────────────────────────────────
-  // Background/polling escape hatch (OpenAI-specific)
+  // Background/polling escape hatch (OpenAI-specific) — `generateObject`'s only: a structured,
+  // non-streaming call on a pro model or at a high effort polls so a long run outlives one HTTP
+  // request. `generateStream` never consults this heuristic (one generation path); it takes the
+  // polling transport only on the explicit `backgroundMode: true`.
   // ────────────────────────────────────────────────────────────
 
   private shouldUseBackgroundMode(
