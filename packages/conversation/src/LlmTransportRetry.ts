@@ -235,7 +235,7 @@ export class LlmTransportRetry {
     let reader = current.stream.getReader();
     /** Once true, the stream is no longer replayable — every remaining part passes straight through. */
     let outputStarted = false;
-    /** The current attempt's held-back preamble (`stream-start` / `response-metadata` / `raw`). */
+    /** The current attempt's held-back preamble (`stream-start` / `response-metadata`; a `raw` chunk passes through). */
     let preamble: LanguageModelV3StreamPart[] = [];
 
     const restart = async (): Promise<void> => {
@@ -296,6 +296,15 @@ export class LlmTransportRetry {
             const surfacedError = LlmTransportRetry.surfaced(verdict, part.error, modelId);
             controller.enqueue(surfacedError === part.error ? part : { ...part, error: surfacedError });
             return;
+          }
+          // A raw chunk is the provider's heartbeat through a silent think (OpenAI `keepalive`,
+          // Anthropic `ping`): stateless, so it is never held with the preamble — held back it
+          // starved the liveness guard for the whole think (2026-09-22, a pro model: no part for
+          // 300 s while keepalives sat in this buffer) and a legitimate long run was aborted as a
+          // dead connection. It goes straight through; the guard reads it and drops it.
+          if (part.type === 'raw') {
+            controller.enqueue(part);
+            continue;
           }
           if (!LlmTransportRetry.OUTPUT_PART_TYPES.has(part.type)) {
             preamble.push(part);

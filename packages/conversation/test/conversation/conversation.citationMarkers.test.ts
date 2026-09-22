@@ -1,5 +1,4 @@
 import { Conversation } from '../../src/Conversation';
-import { OpenAiResponses } from '../../src/OpenAiResponses';
 import { fixtureModelData } from './fixtureModelData';
 
 /**
@@ -121,9 +120,9 @@ describe('Conversation citation markers (streaming read path)', () => {
  * house source entries. On the live AI-SDK streaming path the OpenAI adapter already mints
  * one `source` part per url_citation annotation (out-of-band from the text deltas), so the
  * streaming egress's job is dedupe — a url cited at several claims arrives as several parts
- * and must emerge once. On the background-polling path (`generateStreamViaPolling`) nothing
- * arrived at all before this: the annotations OpenAiResponses collects must surface through
- * both sources channels of the fabricated StreamResult.
+ * and must emerge once. (The background-polling path that once needed its own sources channel
+ * is gone — every OpenAI call streams; the adapter's own citation handling is pinned in
+ * test/openai/openAiResponses.citationMarkers.test.ts.)
  */
 describe('Conversation citation sources', () => {
   test('openai: repeated same-url source parts collapse to one, straddled marker run and all', async () => {
@@ -182,143 +181,5 @@ describe('Conversation citation sources', () => {
     const parts = await collect(internals().mapFullStream(fakeSdkStream([src, { ...src }]), 'anthropic'));
 
     expect(parts.filter((p) => p.type === 'source')).toHaveLength(2);
-  });
-});
-
-// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-// Background-polling path (generateStreamViaPolling)
-// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-
-const PROSE_1 = 'Paris is lovely in spring.';
-const PROSE_2 = 'The Louvre is busiest on weekends.';
-
-const POLLING_MARKED_TEXT =
-  `${PROSE_1}\uE200cite\uE202turn1search0\uE201 ` + `${PROSE_2}\uE200cite\uE202turn1view0\uE201`;
-
-/** What the fixture's annotations must emerge as: one entry per cited url, first title wins. */
-const POLLING_EXPECTED_SOURCES = [
-  { url: 'https://example.com/paris-guide', title: 'Paris travel guide' },
-  { url: 'https://example.com/louvre-hours', title: 'Louvre visiting hours' },
-];
-
-/** A completed Responses payload: marker runs in the text, url_citation annotations out-of-band. */
-function createPollingResponseFixture() {
-  return {
-    id: 'resp_polling_citation_fixture',
-    status: 'completed',
-    output: [
-      {
-        type: 'message',
-        role: 'assistant',
-        content: [
-          {
-            type: 'output_text',
-            text: POLLING_MARKED_TEXT,
-            annotations: [
-              {
-                type: 'url_citation',
-                url: 'https://example.com/paris-guide',
-                title: 'Paris travel guide',
-                start_index: PROSE_1.length,
-                end_index: PROSE_1.length + 1,
-              },
-              {
-                type: 'url_citation',
-                url: 'https://example.com/louvre-hours',
-                title: 'Louvre visiting hours',
-                start_index: POLLING_MARKED_TEXT.length,
-                end_index: POLLING_MARKED_TEXT.length,
-              },
-              // Duplicate url at a second claim — must dedupe.
-              {
-                type: 'url_citation',
-                url: 'https://example.com/paris-guide',
-                title: 'Paris travel guide (mirror)',
-                start_index: POLLING_MARKED_TEXT.length,
-                end_index: POLLING_MARKED_TEXT.length,
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  };
-}
-
-/**
- * A real OpenAiResponses whose OpenAI client is swapped for a fixture-returning fake — the
- * constructor requires an api-key env var to exist; it is restored immediately so live-gated
- * suites in the same worker never see a bogus key.
- */
-function createAdapterWithFakeClient(fixture: unknown): OpenAiResponses {
-  const prevKey = process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY = 'test-key-never-used';
-  try {
-    const adapter = new OpenAiResponses({ modelData: fixtureModelData });
-    (adapter as unknown as { client: unknown }).client = {
-      responses: {
-        create: async () => fixture,
-        // backgroundMode polls retrieve until a terminal status; the fixture is already completed.
-        retrieve: async () => fixture,
-      },
-    };
-    return adapter;
-  } finally {
-    if (prevKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = prevKey;
-    }
-  }
-}
-
-describe('Conversation citation sources (background-polling path)', () => {
-  test('url_citation annotations surface as source parts and sources, deduped by url, beside clean text', async () => {
-    const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-citationSources' });
-    (conversation as unknown as { createOpenAiResponses: () => OpenAiResponses }).createOpenAiResponses = () =>
-      createAdapterWithFakeClient(createPollingResponseFixture());
-
-    const stream = await conversation.generateStream({
-      messages: ['Tell me about Paris.'],
-      model: 'gpt-5.2',
-      backgroundMode: true,
-    });
-
-    const parts = (await collect(stream.fullStream as AsyncIterable<EmittedPart>)) as EmittedPart[];
-    const text = await stream.text;
-    const sources = await stream.sources;
-
-    // Text egress stays clean (the strip behavior, unchanged).
-    expect(text).not.toMatch(MARKER_CHAR_RE);
-    expect(text).not.toMatch(MARKER_ID_RE);
-    expect(text).toContain(PROSE_1);
-    expect(text).toContain(PROSE_2);
-
-    // The fabricated fullStream carries the citations as house source parts (what
-    // per-message source lists downstream consume) …
-    const sourceParts = parts.filter((p) => p.type === 'source');
-    expect(sourceParts.map((p) => p.source)).toEqual(POLLING_EXPECTED_SOURCES);
-
-    // … and the sources promise resolves the same deduped entries.
-    expect(sources).toEqual(POLLING_EXPECTED_SOURCES);
-  });
-
-  test('a response without annotations yields zero source parts and empty sources', async () => {
-    const fixture = createPollingResponseFixture();
-    (fixture.output[0].content[0] as { annotations: unknown[] }).annotations = [];
-    const conversation = new Conversation({ modelData: fixtureModelData, name: 'test-citationSources' });
-    (conversation as unknown as { createOpenAiResponses: () => OpenAiResponses }).createOpenAiResponses = () =>
-      createAdapterWithFakeClient(fixture);
-
-    const stream = await conversation.generateStream({
-      messages: ['Tell me about Paris.'],
-      model: 'gpt-5.2',
-      backgroundMode: true,
-    });
-
-    const parts = (await collect(stream.fullStream as AsyncIterable<EmittedPart>)) as EmittedPart[];
-
-    expect(parts.filter((p) => p.type === 'source')).toHaveLength(0);
-    expect(await stream.sources).toEqual([]);
   });
 });

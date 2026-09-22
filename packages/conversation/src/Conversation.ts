@@ -27,9 +27,8 @@ import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
 import { CutBoundary, type CutBoundaryKind } from './CutBoundary';
 import { Utterance, type DrainedInput } from './Utterance';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
-import type { OpenAiResponses, OpenAiServiceTier } from './OpenAiResponses';
+import type { OpenAiServiceTier } from './OpenAiResponses';
 import { OpenAiCitationMarkers } from './OpenAiCitationMarkers';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat';
 import { TiktokenModel, Tiktoken, encoding_for_model } from 'tiktoken';
 
 // Re-export for convenience
@@ -298,8 +297,14 @@ export type GenerateStreamParams = {
   refusalLadder?: RefusalLadder;
 
   // OpenAI-specific
-  backgroundMode?: boolean;
   serviceTier?: OpenAiServiceTier;
+  /**
+   * @deprecated Ignored since 2026-09-22: the polling transport it selected is gone — every call
+   * streams. Accepted for one wave so a caller that still passes it (a passthrough option in a
+   * downstream conversation wrapper) compiles; removed with that caller's half.
+   */
+  backgroundMode?: boolean;
+  /** @deprecated Ignored since 2026-09-22 (see `backgroundMode`). */
   maxBackgroundWaitMs?: number;
 };
 
@@ -494,8 +499,10 @@ export type GenerateObjectParams<T> = {
   onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
 
   // OpenAI-specific
-  backgroundMode?: boolean;
   serviceTier?: OpenAiServiceTier;
+  /** @deprecated Ignored since 2026-09-22: every structured call goes through the model's own path. */
+  backgroundMode?: boolean;
+  /** @deprecated Ignored since 2026-09-22 (see `backgroundMode`). */
   maxBackgroundWaitMs?: number;
 };
 
@@ -587,16 +594,19 @@ export class Conversation {
    * plus promises that resolve when generation completes.
    *
    * ONE generation path per provider, at every effort and for every model id. Until 2026-09-22
-   * OpenAI calls at high · xhigh · max effort — and every id carrying "pro" — were routed to the
-   * polling transport (`generateStreamViaPolling`), which answered in one piece, asked for no
-   * reasoning summary, attached no web-search tool and flattened image parts to text: a second,
-   * lesser product behind the same setting (measured live on GPT-6 Sol and Astra: 80 reasoning
-   * pieces streamed at medium, none at high). The heuristic is gone; the Responses API streams
-   * long high-effort runs as it streams short ones. The polling transport survives only as the
-   * explicit `backgroundMode: true` opt-in (OpenAI's background responses — the docs at
-   * https://developers.openai.com/api/docs/guides/background — can also be streamed and resumed
-   * by response id + `starting_after`; the installed provider exposes neither, so that resume is
-   * the transport's next survival mechanism for very long runs, not this path's).
+   * OpenAI calls at high · xhigh · max effort — and every id carrying "pro" — were routed to a
+   * polling transport that answered in one piece, asked for no reasoning summary, attached no
+   * web-search tool and flattened image parts to text: a second, lesser product behind the same
+   * setting (measured live on GPT-6 Sol and Astra: 80 reasoning pieces streamed at medium, none at
+   * high). It was built (2026-01) because a pro model's long silent think "never returned" — and
+   * the mechanism, measured live 2026-09-22, was ours: OpenAI keeps a silent stream alive with
+   * `keepalive` events the SDK surfaces only as raw chunks, and the liveness guard counted mapped
+   * parts only, so a legitimate think past the idle window was aborted as a dead connection. The
+   * guard now hears the provider's keepalives (raw chunks ride the round's stream and are dropped
+   * by the mapper), the polling transport is gone, and long runs stream like short ones: GPT-6
+   * Astra at max streamed to a 272 s answer; GPT-6 Sol at max in ~60 s. (OpenAI's background
+   * responses — https://developers.openai.com/api/docs/guides/background — remain the shape for
+   * a run that must outlive one connection; nothing in the catalog needs it today.)
    */
   async generateStream(params: GenerateStreamParams): Promise<StreamResult> {
     await this.ensureSkillsProcessed();
@@ -609,11 +619,6 @@ export class Conversation {
       message: `generateStream`,
       obj: { model: modelString, provider, reasoningEffort: params.reasoningEffort, webSearch: params.webSearch },
     });
-
-    // The named case only: a caller that asked for background mode (OpenAI-specific).
-    if (provider === 'openai' && params.backgroundMode === true) {
-      return this.generateStreamViaPolling(params, modelString);
-    }
 
     // Build messages for the AI SDK
     const messages = this.normalizeMessagesForProvider(provider, this.buildAiSdkMessages(params.messages));
@@ -778,6 +783,13 @@ export class Conversation {
         // The per-round signal exists for the thinking-phase restart (peekInjectedContext): it
         // aborts ONE round's call without touching the turn-level signal or the liveness guard.
         abortSignal: roundSignal ? Conversation.anySignal([combinedAbortSignal, roundSignal]) : combinedAbortSignal,
+        // The provider's own liveness rides the stream as raw chunks: OpenAI sends `keepalive`
+        // events through a long silent think (measured 2026-09-22 on a pro model: the first at 31 s,
+        // no mapped part for 300 s), Anthropic its `ping`s. Without them the liveness guard read a
+        // legitimate think as a dead connection and aborted it at the idle window — the "never
+        // returned" that once justified a polling transport. The mapper drops them; only the
+        // guard's idle timer sees them.
+        includeRawChunks: true,
         providerOptions: callRung.providerOptions,
         prepareStep: async ({ messages: stepMessages, stepNumber }) => {
           latestStepMessages = stepMessages;
@@ -1758,8 +1770,8 @@ export class Conversation {
    * This is promise-based (not streaming-first) to guarantee the
    * type contract. Reasoning is available on the result after completion.
    *
-   * For OpenAI models with high reasoning or pro models, this uses
-   * `OpenAiResponses` with background/polling mode.
+   * One path per provider (the polling transport for pro models and high efforts is gone —
+   * see generateStream).
    */
   async generateObject<T>(params: GenerateObjectParams<T>): Promise<GenerateObjectResult<T>> {
     await this.ensureSkillsProcessed();
@@ -1767,11 +1779,6 @@ export class Conversation {
     const model = this.resolveModelInstance(params.model);
     const modelString = this.getModelString(params.model);
     const provider = routedProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
-
-    // Check if we should use background/polling mode (OpenAI-specific)
-    if (provider === 'openai' && this.shouldUseBackgroundMode(modelString, params)) {
-      return this.generateObjectViaPolling(params, modelString);
-    }
 
     const messages = this.normalizeMessagesForProvider(provider, this.buildAiSdkMessages(params.messages));
 
@@ -3377,180 +3384,6 @@ export class Conversation {
   }
 
   // ────────────────────────────────────────────────────────────
-  // Background/polling escape hatch (OpenAI-specific) — `generateObject`'s only: a structured,
-  // non-streaming call on a pro model or at a high effort polls so a long run outlives one HTTP
-  // request. `generateStream` never consults this heuristic (one generation path); it takes the
-  // polling transport only on the explicit `backgroundMode: true`.
-  // ────────────────────────────────────────────────────────────
-
-  private shouldUseBackgroundMode(
-    modelString: string,
-    params: { backgroundMode?: boolean; reasoningEffort?: ReasoningEffort }
-  ): boolean {
-    if (typeof params.backgroundMode === 'boolean') {
-      return params.backgroundMode;
-    }
-    if (this.isProModel(modelString)) {
-      return true;
-    }
-    if (this.isHighReasoningEffort(params.reasoningEffort)) {
-      return true;
-    }
-    return false;
-  }
-
-  private isProModel(model: string): boolean {
-    return /(^|[-_.])pro($|[-_.])/.test(String(model ?? '').toLowerCase());
-  }
-
-  private isHighReasoningEffort(effort?: ReasoningEffort): boolean {
-    return effort === 'high' || effort === 'xhigh' || effort === 'max';
-  }
-
-  /**
-   * Our effort as the provider names it for this model — see {@link OpenAiModelRules.reasoningEffort}
-   * ('max' from GPT-6 on; 'xhigh', the top level, before that; 'auto' omits it).
-   */
-  private mapReasoningEffortForOpenAi(
-    modelString: string,
-    effort?: ReasoningEffort
-  ): OpenAiReasoningEffort | undefined {
-    return OpenAiModelRules.reasoningEffort(modelString, effort);
-  }
-
-  /**
-   * Fall back to OpenAiResponses for background/polling mode.
-   * Returns a StreamResult where the text arrives as a single chunk after polling completes.
-   */
-  private async generateStreamViaPolling(params: GenerateStreamParams, modelString: string): Promise<StreamResult> {
-    const responses = this.createOpenAiResponses(params);
-
-    // Convert messages to the format OpenAiResponses expects
-    const messages = this.convertToOpenAiMessages(params.messages);
-
-    const result = await responses.generateText({
-      messages,
-      model: modelString as TiktokenModel,
-      abortSignal: params.abortSignal,
-      onToolInvocation: params.onToolInvocation,
-      onUsageData: params.onUsageData,
-      reasoningEffort: this.mapReasoningEffortForOpenAi(modelString, params.reasoningEffort),
-      maxToolCalls: params.maxToolCalls,
-      backgroundMode: params.backgroundMode,
-      maxBackgroundWaitMs: params.maxBackgroundWaitMs,
-      serviceTier: params.serviceTier,
-    });
-
-    // Wrap the polling result as a StreamResult
-    const text = result.message;
-    const usage = result.usagedata;
-    const toolInvocations = result.toolInvocations;
-    // Web-search url_citation annotations minted by OpenAiResponses (deduped by url) surface
-    // through both sources channels of the fabricated stream — source parts on fullStream
-    // (what per-message source lists downstream consume) and the sources promise — matching
-    // what the live streaming path emits for the same citations.
-    const sources: StreamSource[] = result.sources.map((s) => ({ url: s.url, title: s.title }));
-
-    return {
-      textStream: (async function* () {
-        yield text;
-      })(),
-      reasoningStream: (async function* () {
-        // Reasoning not available via polling mode
-      })(),
-      fullStream: (async function* () {
-        yield { type: 'text-delta' as const, textDelta: text };
-        for (const source of sources) {
-          yield { type: 'source' as const, source };
-        }
-      })(),
-      text: Promise.resolve(text),
-      reasoning: Promise.resolve(''),
-      sources: Promise.resolve(sources),
-      usage: Promise.resolve(usage),
-      toolInvocations: Promise.resolve(toolInvocations),
-      // The polling transport throws its failures before this result exists.
-      failure: Promise.resolve(undefined),
-    };
-  }
-
-  /**
-   * Fall back to OpenAiResponses for generateObject with background/polling.
-   */
-  private async generateObjectViaPolling<T>(
-    params: GenerateObjectParams<T>,
-    modelString: string
-  ): Promise<GenerateObjectResult<T>> {
-    const responses = this.createOpenAiResponses(params);
-
-    const messages = this.convertToOpenAiMessages(params.messages);
-
-    const result = await responses.generateObject<T>({
-      messages,
-      model: modelString as TiktokenModel,
-      schema: params.schema,
-      abortSignal: params.abortSignal,
-      onUsageData: params.onUsageData,
-      reasoningEffort: this.mapReasoningEffortForOpenAi(modelString, params.reasoningEffort),
-      temperature: params.temperature,
-      topP: params.topP,
-      maxTokens: params.maxTokens,
-      backgroundMode: params.backgroundMode,
-      maxBackgroundWaitMs: params.maxBackgroundWaitMs,
-      serviceTier: params.serviceTier,
-    });
-
-    return {
-      object: result.object,
-      usage: result.usageData,
-      reasoning: undefined,
-      toolInvocations: [],
-    };
-  }
-
-  private createOpenAiResponses(params: {
-    serviceTier?: OpenAiServiceTier;
-    maxBackgroundWaitMs?: number;
-  }): OpenAiResponses {
-    // Lazy require to avoid circular dependency and keep OpenAiResponses optional
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { OpenAiResponses: OAIResponses } = require('./OpenAiResponses');
-    return new OAIResponses({
-      modelData: this.params.modelData,
-      skills: this.params.skills,
-      logLevel: this.params.logLevel,
-      defaultModel: this.getModelString(this.params.defaultModel) as TiktokenModel,
-    });
-  }
-
-  private convertToOpenAiMessages(messages: ConversationMessage[]): Array<string | ChatCompletionMessageParam> {
-    const result: Array<string | ChatCompletionMessageParam> = [];
-
-    // Include history
-    for (const msg of this.history.getMessages()) {
-      const m = msg as any;
-      result.push({
-        role: m.role as 'system' | 'user' | 'assistant',
-        content: typeof m.content === 'string' ? m.content : this.flattenContentToText(m.content),
-      });
-    }
-
-    // Include call messages
-    for (const msg of messages) {
-      if (typeof msg === 'string') {
-        result.push(msg);
-      } else {
-        result.push({
-          role: msg.role as 'system' | 'user' | 'assistant',
-          content: msg.content as string,
-        });
-      }
-    }
-
-    return result;
-  }
-
-  // ────────────────────────────────────────────────────────────
   // Model resolution
   // ────────────────────────────────────────────────────────────
 
@@ -3894,6 +3727,10 @@ export class Conversation {
    * retry / blocker-ask machinery. Long thinking pauses are legitimate (adaptive Opus) — the
    * default window is generous and env-tunable via CONVERSATION_STREAM_IDLE_TIMEOUT_MS.
    *
+   * A long silent think is NOT silence on the wire (2026-09-22, root-caused live on a pro model:
+   * no mapped part for 300 s, the first `keepalive` at 31 s): the round requests the provider's
+   * raw chunks (`includeRawChunks`) so its heartbeats reset the idle timer, then drops them here.
+   *
    * Liveness means MODEL-stream liveness only (2026-09-01, root-caused live on the R5 estate):
    * the fullStream also goes quiet while the SDK awaits a LOCALLY-EXECUTED tool's execute() —
    * there is no model connection to guard in that window, and a legitimate long tool run
@@ -4203,6 +4040,12 @@ export class Conversation {
         return;
       }
       const part = step.value as { type?: string; toolCallId?: unknown; toolName?: string; preliminary?: boolean };
+      // A raw chunk is the provider's own heartbeat through a silent think (OpenAI `keepalive`,
+      // Anthropic `ping`) — it has just reset the idle timer above, which is all it is for; the
+      // consumers downstream see only mapped parts.
+      if (part?.type === 'raw') {
+        continue;
+      }
       if (part?.type === 'tool-call' && part.toolName && locallyExecutedToolNames?.has(part.toolName)) {
         executingLocalTools.set(String(part.toolCallId), { toolName: part.toolName, sinceMs: Date.now() });
       } else if (
