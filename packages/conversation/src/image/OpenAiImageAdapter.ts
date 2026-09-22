@@ -101,6 +101,9 @@ export class OpenAiImageAdapter implements ImageProviderAdapter {
 
   /** The rules this adapter can check without the vendor — a broken ask never costs a round trip. */
   private validate(request: ImageGenerationRequest): AdapterFailure | undefined {
+    if ((request.operation ?? 'generate') !== 'generate') {
+      return this.notSent('invalid_request', `OpenAI offers no "${request.operation}" utility.`);
+    }
     if (!request.prompt.trim()) {
       return this.notSent('invalid_request', 'The prompt is empty.');
     }

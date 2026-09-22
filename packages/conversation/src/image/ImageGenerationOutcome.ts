@@ -74,6 +74,11 @@ export type ImageGenerationOk = ImageGenerationOutcomeBase & {
   kind: 'ok';
   /** The pictures actually made — may be fewer than asked for; an unreadable one is left out. */
   images: GeneratedImage[];
+  /**
+   * The vendor's handle for THIS ask, for a later ask that continues it (`ImageGenerationRequest.
+   * previousInteractionId`). Only a vendor that keeps such handles reports one.
+   */
+  continuationId?: string;
 };
 
 export type ImageGenerationRefused = ImageGenerationOutcomeBase & {

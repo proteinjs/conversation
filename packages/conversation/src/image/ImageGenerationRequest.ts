@@ -27,6 +27,14 @@ export type ImageBackground = 'transparent' | 'opaque' | 'auto';
 export type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
 
 /**
+ * What the vendor is asked to DO. `generate` (the default) makes pictures from the prompt and any
+ * references. The two utilities take exactly one input picture and no prompt: `vectorize` traces
+ * a raster into an SVG; `remove-background` returns the picture with its background cleared.
+ * A vendor that does not offer a utility refuses it before anything is sent.
+ */
+export type ImageOperation = 'generate' | 'vectorize' | 'remove-background';
+
+/**
  * One ask for pictures, in vendor-neutral words. `provider` + `model` come from the caller's own
  * model data (a picture model's id does not always say who serves it, so the provider is never
  * inferred from the name here).
@@ -36,7 +44,15 @@ export type ImageGenerationRequest = {
   provider: string;
   /** The provider's model id, exactly as the provider spells it. */
   model: string;
+  /** Default `generate`. */
+  operation?: ImageOperation;
   prompt: string;
+  /**
+   * The vendor's handle for the earlier ask this one continues (a room edited again, keeping the
+   * first edit's geometry). Only a vendor that keeps such a handle uses it — `GeneratedPictures.
+   * continuationId` on an `ok` outcome says whether one exists; the others ignore it.
+   */
+  previousInteractionId?: string;
   /** Reference pictures. Present → the ask is an edit of / from these pictures. */
   inputs?: ImageInput[];
   /** How many pictures to make. Default 1. */
