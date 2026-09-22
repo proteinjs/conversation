@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.7.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.2...@proteinjs/conversation@6.7.3) (2026-09-22)
+
+
+### Bug Fixes
+
+* a list of records typed 'text' or 'file' reaches the model as data, not as an empty result ([c4d1a65](https://github.com/proteinjs/conversation/commit/c4d1a658369072af72708bffd4ead0d7911033ea))
+* a sparse list reaches the model as data, not as an empty result ([0ccb441](https://github.com/proteinjs/conversation/commit/0ccb4413e698917dac07012a10aa89e8f11aca99))
+* useSkill hands a picture through unchanged — a dispatched vision tool's result reaches the model as a picture, not as its base64 text ([99a31fe](https://github.com/proteinjs/conversation/commit/99a31fe8a31fad54410f80c38df453a939c1be03))
+* useSkill hands the dispatched tool its tool-call context — Stop and phases reach a tool on its first turn ([d593b95](https://github.com/proteinjs/conversation/commit/d593b95bed91a6ca932b329e0ce0b91a16cd148c))
+
+
+
+
+
 ## [6.7.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.1...@proteinjs/conversation@6.7.2) (2026-09-20)
 
 
