@@ -163,21 +163,126 @@ describe('one generation path for OpenAI', () => {
   );
 
   test(
-    'background mode is the explicit opt-in only — a caller that asks for it still leaves the stream',
+    'the polling transport is gone: a caller that still passes `backgroundMode` streams like everyone else',
     async () => {
       const calls: LanguageModelV3CallOptions[] = [];
       const model = recordingModel('gpt-6-astra', calls);
-      // The polling transport needs a real client; with no caller-supplied key it cannot be built
-      // — the point pinned here is only that the mock (the streaming path) was NOT consulted.
-      await expect(
-        newConversation().generateStream({
+      const result = await newConversation().generateStream({
+        messages: ['A train leaves at 9:40…'],
+        model,
+        reasoningEffort: 'low',
+        backgroundMode: true,
+        maxBackgroundWaitMs: 60_000,
+      });
+      await drain(result.fullStream);
+      expect(calls).toHaveLength(1);
+      expect(await result.text).toBe('14:50. The trip takes 5 h 10 min.');
+    },
+    TIMEOUT
+  );
+
+  test(
+    'a structured call on a "pro" id at high effort goes through the model too (no polling for generateObject either)',
+    async () => {
+      const calls: LanguageModelV3CallOptions[] = [];
+      const model = new MockLanguageModelV3({
+        provider: 'openai.responses',
+        modelId: 'gpt-5.5-pro',
+        doGenerate: async (call) => {
+          calls.push(call);
+          return {
+            content: [{ type: 'text', text: '{"arrival":"14:50"}' }],
+            finishReason: { unified: 'stop', raw: 'stop' },
+            usage,
+            warnings: [],
+          };
+        },
+      });
+      const result = await newConversation().generateObject<{ arrival: string }>({
+        messages: ['When does the train arrive?'],
+        model,
+        reasoningEffort: 'high',
+        schema: { type: 'object', properties: { arrival: { type: 'string' } }, required: ['arrival'] },
+      });
+      expect(calls).toHaveLength(1);
+      expect(result.object).toEqual({ arrival: '14:50' });
+    },
+    TIMEOUT
+  );
+
+  test(
+    'a long silent think is not a dead connection: the provider’s keepalives (raw chunks) keep the liveness guard fed, and never reach the consumer',
+    async () => {
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      const idle = process.env.CONVERSATION_STREAM_IDLE_TIMEOUT_MS;
+      process.env.CONVERSATION_STREAM_IDLE_TIMEOUT_MS = '250';
+      try {
+        // Nine keepalives 100 ms apart (900 ms with no mapped part — three idle windows), then the answer.
+        const heartbeats = (withKeepalives: boolean) =>
+          new ReadableStream({
+            async start(controller) {
+              controller.enqueue({ type: 'stream-start', warnings: [] });
+              for (let i = 0; i < 9; i++) {
+                await sleep(100);
+                if (withKeepalives) {
+                  controller.enqueue({ type: 'raw', rawValue: { type: 'keepalive' } });
+                }
+              }
+              controller.enqueue({ type: 'text-start', id: 't1' });
+              controller.enqueue({ type: 'text-delta', id: 't1', delta: '14:50.' });
+              controller.enqueue({ type: 'text-end', id: 't1' });
+              controller.enqueue({ type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage });
+              controller.close();
+            },
+          });
+        const streaming = new MockLanguageModelV3({
+          provider: 'openai.responses',
+          modelId: 'gpt-5.5-pro',
+          doStream: async (call) => ({ stream: heartbeats(call.includeRawChunks === true) }),
+        });
+        const result = await newConversation().generateStream({
           messages: ['A train leaves at 9:40…'],
-          model,
-          reasoningEffort: 'low',
-          backgroundMode: true,
-        })
-      ).rejects.toBeDefined();
-      expect(calls).toHaveLength(0);
+          model: streaming,
+          reasoningEffort: 'xhigh',
+        });
+        const parts = await drain(result.fullStream);
+        expect(parts.some((p) => (p as { type: string }).type === 'raw')).toBe(false);
+        expect(await result.text).toBe('14:50.');
+        expect(await result.failure).toBeUndefined();
+      } finally {
+        if (idle === undefined) {
+          delete process.env.CONVERSATION_STREAM_IDLE_TIMEOUT_MS;
+        } else {
+          process.env.CONVERSATION_STREAM_IDLE_TIMEOUT_MS = idle;
+        }
+      }
+    },
+    TIMEOUT
+  );
+
+  test(
+    'the liveness guard itself swallows the heartbeat: what it hands the round loop carries no raw part (a raw part there would release a held step-finish and clear the boundary)',
+    async () => {
+      type GuardInternals = {
+        guardStreamLiveness(
+          stream: AsyncIterable<unknown>,
+          controller: AbortController,
+          modelString: string
+        ): AsyncIterable<{ type: string }>;
+      };
+      const guard = newConversation() as unknown as GuardInternals;
+      const fed = (async function* () {
+        yield { type: 'stream-start', warnings: [] };
+        yield { type: 'raw', rawValue: { type: 'keepalive' } };
+        yield { type: 'raw', rawValue: { type: 'keepalive' } };
+        yield { type: 'text-delta', id: 't1', delta: '14:50.' };
+        yield { type: 'finish-step', finishReason: 'stop' };
+      })();
+      const out: string[] = [];
+      for await (const part of guard.guardStreamLiveness(fed, new AbortController(), 'gpt-5.5-pro')) {
+        out.push(part.type);
+      }
+      expect(out).toEqual(['stream-start', 'text-delta', 'finish-step']);
     },
     TIMEOUT
   );
