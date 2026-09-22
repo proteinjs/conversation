@@ -38,7 +38,7 @@ export const RECRAFT_SVG_MIME_TYPE = 'image/svg+xml';
  * Terms). `billable`: an error answer made nothing; a 2xx with nothing readable, or a request
  * never answered, may have been billed.
  *
- * PROBE DEFERRED (IMAGE_GENERATION_PLAN §4): no key has been provisioned, so this adapter has been
+ * LIVE LEG DEFERRED: no key has been provisioned yet, so this adapter has been
  * proven only against the documented shapes and a fixture — the live leg runs on the key's arrival.
  */
 export class RecraftImageAdapter implements ImageProviderAdapter {
