@@ -237,6 +237,14 @@ export class LlmTransportRetry {
     let outputStarted = false;
     /** The current attempt's held-back preamble (`stream-start` / `response-metadata`; a `raw` chunk passes through). */
     let preamble: LanguageModelV3StreamPart[] = [];
+    /**
+     * The consumer has its one `stream-start`. It is the first part of every attempt and carries
+     * the call's warnings — the same on every attempt of the same request — and the SDK reads
+     * those warnings only from the FIRST part it sees (`streamText` opens the step, warnings and
+     * all, on whatever arrives first). So a raw chunk that would otherwise overtake it releases
+     * it first, and a retried attempt's own `stream-start` is swallowed: one attempt seen.
+     */
+    let streamStartReleased = false;
 
     const restart = async (): Promise<void> => {
       await reader.cancel().catch(() => undefined); // release the failed attempt's connection
@@ -248,6 +256,16 @@ export class LlmTransportRetry {
     const flushPreamble = (controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>) => {
       preamble.forEach((part) => controller.enqueue(part));
       preamble = [];
+    };
+
+    const releaseStreamStart = (controller: ReadableStreamDefaultController<LanguageModelV3StreamPart>) => {
+      const at = preamble.findIndex((part) => part.type === 'stream-start');
+      if (at < 0) {
+        return;
+      }
+      controller.enqueue(preamble[at]);
+      preamble.splice(at, 1);
+      streamStartReleased = true;
     };
 
     const stream = new ReadableStream<LanguageModelV3StreamPart>({
@@ -301,10 +319,16 @@ export class LlmTransportRetry {
           // Anthropic `ping`): stateless, so it is never held with the preamble — held back it
           // starved the liveness guard for the whole think (2026-09-22, a pro model: no part for
           // 300 s while keepalives sat in this buffer) and a legitimate long run was aborted as a
-          // dead connection. It goes straight through; the guard reads it and drops it.
+          // dead connection. It goes straight through — behind the attempt's `stream-start`, which
+          // it must not overtake (the SDK reads the call's warnings only from its first part) —
+          // and the guard reads it and drops it.
           if (part.type === 'raw') {
+            releaseStreamStart(controller);
             controller.enqueue(part);
             continue;
+          }
+          if (part.type === 'stream-start' && streamStartReleased) {
+            continue; // a retried attempt's: the consumer already has the one it sees
           }
           if (!LlmTransportRetry.OUTPUT_PART_TYPES.has(part.type)) {
             preamble.push(part);
