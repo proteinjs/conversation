@@ -17,7 +17,7 @@ import { fixtureModelData } from './fixtureModelData';
  * API): the bounded utterance — the acknowledgment line a turn speaks first — asks for
  * `reasoning.effort: none`, and the model answered HTTP 400 with the clause below. Before this
  * rule EVERY GPT-6 Astra turn ran without its acknowledgment line and paid a refused request
- * each time, and the catalog's probes could not see it (they run only the claimed efforts).
+ * each time, and no per-level probe could see it (a probe runs only the levels a model claims).
  */
 
 const TIMEOUT = 30_000;
@@ -115,7 +115,7 @@ const scriptedModel = (opts: {
     },
   });
 
-/** GPT-6 Astra as the catalog check met it: no `none`; every other listed level accepted. */
+/** GPT-6 Astra as the provider answered live: no `none`; every other listed level accepted. */
 const astra = () =>
   scriptedModel({
     provider: 'openai.responses',
