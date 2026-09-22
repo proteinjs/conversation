@@ -1,2 +1,9 @@
-{ "branch": "fix/use-skill-passes-structured-content", "packages": ["conversation"],
-  "suites": ["packages/conversation/test/SkillDispatcherSkill.test.ts", "packages/conversation/test/conversation/conversation.useSkillStructuredContent.test.ts"], "removes": [] }
+{
+  "branch": "fix/use-skill-passes-structured-content",
+  "packages": ["conversation"],
+  "suites": [
+    "packages/conversation/test/SkillDispatcherSkill.test.ts",
+    "packages/conversation/test/conversation/conversation.useSkillStructuredContent.test.ts"
+  ],
+  "removes": []
+}
