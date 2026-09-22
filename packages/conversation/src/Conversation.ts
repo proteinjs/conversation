@@ -20,6 +20,8 @@ import { UsageData, UsageDataAccumulator, TokenUsage, StepUsage } from './UsageD
 import type { ModelDataResolver } from './ModelData';
 import { resolveModel, routedProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
+import { ForcedToolChoice } from './ForcedToolChoice';
+import { OpenAiModelRules, type OpenAiReasoningEffort } from './OpenAiModelRules';
 import { ToolStrictness } from './ToolStrictness';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
 import { CutBoundary, type CutBoundaryKind } from './CutBoundary';
@@ -451,6 +453,13 @@ export type StreamResult = {
   usage: Promise<UsageData>;
   /** Resolves to tool invocation results. */
   toolInvocations: Promise<ToolInvocationResult[]>;
+  /**
+   * Resolves, once the text has settled, to the error the round ended on — a provider's refusal
+   * of the request (a 400 with its clause), an abort — or `undefined` when it ended cleanly. The
+   * streaming egress throws it from `fullStream`; the buffered read (`generateResponse`) throws
+   * it instead of returning an empty answer.
+   */
+  failure: Promise<unknown>;
 };
 
 export type StreamSource = {
@@ -653,11 +662,12 @@ export class Conversation {
         .map(([name]) => name)
     );
 
-    // When the user toggles search on, force the search tool on the first
-    // step so the toggle has a consistent "guarantee a search this turn"
-    // meaning across providers. After step 1 the model returns to default
-    // (auto) tool choice for subsequent steps.
-    const webSearchToolChoice = this.getWebSearchToolChoice(provider, modelString, webSearchTools, params.webSearch);
+    // When the user toggles search on, force the search tool on the FIRST step so the toggle has
+    // a consistent "guarantee a search this turn" meaning across providers; from the second step
+    // on the model returns to its default (auto) tool choice — `prepareStep` says so, since the
+    // SDK otherwise carries a call-level toolChoice into every step (a client tool answered on
+    // step 1 would have forced a second search on step 2).
+    const webSearchToolChoice = this.getWebSearchToolChoice(provider, webSearchTools, params.webSearch);
 
     // Mid-call injected context (see GenerateStreamParams.drainInjectedContext): notes drained at a
     // step boundary are recorded here with the raw step-message count at drain time as their anchor,
@@ -723,12 +733,31 @@ export class Conversation {
     // choice and stop conditions unchanged — the step is the same step).
     let rung: DispatchRung = { model, modelString, provider, providerOptions };
 
+    // The error the round ended on, when it ended on one (a provider's 400, an abort) — the SDK
+    // hands it to `onError` (and otherwise prints it with console.error); the buffered read
+    // (`generateResponse`) throws it instead of returning an empty answer, so a refused request
+    // is never read as "the model said nothing".
+    let roundFailure: unknown;
+    // Whether a step of this TURN has finished (set by the round loop below): the forced search
+    // belongs to the turn's first step, so a continuation round (a cut, a length continuation,
+    // an absorbed note) runs on the model's own tool choice, while a round restarted before any
+    // step finished (the thinking-phase restart, a refused step on the ladder) is still the
+    // first step and forces again.
+    let turnHasFinishedStep = false;
+
     const startCall = (callMessages: ModelMessage[], roundSignal?: AbortSignal, callRung: DispatchRung = rung) =>
       streamText({
         model: callRung.model,
         messages: callMessages,
         tools: Object.keys(allTools).length > 0 ? allTools : undefined,
         toolChoice: webSearchToolChoice,
+        onError: ({ error }) => {
+          roundFailure = error;
+          this.logger.error({
+            message: 'The round ended on an error',
+            obj: { model: callRung.modelString, error: (error as { message?: unknown })?.message ?? String(error) },
+          });
+        },
         stopWhen: [
           stepCountIs(params.maxToolCalls ?? 50),
           ...(params.stopOnToolCalls ?? []).map((name) => hasToolCall(name)),
@@ -742,7 +771,7 @@ export class Conversation {
         // aborts ONE round's call without touching the turn-level signal or the liveness guard.
         abortSignal: roundSignal ? Conversation.anySignal([combinedAbortSignal, roundSignal]) : combinedAbortSignal,
         providerOptions: callRung.providerOptions,
-        prepareStep: async ({ messages: stepMessages }) => {
+        prepareStep: async ({ messages: stepMessages, stepNumber }) => {
           latestStepMessages = stepMessages;
           let next = stepMessages;
           // A boundary where the last assistant message is still OPEN on a server tool — the model
@@ -818,7 +847,13 @@ export class Conversation {
           if (this.params.toolImageRetention != null) {
             next = Conversation.pruneStaleToolImages(next, this.params.toolImageRetention);
           }
-          return { messages: this.projectOutgoingStepMessages(next, { provider, tools: allTools, modelString }) };
+          // The forced search is the turn's FIRST step's; every step after it runs on the model's
+          // own tool choice (the SDK would otherwise carry the call-level forcing into each step).
+          const firstStepOfTurn = stepNumber === 0 && !turnHasFinishedStep;
+          return {
+            messages: this.projectOutgoingStepMessages(next, { provider, tools: allTools, modelString }),
+            ...(webSearchToolChoice && !firstStepOfTurn ? { toolChoice: 'auto' as const } : {}),
+          };
         },
         onStepFinish: params.onPartialUsageData
           ? async (step) => {
@@ -1308,6 +1343,9 @@ export class Conversation {
                 stepText = '';
                 atBoundary = true;
                 const reason = String(part.finishReason?.unified ?? part.finishReason ?? '');
+                // A refused step (the ladder's case) is not a finished step of the turn — its
+                // re-run on the next rung is still the first step.
+                turnHasFinishedStep = turnHasFinishedStep || reason !== 'content-filter';
                 if (reason !== 'tool-calls') {
                   // A refused step that produced nothing is the ladder's case (decided below, once
                   // the round ends); the tool flag rides the held part so that decision sees it.
@@ -1699,6 +1737,10 @@ export class Conversation {
       },
       usage: safeUsage,
       toolInvocations: safeToolInvocations,
+      // Read after the text settles (the same lazy read — never a second consumer of the stream).
+      get failure() {
+        return (_textPromise ??= lazySafeText()).then(() => roundFailure);
+      },
     };
   }
 
@@ -1970,17 +2012,24 @@ export class Conversation {
   }
 
   /**
-   * Non-streaming convenience: generates a text response and waits for completion.
+   * Non-streaming convenience: generates a text response and waits for completion. A round that
+   * ended on an error with no answer — the provider refused the request (its 400 and clause), the
+   * call was aborted — THROWS that error, as the streaming egress and the polling path do; an
+   * empty answer is only ever what the model said.
    */
   async generateResponse(params: GenerateStreamParams): Promise<GenerateResponseResult> {
     const stream = await this.generateStream(params);
-    const [text, reasoning, sources, usage, toolInvocations] = await Promise.all([
+    const [text, reasoning, sources, usage, toolInvocations, failure] = await Promise.all([
       stream.text,
       stream.reasoning,
       stream.sources,
       stream.usage,
       stream.toolInvocations,
+      stream.failure,
     ]);
+    if (failure !== undefined && !text) {
+      throw failure instanceof Error ? failure : new Error(String(failure));
+    }
     return { text, reasoning: reasoning || undefined, sources, usage, toolInvocations };
   }
 
@@ -3072,17 +3121,21 @@ export class Conversation {
 
     if (provider === 'openai') {
       const openaiOpts: Record<string, any> = {};
-      if (effort && effort !== 'auto') {
-        // OpenAI accepts: none | low | medium | high | xhigh
-        // 'max' → 'xhigh' (OpenAI's highest)
-        openaiOpts.reasoningEffort = effort === 'max' ? 'xhigh' : effort;
+      // The effort as THIS model's provider names it (OpenAiModelRules: 'max' is its own level
+      // from GPT-6 on, 'xhigh' the top before that); 'auto' omits it — the model's default.
+      const openaiEffort = OpenAiModelRules.reasoningEffort(modelString ?? '', effort);
+      if (openaiEffort) {
+        openaiOpts.reasoningEffort = openaiEffort;
       }
-      // 'auto': omit reasoningEffort — let OpenAI use its default reasoning behavior
       // Always request reasoning summary text. The Responses API (used by
       // resolveModel for OpenAI) only emits `reasoning-delta` stream chunks
       // when `reasoningSummary` is set; default is no summary. Honored on
       // reasoning models; harmlessly ignored on non-reasoning models.
       openaiOpts.reasoningSummary = 'auto';
+      // Whether the model reasons is this library's verdict (the generation rule), stated to the
+      // SDK on every call: its own prefix list trails each release and would otherwise DROP the
+      // effort and the summary from a request to a model it does not know (gpt-6-*, 2026-09-22).
+      openaiOpts.forceReasoning = OpenAiModelRules.reasons(modelString ?? '');
       if (params.serviceTier) {
         openaiOpts.serviceTier = params.serviceTier;
       }
@@ -3287,19 +3340,15 @@ export class Conversation {
    *   toolChoice is irrelevant; we omit it.
    * - Toggle off, or tool unavailable (e.g. Haiku/nano excluded models):
    *   return `undefined` so the SDK falls back to its default (auto).
+   * - A model whose provider REFUSES forcing (Claude Fable 5.1, Claude Opus 5.5: the API 400s
+   *   `tool_choice: type "tool" and "any" are not supported for this model`) is not this
+   *   helper's to know — the forcing is asked for here like any other model's, and
+   *   `ForcedToolChoice` (under the transport layer) hears the provider's refusal, re-issues
+   *   the request with auto and remembers the model: the tool stays attached and the toggle
+   *   softens to "search strongly available". No list of ids to keep.
    */
-  /**
-   * Model-id prefixes that REJECT forced tool_choice — the API 400s the whole request
-   * ('tool_choice: type "tool" and "any" are not supported for this model'; observed live
-   * 2026-09-01 on claude-fable-5-1 — Fable 5 and Opus 5 accept forcing). For these models
-   * the search tool still attaches and the toggle softens from "guarantee a search this
-   * turn" to "search strongly available": forcing would kill the turn outright.
-   */
-  private static readonly FORCED_TOOL_CHOICE_UNSUPPORTED_MODEL_PREFIXES = ['claude-fable-5-1'];
-
   private getWebSearchToolChoice(
     provider: string,
-    modelString: string,
     webSearchTools: ToolSet,
     webSearchRequested?: boolean
   ): { type: 'tool'; toolName: string } | undefined {
@@ -3314,13 +3363,6 @@ export class Conversation {
     const toolName = Object.keys(webSearchTools)[0];
     if (!toolName) {
       // Model class doesn't have a search tool wired (e.g. nano/haiku).
-      return undefined;
-    }
-    // Match on the model id — after any `provider:` prefix (the assertInputWithinModelCap
-    // convention), so a prefixed model string can't defeat the gate.
-    const colonIdx = modelString.indexOf(':');
-    const modelId = colonIdx > 0 ? modelString.slice(colonIdx + 1) : modelString;
-    if (Conversation.FORCED_TOOL_CHOICE_UNSUPPORTED_MODEL_PREFIXES.some((prefix) => modelId.startsWith(prefix))) {
       return undefined;
     }
     return { type: 'tool', toolName };
@@ -3355,20 +3397,14 @@ export class Conversation {
   }
 
   /**
-   * Map our ReasoningEffort to OpenAI's accepted values.
-   * OpenAI accepts: none | low | medium | high | xhigh
-   * 'max' → 'xhigh' (OpenAI's highest).
+   * Our effort as the provider names it for this model — see {@link OpenAiModelRules.reasoningEffort}
+   * ('max' from GPT-6 on; 'xhigh', the top level, before that; 'auto' omits it).
    */
   private mapReasoningEffortForOpenAi(
+    modelString: string,
     effort?: ReasoningEffort
-  ): 'none' | 'low' | 'medium' | 'high' | 'xhigh' | undefined {
-    if (!effort || effort === 'auto') {
-      return undefined;
-    }
-    if (effort === 'max') {
-      return 'xhigh';
-    }
-    return effort as 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+  ): OpenAiReasoningEffort | undefined {
+    return OpenAiModelRules.reasoningEffort(modelString, effort);
   }
 
   /**
@@ -3387,7 +3423,7 @@ export class Conversation {
       abortSignal: params.abortSignal,
       onToolInvocation: params.onToolInvocation,
       onUsageData: params.onUsageData,
-      reasoningEffort: this.mapReasoningEffortForOpenAi(params.reasoningEffort),
+      reasoningEffort: this.mapReasoningEffortForOpenAi(modelString, params.reasoningEffort),
       maxToolCalls: params.maxToolCalls,
       backgroundMode: params.backgroundMode,
       maxBackgroundWaitMs: params.maxBackgroundWaitMs,
@@ -3422,6 +3458,8 @@ export class Conversation {
       sources: Promise.resolve(sources),
       usage: Promise.resolve(usage),
       toolInvocations: Promise.resolve(toolInvocations),
+      // The polling transport throws its failures before this result exists.
+      failure: Promise.resolve(undefined),
     };
   }
 
@@ -3442,7 +3480,7 @@ export class Conversation {
       schema: params.schema,
       abortSignal: params.abortSignal,
       onUsageData: params.onUsageData,
-      reasoningEffort: this.mapReasoningEffortForOpenAi(params.reasoningEffort),
+      reasoningEffort: this.mapReasoningEffortForOpenAi(modelString, params.reasoningEffort),
       temperature: params.temperature,
       topP: params.topP,
       maxTokens: params.maxTokens,
@@ -3513,7 +3551,9 @@ export class Conversation {
     // The single transport choke point: streamText, generateObject, and every per-step tool-loop
     // request run through the wrapped model, so transient provider failures retry invisibly here.
     // `onRetryActivity` (when the caller passed one) observes those retries without owning them.
-    return this.transportRetry.wrap(resolveModel(m) as never, { onRetryActivity });
+    // Under the retry layer, a forced tool choice follows the provider's verdict for the model
+    // (ForcedToolChoice): a refusal is heard once and the request re-issued softened.
+    return this.transportRetry.wrap(ForcedToolChoice.follow(resolveModel(m) as never), { onRetryActivity });
   }
 
   private getModelString(model?: LanguageModel | string): string {

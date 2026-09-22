@@ -11,6 +11,7 @@ import { LlmTransportRetry } from './LlmTransportRetry';
 import { ToolStrictness } from './ToolStrictness';
 import type { GenerateResponseReturn, ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import { TiktokenModel } from 'tiktoken';
+import type { OpenAiReasoningEffort } from './OpenAiModelRules';
 
 export const DEFAULT_RESPONSES_MODEL = 'gpt-5.2' as TiktokenModel;
 export const DEFAULT_MAX_TOOL_CALLS = 50;
@@ -70,7 +71,7 @@ export type GenerateTextParams = {
   onUsageData?: (usageData: UsageData) => Promise<void>;
 
   /** Per-call override for reasoning effort (reasoning models only). */
-  reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+  reasoningEffort?: OpenAiReasoningEffort;
 
   /** Hard cap for custom function tool calls executed by this wrapper. */
   maxToolCalls?: number;
@@ -106,7 +107,7 @@ export type ResponsesGenerateObjectParams<S> = {
   onUsageData?: (usageData: UsageData) => Promise<void>;
 
   /** Per-call override for reasoning effort (reasoning models only). */
-  reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+  reasoningEffort?: OpenAiReasoningEffort;
 
   /** Hard cap for custom function tool calls executed by this wrapper. */
   maxToolCalls?: number;
@@ -275,7 +276,7 @@ export class OpenAiResponses {
     abortSignal?: AbortSignal;
     onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
 
-    reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+    reasoningEffort?: OpenAiReasoningEffort;
 
     maxToolCalls: number;
     backgroundMode: boolean;
@@ -486,7 +487,7 @@ export class OpenAiResponses {
     meta: {
       operation: 'responses.create' | 'responses.retrieve' | 'responses.cancel';
       model?: string;
-      reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+      reasoningEffort?: OpenAiReasoningEffort;
       backgroundMode?: boolean;
       responseId?: string;
       previousResponseId?: string;
@@ -639,7 +640,7 @@ export class OpenAiResponses {
     temperature?: number;
     topP?: number;
     maxTokens?: number;
-    reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+    reasoningEffort?: OpenAiReasoningEffort;
 
     textFormat?: unknown;
 
@@ -739,7 +740,7 @@ export class OpenAiResponses {
     abortSignal?: AbortSignal,
     ctx?: {
       model?: string;
-      reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+      reasoningEffort?: OpenAiReasoningEffort;
       maxWaitMs?: number;
       requestedServiceTier?: OpenAiServiceTier;
     }
@@ -1664,7 +1665,7 @@ export class OpenAiResponses {
   private resolveBackgroundMode(args: {
     requested?: boolean;
     model: string;
-    reasoningEffort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort;
+    reasoningEffort?: OpenAiReasoningEffort;
   }): boolean {
     if (typeof args.requested === 'boolean') {
       return args.requested;
@@ -1683,9 +1684,9 @@ export class OpenAiResponses {
     return /(^|[-_.])pro($|[-_.])/.test(m);
   }
 
-  private isHighReasoningEffort(effort?: OpenAIApi.Chat.Completions.ChatCompletionReasoningEffort): boolean {
+  private isHighReasoningEffort(effort?: OpenAiReasoningEffort): boolean {
     const v = String(effort ?? '').toLowerCase();
-    return v === 'high' || v === 'xhigh';
+    return v === 'high' || v === 'xhigh' || v === 'max';
   }
 }
 

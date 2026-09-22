@@ -13,11 +13,10 @@ import { fixtureModelData } from './fixtureModelData';
  *
  * When the toggle is off, the model decides; we never force.
  *
- * Model exception: claude-fable-5-1 REJECTS forced tool_choice — the API 400s
- * ('tool_choice: type "tool" and "any" are not supported for this model',
- * observed live 2026-09-01; Fable 5 accepted it). For that model the search
- * tool still attaches and the toggle softens to "search strongly available" —
- * forcing would kill the whole turn.
+ * A model whose provider REFUSES forcing (Claude Fable 5.1, Claude Opus 5.5 — the API 400s
+ * 'tool_choice: type "tool" and "any" are not supported for this model') is not this helper's
+ * to know: it asks for the forcing like any other model's, and `ForcedToolChoice` (under the
+ * transport) hears the refusal and softens the request — see conversation.forcedToolChoice.test.
  */
 
 const conv = new Conversation({ modelData: fixtureModelData, name: 'test-getWebSearchToolChoice' });
@@ -26,11 +25,11 @@ type SearchToolChoice = { type: 'tool'; toolName: string } | undefined;
 
 const callGetWebSearchToolChoice = (
   provider: string,
-  modelString: string,
+  _modelString: string,
   webSearchTools: Record<string, unknown>,
   webSearchRequested?: boolean
 ): SearchToolChoice => {
-  return (conv as any).getWebSearchToolChoice(provider, modelString, webSearchTools, webSearchRequested);
+  return (conv as any).getWebSearchToolChoice(provider, webSearchTools, webSearchRequested);
 };
 
 describe('Conversation.getWebSearchToolChoice', () => {
@@ -61,13 +60,17 @@ describe('Conversation.getWebSearchToolChoice', () => {
       });
     });
 
-    test('returns undefined for claude-fable-5-1 — the model 400s on forced tool_choice', () => {
-      // The tool is attached; only the FORCING is dropped. A `provider:` prefix on the
-      // model string must not defeat the gate (the id is matched after any prefix).
-      expect(callGetWebSearchToolChoice('anthropic', 'claude-fable-5-1', { web_search: {} }, true)).toBeUndefined();
-      expect(
-        callGetWebSearchToolChoice('anthropic', 'anthropic:claude-fable-5-1', { web_search: {} }, true)
-      ).toBeUndefined();
+    test('forces web_search for a model whose provider refuses forcing — the refusal is heard under the transport, not listed here', () => {
+      // No id list: Fable 5.1 and Opus 5.5 ask for the forcing like any model; ForcedToolChoice
+      // softens the request when the provider says so (and remembers the model).
+      expect(callGetWebSearchToolChoice('anthropic', 'claude-fable-5-1', { web_search: {} }, true)).toEqual({
+        type: 'tool',
+        toolName: 'web_search',
+      });
+      expect(callGetWebSearchToolChoice('anthropic', 'claude-opus-5-5', { web_search: {} }, true)).toEqual({
+        type: 'tool',
+        toolName: 'web_search',
+      });
     });
 
     test('returns undefined for Google (grounding auto-invokes; no model choice involved)', () => {

@@ -27,9 +27,10 @@ type AnthropicProviderOptions = {
 };
 
 type OpenAIProviderOptions = {
-  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   reasoningSummary?: 'auto' | 'concise' | 'detailed' | 'none';
   serviceTier?: string;
+  forceReasoning?: boolean;
 };
 
 type GoogleProviderOptions = {
@@ -132,7 +133,7 @@ describe('Conversation.buildProviderOptions (openai)', () => {
     ['medium', 'medium'],
     ['high', 'high'],
     ['xhigh', 'xhigh'],
-    ['max', 'xhigh'], // 'max' maps to 'xhigh' (OpenAI's highest)
+    ['max', 'xhigh'], // 'max' is GPT-5's top level, xhigh (a level of its own from GPT-6 — openAiModelRules.test)
   ] as Array<[ReasoningEffort, string]>)('forwards reasoningEffort %s → %s', (input, expected) => {
     const openai = buildOpenAI(input, 'gpt-5.5');
     expect(openai.reasoningEffort).toBe(expected);
