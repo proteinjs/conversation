@@ -1,0 +1,14 @@
+{
+  "branch": "fix/one-generation-path-for-openai",
+  "packages": ["conversation"],
+  "suites": [
+    "packages/conversation/test/conversation/conversation.oneGenerationPath.test.ts",
+    "packages/conversation/test/conversation/conversation.streamLiveness.test.ts",
+    "packages/conversation/test/conversation/conversation.transportRetry.test.ts",
+    "packages/conversation/test/conversation/conversation.citationMarkers.test.ts",
+    "packages/conversation/test/conversation/conversation.reasoning.openai.test.ts",
+    "packages/conversation/test/conversation/conversation.generateStream.test.ts",
+    "packages/conversation/test/conversation/conversation.generateObject.test.ts"
+  ],
+  "removes": []
+}
