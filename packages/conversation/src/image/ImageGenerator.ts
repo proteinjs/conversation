@@ -5,7 +5,9 @@ import { ImageCostCalculator } from './ImageCostCalculator';
 import type { ImageGenerationRequest } from './ImageGenerationRequest';
 import type { ImageCostUsd, ImageGenerationOutcome, ImageGenerationStopped } from './ImageGenerationOutcome';
 import type { ImageAdapterResult, ImageProviderAdapter, ImageTransport } from './ImageProviderAdapter';
+import { GoogleImageAdapter } from './GoogleImageAdapter';
 import { OpenAiImageAdapter } from './OpenAiImageAdapter';
+import { RecraftImageAdapter } from './RecraftImageAdapter';
 
 export type ImageGeneratorParams = {
   /**
@@ -13,7 +15,7 @@ export type ImageGeneratorParams = {
    * the same reason: a generator without pricing data would record every picture as free.
    */
   modelData: ModelDataResolver;
-  /** One adapter per provider. Default: the OpenAI adapter. */
+  /** One adapter per provider. Default: the OpenAI, Google and Recraft adapters. */
   adapters?: ImageProviderAdapter[];
   /** The wire. Default: the runtime's `fetch`. A test hands in a double, so CI never calls a vendor. */
   transport?: ImageTransport;
@@ -48,7 +50,8 @@ export class ImageGenerator {
   private readonly logger: Logger;
 
   constructor(params: ImageGeneratorParams) {
-    const adapters = params.adapters ?? [new OpenAiImageAdapter()];
+    // One adapter per vendor the catalog names; each reads its own key from the environment at call time.
+    const adapters = params.adapters ?? [new OpenAiImageAdapter(), new GoogleImageAdapter(), new RecraftImageAdapter()];
     this.adapters = new Map(adapters.map((adapter) => [adapter.provider, adapter]));
     this.transport = params.transport ?? new FetchImageTransport();
     this.costCalculator = new ImageCostCalculator(params.modelData);

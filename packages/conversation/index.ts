@@ -34,6 +34,8 @@ export * from './src/image/ImageGenerationOutcome';
 export * from './src/image/ImageProviderAdapter';
 export * from './src/image/FetchImageTransport';
 export * from './src/image/OpenAiImageAdapter';
+export * from './src/image/GoogleImageAdapter';
+export * from './src/image/RecraftImageAdapter';
 export * from './src/image/ImageCostCalculator';
 
 // Conversation modules
