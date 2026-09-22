@@ -768,7 +768,7 @@ export class Conversation {
           roundFailure = error;
           this.logger.error({
             message: 'The round ended on an error',
-            obj: { model: callRung.modelString, error: (error as { message?: unknown })?.message ?? String(error) },
+            obj: { model: callRung.modelString, error: Conversation.providerErrorClause(error) },
           });
         },
         stopWhen: [
@@ -1257,7 +1257,7 @@ export class Conversation {
                     .catch((error) =>
                       self.logger.warn({
                         message: 'The side utterance failed',
-                        obj: { error: error instanceof Error ? error.message : String(error) },
+                        obj: { error: Conversation.providerErrorClause(error) },
                       })
                     )
                     .finally(() => {
@@ -1986,9 +1986,7 @@ export class Conversation {
     for await (const part of result.fullStream) {
       if (part.type === 'error') {
         const cause = (part as { error?: unknown }).error;
-        throw cause instanceof Error
-          ? cause
-          : new Error(String((cause as { message?: string })?.message ?? cause ?? 'LLM stream error'));
+        throw cause instanceof Error ? cause : new Error(Conversation.providerErrorClause(cause) || 'LLM stream error');
       }
       if (part.type === 'abort') {
         // The non-streaming shape rejected with the signal's reason (timeout/caller abort) —
@@ -2043,7 +2041,7 @@ export class Conversation {
       stream.failure,
     ]);
     if (failure !== undefined && !text) {
-      throw failure instanceof Error ? failure : new Error(String(failure));
+      throw failure instanceof Error ? failure : new Error(Conversation.providerErrorClause(failure));
     }
     return { text, reasoning: reasoning || undefined, sources, usage, toolInvocations };
   }
@@ -2227,9 +2225,7 @@ export class Conversation {
   private toModelMessage(msg: Record<string, unknown>): ModelMessage | undefined {
     const rawRole = String(msg.role ?? 'user');
     const role = (rawRole === 'system' ? 'system' : rawRole === 'assistant' ? 'assistant' : 'user') as
-      | 'system'
-      | 'user'
-      | 'assistant';
+      'system' | 'user' | 'assistant';
     const rawContent = msg.content;
 
     // System messages: the SDK only accepts string content here.
@@ -3739,6 +3735,43 @@ export class Conversation {
    * suspends the idle race while a local tool call is outstanding (tool-call seen, final
    * tool-result/tool-error not yet) and re-arms the moment it settles.
    */
+  /**
+   * The provider's clause for a failure, whatever shape it arrived in: an Error's message; a plain
+   * object's `message` (an HTTP error body); the message nested under `error` (a Responses stream's
+   * `error` event — `{ type: 'error', sequence_number, error: { type, code, message } }` — which the
+   * SDK enqueues as-is and the transport surfaces when its type is not one it retries); else the
+   * structure itself, compact and bounded. Never "[object Object]": every throw and every log line
+   * that names a failure reads through here, so the person's card and the server's log carry what
+   * the provider said (2026-09-22, live: one turn in six on a pro-class model died on a clause
+   * nobody could read).
+   */
+  static providerErrorClause(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (typeof error !== 'object' || error === null) {
+      return String(error);
+    }
+    const { message, error: nested } = error as { message?: unknown; error?: unknown };
+    if (typeof message === 'string' && message) {
+      return message;
+    }
+    if (nested !== undefined && nested !== null) {
+      const inner = Conversation.providerErrorClause(nested);
+      if (inner && !inner.startsWith('{')) {
+        return inner;
+      }
+    }
+    try {
+      return JSON.stringify(error).slice(0, 600);
+    } catch {
+      return String(error);
+    }
+  }
+
   /** `AbortSignal.any` exists at runtime (node ≥ 20.3) but not in this TS lib target. */
   /**
    * The output ceiling to request when the caller didn't set one — ALWAYS the model's real
@@ -3839,11 +3872,10 @@ export class Conversation {
   /** Drain the caller's inbox into trimmed, non-empty texts (the drain is destructive — once). */
   private static drainTexts(drain: () => Array<string | DrainedInput>): DrainedInput[] {
     return (drain() ?? [])
-      .map(
-        (item): DrainedInput =>
-          typeof item === 'string' || item == null
-            ? { text: String(item ?? '').trim() }
-            : { ...item, text: String(item.text ?? '').trim() }
+      .map((item): DrainedInput =>
+        typeof item === 'string' || item == null
+          ? { text: String(item ?? '').trim() }
+          : { ...item, text: String(item.text ?? '').trim() }
       )
       .filter((item) => item.text.length > 0);
   }
@@ -3930,14 +3962,14 @@ export class Conversation {
           }
         } else if (part.type === 'error') {
           const cause = (part as { error?: unknown }).error;
-          throw cause instanceof Error ? cause : new Error(String((cause as { message?: string })?.message ?? cause));
+          throw cause instanceof Error ? cause : new Error(Conversation.providerErrorClause(cause));
         }
       }
     } catch (error) {
       if (args.abortSignal.aborted) {
         return undefined;
       }
-      failure = error instanceof Error ? error.message : String(error);
+      failure = Conversation.providerErrorClause(error);
     }
     if (failure) {
       this.logger.warn({
@@ -4251,7 +4283,7 @@ export class Conversation {
               const cause = (part as { error?: unknown }).error;
               throw cause instanceof Error
                 ? cause
-                : new Error(String((cause as { message?: string })?.message ?? cause ?? 'LLM stream error'));
+                : new Error(Conversation.providerErrorClause(cause) || 'LLM stream error');
             }
           }
         } finally {
