@@ -53,7 +53,8 @@ export class RequestedEffort {
   };
 
   /** The parameter names the providers refuse the effort under (OpenAI's `param`; the field path in a message). */
-  private static readonly EFFORT_PARAM = /(reasoning[._]effort|output_config\.effort|\beffort\b|thinking[._]?level|thinking[._]?config)/i;
+  private static readonly EFFORT_PARAM =
+    /(reasoning[._]effort|output_config\.effort|\beffort\b|thinking[._]?level|thinking[._]?config)/i;
 
   /** The words of a refused value, in every provider's grammar. */
   private static readonly REFUSED = /not supported|unsupported|invalid|not (?:a )?valid|must be one of/i;
@@ -134,15 +135,27 @@ export class RequestedEffort {
       specificationVersion: 'v3',
       transformParams: async ({ params, model }) => RequestedEffort.remembered(params, model.modelId),
       wrapGenerate: ({ doGenerate, params, model }) =>
-        RequestedEffort.hearing(doGenerate, params, model, (substituted) => model.doGenerate(substituted), (result, warning) => ({
-          ...result,
-          warnings: [...(result.warnings ?? []), warning],
-        })),
+        RequestedEffort.hearing(
+          doGenerate,
+          params,
+          model,
+          (substituted) => model.doGenerate(substituted),
+          (result, warning) => ({
+            ...result,
+            warnings: [...(result.warnings ?? []), warning],
+          })
+        ),
       wrapStream: ({ doStream, params, model }) =>
-        RequestedEffort.hearing(doStream, params, model, (substituted) => model.doStream(substituted), (result, warning) => ({
-          ...result,
-          stream: result.stream.pipeThrough(RequestedEffort.warned(warning)),
-        })),
+        RequestedEffort.hearing(
+          doStream,
+          params,
+          model,
+          (substituted) => model.doStream(substituted),
+          (result, warning) => ({
+            ...result,
+            stream: result.stream.pipeThrough(RequestedEffort.warned(warning)),
+          })
+        ),
     };
   }
 
@@ -202,9 +215,14 @@ export class RequestedEffort {
   }
 
   /** The effort this request carries — the provider key it rides under, its field path, its value. */
-  private static sentEffort(params: LanguageModelV3CallOptions): { provider: string; path: readonly string[]; value: string } | undefined {
+  private static sentEffort(
+    params: LanguageModelV3CallOptions
+  ): { provider: string; path: readonly string[]; value: string } | undefined {
     for (const [provider, path] of Object.entries(RequestedEffort.EFFORT_FIELDS)) {
-      const value = path.reduce<unknown>((node, key) => (node as Record<string, unknown> | undefined)?.[key], params.providerOptions?.[provider]);
+      const value = path.reduce<unknown>(
+        (node, key) => (node as Record<string, unknown> | undefined)?.[key],
+        params.providerOptions?.[provider]
+      );
       if (typeof value === 'string') {
         return { provider, path, value };
       }
@@ -235,7 +253,9 @@ export class RequestedEffort {
   }
 
   /** The stream with the warning added to its `stream-start` — the part the SDK reads a call's warnings from. */
-  private static warned(warning: SharedV3Warning): TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart> {
+  private static warned(
+    warning: SharedV3Warning
+  ): TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart> {
     return new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>({
       transform(part, controller) {
         controller.enqueue(

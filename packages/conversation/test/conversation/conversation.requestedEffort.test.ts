@@ -50,7 +50,9 @@ const otherBadRequest = () =>
     responseHeaders: {},
     responseBody: '',
     isRetryable: false,
-    data: { error: { message: "Invalid value: 'flex'.", type: 'invalid_request_error', param: 'service_tier', code: null } },
+    data: {
+      error: { message: "Invalid value: 'flex'.", type: 'invalid_request_error', param: 'service_tier', code: null },
+    },
   });
 
 const usage = {
@@ -263,6 +265,13 @@ describe('the requested effort follows the model (the bounded utterance asks for
   test(
     'Anthropic and Google requests are byte-identical before and after — no effort field to hear, nothing substituted',
     async () => {
+      // Where each provider carries the effort — the utterance's `none` sends NO field to these
+      // two, and the step's `high` is sent as asked (the dumps are md5-compared across the fix).
+      const effortField = {
+        anthropic: (call: Call) => call.providerOptions?.anthropic?.effort,
+        google: (call: Call) =>
+          (call.providerOptions?.google?.thinkingConfig as { thinkingLevel?: unknown } | undefined)?.thinkingLevel,
+      };
       for (const [provider, modelId, name] of [
         ['anthropic.messages', 'claude-opus-5-5', 'anthropic'],
         ['google.generative-ai', 'gemini-3-pro', 'google'],
@@ -270,7 +279,7 @@ describe('the requested effort follows the model (the bounded utterance asks for
         const model = scriptedModel({ provider, modelId });
         const { parts, warnings } = await turn(`effort-${name}`, model);
         expect(utteredLine(parts)).toBe(LINE);
-        expect(model.doStreamCalls).toHaveLength(2);
+        expect(model.doStreamCalls.map((call) => effortField[name](call as never))).toEqual([undefined, 'high']);
         expect(warnings).toHaveLength(0);
         dump(name, requestsJson(model));
       }
@@ -335,7 +344,8 @@ describe('the requested effort follows the model (the bounded utterance asks for
               type: 'error',
               error: {
                 type: 'invalid_request_error',
-                message: "output_config.effort: 'xhigh' is not supported for this model. Supported values are: 'low', 'medium', 'high', and 'max'.",
+                message:
+                  "output_config.effort: 'xhigh' is not supported for this model. Supported values are: 'low', 'medium', 'high', and 'max'.",
               },
             };
             throw new APICallError({
@@ -387,7 +397,9 @@ describe('RequestedEffort — the verdict and the ladder', () => {
   test('the ladder is read from the clause in each provider’s grammar', () => {
     expect(RequestedEffort.listedLadder(ASTRA_CLAUSE)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
     expect(
-      RequestedEffort.listedLadder("The value 'medium' is not supported for 'thinking_level'. Supported values: 'low', 'high'.")
+      RequestedEffort.listedLadder(
+        "The value 'medium' is not supported for 'thinking_level'. Supported values: 'low', 'high'."
+      )
     ).toEqual(['low', 'high']);
     expect(RequestedEffort.listedLadder('The server had an error.')).toEqual([]);
   });
@@ -402,11 +414,17 @@ describe('RequestedEffort — the verdict and the ladder', () => {
     ).toBe(true);
     expect(RequestedEffort.isRefusal(new Error("Invalid value for 'thinking_level': 'medium'."), 'medium')).toBe(true);
     // … or quotes the value this request sent.
-    expect(RequestedEffort.isRefusal(new Error("Unsupported value: 'none' is not supported with this model."), 'none')).toBe(true);
-    expect(RequestedEffort.isRefusal(new Error("Unsupported value: 'none' is not supported with this model."), 'low')).toBe(false);
+    expect(
+      RequestedEffort.isRefusal(new Error("Unsupported value: 'none' is not supported with this model."), 'none')
+    ).toBe(true);
+    expect(
+      RequestedEffort.isRefusal(new Error("Unsupported value: 'none' is not supported with this model."), 'low')
+    ).toBe(false);
     // Another 400 in the same words about something else, and a transient failure, are not heard.
     expect(RequestedEffort.isRefusal(new Error('messages: text content blocks must be non-empty'), 'none')).toBe(false);
-    expect(RequestedEffort.isRefusal(new Error('"thinking.type.disabled" is not supported for this model.'), 'none')).toBe(false);
+    expect(
+      RequestedEffort.isRefusal(new Error('"thinking.type.disabled" is not supported for this model.'), 'none')
+    ).toBe(false);
     expect(
       RequestedEffort.isRefusal(
         new APICallError({
