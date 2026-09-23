@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.7.5](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.4...@proteinjs/conversation@6.7.5) (2026-09-23)
+
+
+### Bug Fixes
+
+* a heartbeat never overtakes the attempt's stream-start — the provider's call warnings reach the SDK again ([47a4a7a](https://github.com/proteinjs/conversation/commit/47a4a7ac30e350eb3f59625ddad1627d3c23853b))
+* a provider error that is a plain object keeps its clause — never "[object Object]" on the card or in the log ([a4b8584](https://github.com/proteinjs/conversation/commit/a4b8584221416f1070ab4ce65d1fee3ec7b350ba))
+* one generation path for OpenAI — every effort and every model id streams through the same Responses path ([c62c62e](https://github.com/proteinjs/conversation/commit/c62c62e395ee8530476a502189618cce222d7cb4))
+* the polling transport is gone — a long silent think is kept alive by the provider's own heartbeats, so every OpenAI call streams ([b712936](https://github.com/proteinjs/conversation/commit/b7129366677091e9bc5e5fe821e7979edf7c4766))
+
+
+
+
+
 ## [6.7.4](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.3...@proteinjs/conversation@6.7.4) (2026-09-22)
 
 
