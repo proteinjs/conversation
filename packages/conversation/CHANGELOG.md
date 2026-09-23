@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.7.6](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.5...@proteinjs/conversation@6.7.6) (2026-09-23)
+
+
+### Bug Fixes
+
+* the requested reasoning effort follows the model — a provider's refusal of the value is heard once, the request re-issued at the nearest level the model accepts, remembered for the process; the bounded utterance's none becomes the model's floor ([0fb9acd](https://github.com/proteinjs/conversation/commit/0fb9acdefe7dadff4aa120a058244135e9aad64e))
+
+
+
+
+
 ## [6.7.5](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.4...@proteinjs/conversation@6.7.5) (2026-09-23)
 
 
