@@ -2225,7 +2225,9 @@ export class Conversation {
   private toModelMessage(msg: Record<string, unknown>): ModelMessage | undefined {
     const rawRole = String(msg.role ?? 'user');
     const role = (rawRole === 'system' ? 'system' : rawRole === 'assistant' ? 'assistant' : 'user') as
-      'system' | 'user' | 'assistant';
+      | 'system'
+      | 'user'
+      | 'assistant';
     const rawContent = msg.content;
 
     // System messages: the SDK only accepts string content here.
@@ -3872,10 +3874,11 @@ export class Conversation {
   /** Drain the caller's inbox into trimmed, non-empty texts (the drain is destructive — once). */
   private static drainTexts(drain: () => Array<string | DrainedInput>): DrainedInput[] {
     return (drain() ?? [])
-      .map((item): DrainedInput =>
-        typeof item === 'string' || item == null
-          ? { text: String(item ?? '').trim() }
-          : { ...item, text: String(item.text ?? '').trim() }
+      .map(
+        (item): DrainedInput =>
+          typeof item === 'string' || item == null
+            ? { text: String(item ?? '').trim() }
+            : { ...item, text: String(item.text ?? '').trim() }
       )
       .filter((item) => item.text.length > 0);
   }
