@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.7.8](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.7...@proteinjs/conversation@6.7.8) (2026-09-24)
+
+
+### Bug Fixes
+
+* **conversation:** a failed stream is never printed by the client library itself — streamText's default onError is console.error(error), whole and past the logger; the writer loop, the object tool loop and the bounded utterance hand it one line through the logger instead, the error marked first ([be3af8c](https://github.com/proteinjs/conversation/commit/be3af8c9aa9158d4fb1a042b73e7da231dc65079))
+* **conversation:** a provider's error never prints the request on a log line — every provider-worded error that leaves the library (the transport choke point, generateObject, a stream's error part) is marked for the logger's boundary and reads as its name, HTTP status, provider, model, the vendor's code and a sentence of the library's; the payload prints only behind DEVELOPMENT + CONVERSATION_LOG_PROVIDER_PAYLOADS=1 ([7e77016](https://github.com/proteinjs/conversation/commit/7e770163aadd7396edd67d35d64d9e26ece40fb4))
+
+
+
+
+
 ## [6.7.7](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.6...@proteinjs/conversation@6.7.7) (2026-09-24)
 
 
