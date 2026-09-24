@@ -155,6 +155,19 @@ export const recraftBadKey = (): ImageTransportResponse => ({
   json: { code: 'unauthorized', message: 'Invalid API token' },
 });
 
+/** RECORDED (2026-09-24) — past five requests in a second: 429 with no Retry-After, and nothing billed. */
+export const recraftRateLimited = (): ImageTransportResponse => ({
+  status: 429,
+  requestId: 'req_recraft_fixture_429',
+  json: { code: 'rate_limit_exceeded', message: 'Rate limit exceeded' },
+});
+
+/** RECORDED (2026-09-24) — a raster model at the vector door: refused before anything is made. */
+export const recraftRasterAtVectorDoor = (): ImageTransportResponse => ({
+  status: 400,
+  json: { code: 'invalid_image_type', message: "Style 'any' is not a vector style" },
+});
+
 export const recraftModerated = (): ImageTransportResponse => ({
   status: 400,
   json: { code: 'moderation', message: 'The prompt was flagged by the content moderation system.' },

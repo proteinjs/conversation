@@ -12,6 +12,8 @@ import {
   recraftEmptyAnswer,
   recraftModerated,
   recraftNoUnits,
+  recraftRasterAtVectorDoor,
+  recraftRateLimited,
   recraftUtilityAnswer,
   recraftVectorGeneration,
 } from './googleRecraftFixtures';
@@ -95,6 +97,43 @@ describe('a mark from words on the vector model', () => {
     await generatorOver(transport).generate({ provider: 'recraft', model: 'recraftv4_1', prompt: 'A mark.' });
     expect(transport.only().url).toBe('https://external.api.recraft.ai/v1/images/generations');
   });
+
+  // Recorded 2026-09-24: with no `image_format` the vendor answers a raster as WebP, whatever the
+  // ask was labelled — so the format a picture is labelled with is the format it is asked for.
+  test.each([
+    ['no format named — PNG', undefined, 'png'],
+    ['PNG', 'png' as const, 'png'],
+    ['WEBP', 'webp' as const, 'webp'],
+  ])('a raster asked as %s is asked of the vendor in that format and labelled with it', async (_name, format, sent) => {
+    const transport = new RecordingImageTransport(() => ({
+      status: 200,
+      json: { data: [{ b64_json: TINY_PNG_BYTES.toString('base64') }] },
+    }));
+    const outcome = await generatorOver(transport).generate({
+      provider: 'recraft',
+      model: 'recraftv4_1',
+      prompt: 'A mug on a table.',
+      ...(format ? { outputFormat: format } : {}),
+    });
+    expect(jsonOf(transport.only()).image_format).toBe(sent);
+    expect(outcome.kind).toBe('ok');
+    if (outcome.kind !== 'ok') {
+      return;
+    }
+    expect(outcome.images[0].mimeType).toBe(`image/${sent}`);
+  });
+
+  test('a vector ask names no raster format — the vendor answers SVG whatever is asked', async () => {
+    const transport = new RecordingImageTransport(() => recraftVectorGeneration(1));
+    await generatorOver(transport).generate({ provider: 'recraft', model: VECTOR_MODEL, prompt: 'A mark.' });
+    expect(jsonOf(transport.only()).image_format).toBeUndefined();
+  });
+
+  test('the vendor’s request id is read from the header it names it in', async () => {
+    const transport = new RecordingImageTransport(() => recraftVectorGeneration(1));
+    await generatorOver(transport).generate({ provider: 'recraft', model: VECTOR_MODEL, prompt: 'A mark.' });
+    expect(transport.only().requestIdHeader).toBe('x-recraft-requestid');
+  });
 });
 
 describe('the utilities', () => {
@@ -129,7 +168,7 @@ describe('the utilities', () => {
     expect(outcome.cost?.totalUsd).toBe(0.01);
   });
 
-  test('remove-background goes to its own door and answers the picture, not an SVG', async () => {
+  test('remove-background goes to its own door, asks for a PNG and answers the picture, not an SVG', async () => {
     const transport = new RecordingImageTransport(() => recraftUtilityAnswer(TINY_PNG_BYTES.toString('base64')));
     const outcome = await generatorOver(transport).generate({
       provider: 'recraft',
@@ -139,6 +178,10 @@ describe('the utilities', () => {
       inputs: [raster({ mimeType: 'image/jpeg' })],
     });
     expect(transport.only().url).toBe('https://external.api.recraft.ai/v1/images/removeBackground');
+    expect(partsOf(transport.only()).find((part) => part.name === 'image_format')).toEqual({
+      name: 'image_format',
+      value: 'png',
+    });
     expect(outcome.kind).toBe('ok');
     if (outcome.kind !== 'ok') {
       return;
@@ -162,6 +205,7 @@ describe('before the wire', () => {
     ['a seventh picture', { count: 7 }, 'count must be'],
     ['references on a generation', { inputs: [raster()] }, 'no reference pictures'],
     ['an empty prompt', { prompt: '   ' }, 'prompt is empty'],
+    ['a JPEG asked of a raster model', { model: 'recraftv4_1', outputFormat: 'jpeg' as const }, 'PNG or WEBP'],
   ])('%s is refused with nothing sent and a known zero cost', async (_name, fields, words) => {
     const transport = new RecordingImageTransport(() => recraftVectorGeneration(1));
     const outcome = await generatorOver(transport).generate({
@@ -221,6 +265,35 @@ describe('the vendor’s answers that are not pictures', () => {
     }
     expect(outcome.errorKind).toBe('billing');
     expect(outcome.transient).toBe(false);
+    expect(outcome.cost).toEqual(NOTHING);
+  });
+
+  test('past the per-second limit is a transient rate limit that cost a known zero', async () => {
+    const outcome = await generatorOver(new RecordingImageTransport(recraftRateLimited)).generate({
+      provider: 'recraft',
+      model: VECTOR_MODEL,
+      prompt: 'A mark.',
+    });
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind !== 'failed') {
+      return;
+    }
+    expect(outcome.errorKind).toBe('rate_limited');
+    expect(outcome.transient).toBe(true);
+    expect(outcome.cost).toEqual(NOTHING);
+  });
+
+  test('a raster model at the vector door is an invalid request, not a refusal', async () => {
+    const outcome = await generatorOver(new RecordingImageTransport(recraftRasterAtVectorDoor)).generate({
+      provider: 'recraft',
+      model: VECTOR_MODEL,
+      prompt: 'A mark.',
+    });
+    expect(outcome.kind).toBe('failed');
+    if (outcome.kind !== 'failed') {
+      return;
+    }
+    expect(outcome.errorKind).toBe('invalid_request');
     expect(outcome.cost).toEqual(NOTHING);
   });
 

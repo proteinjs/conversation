@@ -58,6 +58,8 @@ export type ImageTransportRequest = {
   headers: Record<string, string>;
   body: ImageTransportBody;
   signal?: AbortSignal;
+  /** The response header the vendor names its request id in. Default `x-request-id`. */
+  requestIdHeader?: string;
 };
 
 export type ImageTransportBody =

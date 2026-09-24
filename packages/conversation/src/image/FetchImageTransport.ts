@@ -29,7 +29,7 @@ export class FetchImageTransport implements ImageTransport {
       signal: request.signal,
     });
     const text = await response.text();
-    const requestId = response.headers.get('x-request-id') ?? undefined;
+    const requestId = response.headers.get(request.requestIdHeader ?? 'x-request-id') ?? undefined;
     return { status: response.status, json: this.parseJson(text), ...(requestId ? { requestId } : {}) };
   }
 

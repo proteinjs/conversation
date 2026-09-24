@@ -41,6 +41,23 @@ test('a JSON body is posted as JSON, with the caller’s headers and signal', as
   expect(response).toEqual({ status: 200, json: { data: [] }, requestId: 'req_1' });
 });
 
+test('a vendor that names its request id in its own header has it read from there', async () => {
+  const { fetchFunction } = fetchAnswering({
+    status: 200,
+    body: JSON.stringify({ data: [] }),
+    headers: { 'x-recraft-requestid': 'req_2', 'x-request-id': 'not-this-one' },
+  });
+
+  const response = await new FetchImageTransport(fetchFunction).post({
+    url: 'https://vendor.example/v1/images/generations',
+    headers: { Authorization: 'Bearer k' },
+    body: { kind: 'json', json: { model: 'm' } },
+    requestIdHeader: 'x-recraft-requestid',
+  });
+
+  expect(response.requestId).toBe('req_2');
+});
+
 test('a multipart body becomes a form: fields as text, pictures as named files, no content type of our own', async () => {
   const { calls, fetchFunction } = fetchAnswering({ status: 200, body: '{}' });
 
