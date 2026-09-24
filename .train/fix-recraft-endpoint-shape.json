@@ -1,0 +1,12 @@
+{
+  "branch": "fix/recraft-endpoint-shape",
+  "packages": ["conversation"],
+  "suites": [
+    "packages/conversation/test/image/RecraftImageAdapter.test.ts",
+    "packages/conversation/test/image/FetchImageTransport.test.ts",
+    "packages/conversation/test/image/GoogleImageAdapter.test.ts",
+    "packages/conversation/test/image/OpenAiImageAdapter.test.ts",
+    "packages/conversation/test/image/ImageCostCalculator.test.ts"
+  ],
+  "removes": []
+}
