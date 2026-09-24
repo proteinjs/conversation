@@ -123,9 +123,51 @@ describe('OpenAiCitationMarkers admitSource (streaming state)', () => {
     const markers = new OpenAiCitationMarkers();
     // Mid-run: the SDK mints source parts while a marker run straddles chunks.
     expect(markers.push('Claim.\uE200cite\uE202turn0')).toBe('Claim.');
-    expect(markers.admitSource('https://a.example')).toBe(true);
+    expect(markers.admitSource({ url: 'https://a.example', title: 'A' })).toEqual({
+      url: 'https://a.example',
+      title: 'A',
+    });
     expect(markers.push('search1\uE201 Done.')).toBe(' Done.');
-    expect(markers.admitSource('https://a.example')).toBe(false);
-    expect(markers.admitSource('https://b.example')).toBe(true);
+    expect(markers.admitSource({ url: 'https://a.example', title: 'A' })).toBeUndefined();
+    expect(markers.admitSource({ url: 'https://b.example' })).toEqual({ url: 'https://b.example' });
+  });
+
+  test('a page a search returned bare is admitted once more when a citation names it \u2014 under the first url, OpenAI\u2019s utm_source dropped from the match', () => {
+    const markers = new OpenAiCitationMarkers();
+    expect(markers.admitSource({ url: 'https://a.example/page' })).toEqual({ url: 'https://a.example/page' });
+    expect(markers.admitSource({ url: 'https://a.example/page?utm_source=openai', title: 'Page A' })).toEqual({
+      url: 'https://a.example/page',
+      title: 'Page A',
+    });
+    // Named once: a second citation of the page says nothing new.
+    expect(markers.admitSource({ url: 'https://a.example/page?utm_source=openai', title: 'Page A' })).toBeUndefined();
+    // Another utm_source is part of the page's address.
+    expect(markers.admitSource({ url: 'https://a.example/page?utm_source=newsletter' })).toEqual({
+      url: 'https://a.example/page?utm_source=newsletter',
+    });
+  });
+});
+
+describe('OpenAiCitationMarkers.searchResultSources', () => {
+  test('a search\u2019s url sources in the order it returned them; api feeds skipped', () => {
+    expect(
+      OpenAiCitationMarkers.searchResultSources({
+        action: { type: 'search', query: 'q' },
+        sources: [
+          { type: 'url', url: 'https://a.example' },
+          { type: 'api', name: 'oai-weather' },
+          { type: 'url', url: 'https://b.example' },
+        ],
+      })
+    ).toEqual([{ url: 'https://a.example' }, { url: 'https://b.example' }]);
+  });
+
+  test('outputs that are not a search\u2019s carry no pages', () => {
+    expect(
+      OpenAiCitationMarkers.searchResultSources({ action: { type: 'openPage', url: 'https://a.example' } })
+    ).toEqual([]);
+    expect(OpenAiCitationMarkers.searchResultSources({ action: { type: 'search', query: 'q' } })).toEqual([]);
+    expect(OpenAiCitationMarkers.searchResultSources('done')).toEqual([]);
+    expect(OpenAiCitationMarkers.searchResultSources(undefined)).toEqual([]);
   });
 });

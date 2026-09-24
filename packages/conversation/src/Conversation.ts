@@ -1682,18 +1682,21 @@ export class Conversation {
         )
         .catch(() => '');
     const lazySafeSources = () =>
-      Promise.resolve(liveResult?.sources ?? [])
-        .then((s: LanguageModelV3Source[]) =>
-          (s ?? []).map((source) => ({
-            url: source.sourceType === 'url' ? source.url : undefined,
-            title: source.sourceType === 'url' ? source.title : undefined,
-          }))
-        )
-        // OpenAI mints one source entry per url_citation annotation — a url cited at several
-        // claims arrives several times; the buffered read of sources emerges deduped like the
-        // streaming egress (see mapFullStream's source branch).
-        .then((mapped) => (provider === 'openai' ? OpenAiCitationMarkers.dedupeSourcesByUrl(mapped) : mapped))
-        .catch(() => [] as StreamSource[]);
+      (provider === 'openai'
+        ? // OpenAI's sources are its searches' pages and its answer's citations, admitted once
+          // per page in arrival order — the buffered read runs the streaming egress's rule over the
+          // round's content (see mapFullStream's tool-result and source branches), so it is the
+          // list the stream carried.
+          Promise.resolve(liveResult?.content ?? []).then((content: readonly unknown[]): StreamSource[] =>
+            OpenAiCitationMarkers.sourcesOfRound(content ?? [])
+          )
+        : Promise.resolve(liveResult?.sources ?? []).then((s: LanguageModelV3Source[]) =>
+            (s ?? []).map((source) => ({
+              url: source.sourceType === 'url' ? source.url : undefined,
+              title: source.sourceType === 'url' ? source.title : undefined,
+            }))
+          )
+      ).catch(() => [] as StreamSource[]);
 
     const safeUsage = usagePromise.catch(
       () =>
@@ -4260,6 +4263,18 @@ export class Conversation {
                   ...(outcome.detail ? { detail: outcome.detail } : {}),
                 };
               }
+              // 3. an OpenAI web search that settled brings the pages it returned: they are the
+              //    turn's sources from THIS moment, in the order the search returned them (the
+              //    adapter hands them over only inside the provider-executed tool's result — see
+              //    OpenAiCitationMarkers), exactly as Anthropic's adapter mints one per result.
+              if (citationMarkers && !fn) {
+                for (const page of OpenAiCitationMarkers.searchResultSources(part.output)) {
+                  const admitted = citationMarkers.admitSource(page);
+                  if (admitted) {
+                    yield { type: 'source' as const, source: admitted };
+                  }
+                }
+              }
             } else if (part.type === 'tool-error') {
               // The tool THREW (or the call was invalid): the SDK hands the error to the model
               // as the tool result and the loop continues — settle the node errored so the
@@ -4273,11 +4288,21 @@ export class Conversation {
             } else if (part.type === 'source') {
               const url = part.sourceType === 'url' ? part.url : undefined;
               // The OpenAI adapter mints one source part per url_citation annotation, so a
-              // url cited at several claims arrives several times; the per-stream citation
-              // state collapses the repeats so per-message source lists downstream stay
-              // unique by url. Non-OpenAI providers pass through untouched — their citation
-              // semantics are not this owner's.
-              if (citationMarkers && typeof url === 'string' && url.length > 0 && !citationMarkers.admitSource(url)) {
+              // url cited at several claims arrives several times, and a cited page is often one
+              // a search already returned; the per-stream admission collapses the repeats so
+              // per-message source lists downstream stay unique by url (a citation that names a
+              // page a search returned bare rides once more, with the title, under the same url).
+              // Non-OpenAI providers pass through untouched — their citation semantics are not
+              // this owner's.
+              if (citationMarkers && typeof url === 'string' && url.length > 0) {
+                const title = part.title;
+                const admitted = citationMarkers.admitSource({
+                  url,
+                  ...(typeof title === 'string' && title.length > 0 ? { title } : {}),
+                });
+                if (admitted) {
+                  yield { type: 'source' as const, source: admitted };
+                }
                 continue;
               }
               yield {

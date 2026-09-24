@@ -27,9 +27,21 @@
  * annotations they reference surface as house source entries (url + title),
  * deduped by url. This class owns that side too — `sourcesFromUrlCitations`
  * mints the entries on the buffered path (`OpenAiResponses`), and the same
- * per-stream instance that carries marker-run state carries the seen-url set
- * (`admitSource`) so the streaming egress collapses the one-part-per-annotation
+ * per-stream instance that carries marker-run state carries the admitted-source
+ * set (`admitSource`) so the streaming egress collapses the one-part-per-annotation
  * repeats the AI-SDK OpenAI adapter emits for a url cited at several claims.
+ *
+ * AN OPENAI TURN'S SOURCES ARE THE PAGES ITS SEARCHES RETURNED (ask 842 — the founder: "for astra,
+ * source icons didn't show up in real time as searches happened"), exactly as Anthropic's are: its
+ * adapter mints a source part per search result the moment a search lands. OpenAI's adapter hands a
+ * search's pages over only inside the provider-executed tool's RESULT (`{ action, sources }` — it
+ * asks for `web_search_call.action.sources` whenever the web search tool rides the request) and
+ * mints source parts only for the answer's citations, which arrive with the final text. So the
+ * stream's sources are, in arrival order: each search's pages as it settles
+ * (`searchResultSources`), then the citations — one admission (`admitSource`) over both, keyed by
+ * the page (`sourceKey`: a cited url is the returned one plus OpenAI's own `utm_source=openai`).
+ * `sourcesOfRound` is the same rule over a round's buffered content, so the buffered read of a
+ * round's sources is the list the stream carried.
  */
 export class OpenAiCitationMarkers {
   /** Strip all marker runs and stray marker glyphs from a complete text. */
@@ -94,6 +106,62 @@ export class OpenAiCitationMarkers {
   }
 
   /**
+   * The pages a web search RETURNED, in the order it returned them — read from the output the
+   * AI-SDK OpenAI adapter hands over as the provider-executed web search tool's result
+   * (`{ action: { type: 'search', query }, sources: [{ type: 'url', url } | { type: 'api', name }] }`).
+   * An `api` source (a provider data feed) is no page and is skipped; so is every output that is
+   * not a search's (an `openPage` / `findInPage` action, another tool's result): [].
+   */
+  static searchResultSources(output: unknown): CitationSource[] {
+    if (!output || typeof output !== 'object') {
+      return [];
+    }
+    const rec = output as { action?: { type?: unknown }; sources?: unknown };
+    if (rec.action?.type !== 'search' || !Array.isArray(rec.sources)) {
+      return [];
+    }
+    const pages: CitationSource[] = [];
+    for (const source of rec.sources) {
+      const entry = source as { type?: unknown; url?: unknown } | null;
+      if (entry?.type === 'url' && typeof entry.url === 'string' && entry.url.length > 0) {
+        pages.push({ url: entry.url });
+      }
+    }
+    return pages;
+  }
+
+  /**
+   * A round's sources from its buffered content (the AI SDK's `content`: the round's parts in
+   * arrival order) — the stream's rule applied after the fact: each search result's pages
+   * (`searchResultSources`) and each url source part, through one admission (`admitSource`), so
+   * the list equals the source parts the streaming egress yielded for the same round.
+   */
+  static sourcesOfRound(content: readonly unknown[]): CitationSource[] {
+    const admission = new OpenAiCitationMarkers();
+    const sources: CitationSource[] = [];
+    const admit = (source: CitationSource) => {
+      const admitted = admission.admitSource(source);
+      if (admitted) {
+        sources.push(admitted);
+      }
+    };
+    for (const part of content) {
+      const rec = part as { type?: unknown; output?: unknown; sourceType?: unknown; url?: unknown; title?: unknown };
+      if (rec?.type === 'tool-result') {
+        OpenAiCitationMarkers.searchResultSources(rec.output).forEach(admit);
+      } else if (
+        rec?.type === 'source' &&
+        rec.sourceType === 'url' &&
+        typeof rec.url === 'string' &&
+        rec.url.length > 0
+      ) {
+        admit({ url: rec.url, ...(typeof rec.title === 'string' && rec.title.length > 0 ? { title: rec.title } : {}) });
+      }
+    }
+    return sources;
+  }
+
+  /**
    * Sanitize one streamed chunk, carrying marker-run state across calls: a
    * run split across chunk boundaries stays recognized, and its payload is
    * dropped as it arrives — an unterminated run never leaks its delimiters or
@@ -127,18 +195,45 @@ export class OpenAiCitationMarkers {
   }
 
   /**
-   * Per-stream source admission: true the first time a url is seen on this stream, false on
-   * repeats. The streaming counterpart of `dedupeSourcesByUrl` — the AI-SDK OpenAI adapter
-   * mints one `source` part per `url_citation` annotation, so a url cited at several claims
-   * arrives several times; the same stateful instance that carries marker-run state across
-   * chunk boundaries carries the seen-url set across parts.
+   * Per-stream source admission — the entry to emit for this source, or `undefined` when it says
+   * nothing new. A page (`sourceKey`) is admitted once: the first time it arrives, as it arrived. A
+   * later arrival of the same page is emitted once more only when it carries the title the first
+   * lacked (a search returns bare urls; the answer's citation of the same page names it), under the
+   * FIRST arrival's url string — so every consumer that keys a sources list by url holds one entry
+   * for the page and can take its title. Everything else repeats nothing: the AI-SDK OpenAI adapter
+   * mints one `source` part per `url_citation` annotation, so a page cited at several claims arrives
+   * several times. The same stateful instance that carries marker-run state across chunk
+   * boundaries carries the admitted pages across parts.
    */
-  admitSource(url: string): boolean {
-    if (this.seenSourceUrls.has(url)) {
-      return false;
+  admitSource(source: CitationSource): CitationSource | undefined {
+    const key = OpenAiCitationMarkers.sourceKey(source.url);
+    const admitted = this.admittedSources.get(key);
+    if (!admitted) {
+      this.admittedSources.set(key, { url: source.url, titled: !!source.title });
+      return { url: source.url, ...(source.title ? { title: source.title } : {}) };
     }
-    this.seenSourceUrls.add(url);
-    return true;
+    if (!admitted.titled && source.title) {
+      admitted.titled = true;
+      return { url: admitted.url, title: source.title };
+    }
+    return undefined;
+  }
+
+  /**
+   * The page a source url names: the url without the `utm_source=openai` parameter OpenAI appends
+   * to every url it cites (the search that returned the page returned it without one). A url that
+   * does not parse is its own key.
+   */
+  private static sourceKey(url: string): string {
+    try {
+      const parsed = new URL(url);
+      if (parsed.searchParams.get('utm_source') === 'openai') {
+        parsed.searchParams.delete('utm_source');
+      }
+      return parsed.toString();
+    } catch {
+      return url;
+    }
   }
 
   /** U+E200 — opens a marker run. */
@@ -152,7 +247,8 @@ export class OpenAiCitationMarkers {
   private static readonly MARKER_CHAR = /[\uE200-\uE2FF]/;
 
   private inMarkerRun = false;
-  private readonly seenSourceUrls = new Set<string>();
+  /** The pages admitted on this stream (`sourceKey` → the url first emitted, and whether it carried a title). */
+  private readonly admittedSources = new Map<string, { url: string; titled: boolean }>();
 }
 
 /**
