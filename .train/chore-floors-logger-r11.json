@@ -1,0 +1,6 @@
+{
+  "branch": "chore/floors-logger-r11",
+  "packages": ["conversation"],
+  "suites": [],
+  "removes": []
+}
