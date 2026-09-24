@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.7.7](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.6...@proteinjs/conversation@6.7.7) (2026-09-24)
+
+
+### Bug Fixes
+
+* an OpenAI web search's pages are the turn's sources the moment it settles ([98e8449](https://github.com/proteinjs/conversation/commit/98e8449646534267082ea10a124b55823f70ebe3))
+* the source key sets aside exactly the utm_source=openai pair; the buffered sources read covers every step of the round ([5db0ae9](https://github.com/proteinjs/conversation/commit/5db0ae9189691b817a93fa9312765b1631ea6f3f))
+
+
+
+
+
 ## [6.7.6](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.5...@proteinjs/conversation@6.7.6) (2026-09-23)
 
 
