@@ -131,10 +131,11 @@ export class OpenAiCitationMarkers {
   }
 
   /**
-   * A round's sources from its buffered content (the AI SDK's `content`: the round's parts in
-   * arrival order) — the stream's rule applied after the fact: each search result's pages
-   * (`searchResultSources`) and each url source part, through one admission (`admitSource`), so
-   * the list equals the source parts the streaming egress yielded for the same round.
+   * A round's sources from its buffered content (the AI SDK's step `content`s, every step of the
+   * round in order — a round is one model call and may run several steps when a house tool is
+   * called between a search and the answer) — the stream's rule applied after the fact: each
+   * search result's pages (`searchResultSources`) and each url source part, through one admission
+   * (`admitSource`), so the list equals the source parts the streaming egress yielded for the round.
    */
   static sourcesOfRound(content: readonly unknown[]): CitationSource[] {
     const admission = new OpenAiCitationMarkers();
@@ -221,20 +222,27 @@ export class OpenAiCitationMarkers {
 
   /**
    * The page a source url names: the url without the `utm_source=openai` parameter OpenAI appends
-   * to every url it cites (the search that returned the page returned it without one). A url that
-   * does not parse is its own key.
+   * to every url it cites (the search that returned the page returned it without one). Exactly that
+   * pair is set aside, textually — every other parameter rides as the page spelled it (its own
+   * `utm_source`, a `%20`, a bare `&b`), so the key of a cited page is the key of the page its search
+   * returned. A url that does not parse is its own key.
    */
   private static sourceKey(url: string): string {
     try {
       const parsed = new URL(url);
-      if (parsed.searchParams.get('utm_source') === 'openai') {
-        parsed.searchParams.delete('utm_source');
-      }
+      const query = parsed.search.startsWith('?') ? parsed.search.slice(1) : parsed.search;
+      parsed.search = query
+        .split('&')
+        .filter((pair) => pair.length > 0 && pair !== OpenAiCitationMarkers.CITATION_TAG)
+        .join('&');
       return parsed.toString();
     } catch {
       return url;
     }
   }
+
+  /** The query parameter OpenAI appends to every url its answers cite. */
+  private static readonly CITATION_TAG = 'utm_source=openai';
 
   /** U+E200 — opens a marker run. */
   private static readonly RUN_OPEN = 0xe200;

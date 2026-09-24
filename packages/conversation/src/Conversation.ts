@@ -1685,10 +1685,12 @@ export class Conversation {
       (provider === 'openai'
         ? // OpenAI's sources are its searches' pages and its answer's citations, admitted once
           // per page in arrival order — the buffered read runs the streaming egress's rule over the
-          // round's content (see mapFullStream's tool-result and source branches), so it is the
-          // list the stream carried.
-          Promise.resolve(liveResult?.content ?? []).then((content: readonly unknown[]): StreamSource[] =>
-            OpenAiCitationMarkers.sourcesOfRound(content ?? [])
+          // round's every step's content (see mapFullStream's tool-result and source branches; the
+          // SDK's `content` alone is the LAST step's, and a house tool called between a search and
+          // the answer makes a second step), so it is the list the stream carried for the round.
+          Promise.resolve(liveResult?.steps ?? []).then(
+            (steps: ReadonlyArray<{ content: readonly unknown[] }>): StreamSource[] =>
+              OpenAiCitationMarkers.sourcesOfRound((steps ?? []).flatMap((step) => step.content ?? []))
           )
         : Promise.resolve(liveResult?.sources ?? []).then((s: LanguageModelV3Source[]) =>
             (s ?? []).map((source) => ({
