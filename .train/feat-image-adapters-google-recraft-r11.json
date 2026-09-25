@@ -1,6 +1,8 @@
 {
-  "branch": "feat/image-adapters-google-recraft",
-  "packages": ["conversation"],
+  "branch": "feat/image-adapters-google-recraft-r11",
+  "packages": [
+    "conversation"
+  ],
   "suites": [
     "packages/conversation/test/image/GoogleImageAdapter.test.ts",
     "packages/conversation/test/image/RecraftImageAdapter.test.ts",
