@@ -9,6 +9,7 @@ import { ChatCompletionMessageParamFactory } from './ChatCompletionMessageParamF
 import { OpenAiCitationMarkers, type CitationSource } from './OpenAiCitationMarkers';
 import { LlmTransportRetry } from './LlmTransportRetry';
 import { ToolStrictness } from './ToolStrictness';
+import { OpenAiResponseRetention } from './OpenAiResponseRetention';
 import type { GenerateResponseReturn, ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
 import { TiktokenModel } from 'tiktoken';
 import type { OpenAiReasoningEffort } from './OpenAiModelRules';
@@ -122,6 +123,8 @@ export type ResponsesGenerateObjectParams<S> = {
 /**
  * OpenAI Responses API wrapper (tool-loop + usage tracking + ConversationSkills).
  * - Uses Responses API directly
+ * - Every request is stateless (`store: false` — OpenAiResponseRetention); the tool loop carries
+ *   its own transcript, the encrypted reasoning items included
  * - Supports custom function tools (tool calling loop)
  * - Supports structured outputs (JSON schema / Zod)
  * - Tracks usage + tool calls using existing types
@@ -296,16 +299,19 @@ export class OpenAiResponses {
     const { instructions, input } = this.buildInstructionsAndInput(args.messages);
 
     let toolCallsExecuted = 0;
-    let previousResponseId: string | undefined;
-    let nextInput: unknown = input;
+    // The transcript this loop carries itself. Every request is stateless (OpenAiResponseRetention),
+    // so there is no stored response to chain to: each step replays the whole exchange — the
+    // caller's messages, then every step's output items verbatim (the reasoning items with their
+    // `encrypted_content`, the function calls) followed by the function outputs, as the reasoning
+    // guide asks: "pass back all reasoning items, function call items, and function call output
+    // items, since the last `user` message".
+    let transcript: unknown[] = input;
 
     for (;;) {
       const response = await this.createResponseAndMaybeWait({
         model: args.model,
-        // Always pass instructions; they are not carried over with previous_response_id.
         instructions,
-        input: nextInput,
-        previousResponseId,
+        input: transcript,
         tools,
         temperature: args.temperature,
         topP: args.topP,
@@ -349,10 +355,6 @@ export class OpenAiResponses {
         throw new Error(`Max tool calls (${args.maxToolCalls}) reached. Stopping execution.`);
       }
 
-      if (!response.id) {
-        throw new Error(`Responses API did not return an id for a tool-calling response.`);
-      }
-
       const toolOutputs = await this.executeFunctionCalls({
         calls: functionCalls,
         functions: this.functions,
@@ -363,14 +365,23 @@ export class OpenAiResponses {
 
       toolCallsExecuted += functionCalls.length;
 
-      previousResponseId = response.id;
-      nextInput = toolOutputs;
+      transcript = [...transcript, ...this.outputItems(response), ...toolOutputs];
 
       this.logger.debug({
         message: `Tool loop continuing`,
-        obj: { toolCallsExecuted, lastToolCallCount: functionCalls.length, responseId: previousResponseId },
+        obj: { toolCallsExecuted, lastToolCallCount: functionCalls.length, responseId: response.id },
       });
     }
+  }
+
+  /**
+   * A response's output items as the next request replays them: verbatim, every item — the
+   * reference's input accepts each output item type, and the reasoning guide's replay keeps them
+   * whole ("preserve every output item"); a reasoning item's `encrypted_content` is what lets the
+   * model continue its reasoning without a stored response.
+   */
+  private outputItems(response: { output?: unknown[] }): unknown[] {
+    return Array.isArray(response.output) ? response.output : [];
   }
 
   private throwIfResponseUnusable(
@@ -490,7 +501,6 @@ export class OpenAiResponses {
       reasoningEffort?: OpenAiReasoningEffort;
       backgroundMode?: boolean;
       responseId?: string;
-      previousResponseId?: string;
       pollAttempt?: number;
       aborted?: boolean;
       waitedMs?: number;
@@ -564,7 +574,6 @@ export class OpenAiResponses {
       status: typeof status === 'number' ? status : undefined,
       request_id: requestId,
       response_id: meta.responseId,
-      previous_response_id: meta.previousResponseId,
       background: meta.backgroundMode ? true : undefined,
       poll_attempt: meta.pollAttempt,
       waited_ms: meta.waitedMs,
@@ -630,11 +639,17 @@ export class OpenAiResponses {
     }
   }
 
+  /**
+   * THE request builder: one Responses request, stateless (`store: false`, OpenAiResponseRetention)
+   * — in background mode as well, where OpenAI keeps the run only for the polling
+   * ("Background requests can use `store=false`, but response data is temporarily stored to
+   * support asynchronous execution and polling" — the background guide). `instructions` ride
+   * every request: a stateless request has no previous response to carry them from.
+   */
   private async createResponseAndMaybeWait(args: {
     model: string;
     instructions?: string;
     input: unknown;
-    previousResponseId?: string;
 
     tools: Array<{ type: 'function'; name: string; description?: string; parameters?: unknown; strict?: boolean }>;
     temperature?: number;
@@ -653,14 +668,11 @@ export class OpenAiResponses {
     const body: Record<string, unknown> = {
       model: args.model,
       input: args.input,
+      ...OpenAiResponseRetention.stateless(args.model),
     };
 
     if (args.instructions) {
       body.instructions = args.instructions;
-    }
-
-    if (args.previousResponseId) {
-      body.previous_response_id = args.previousResponseId;
     }
 
     if (args.tools.length > 0) {
@@ -689,7 +701,6 @@ export class OpenAiResponses {
 
     if (args.backgroundMode) {
       body.background = true;
-      body.store = true;
     }
 
     // Transient failures (429/5xx/network) retry invisibly under the transport-retry policy; the
@@ -707,7 +718,6 @@ export class OpenAiResponses {
             model: args.model,
             reasoningEffort: args.reasoningEffort,
             backgroundMode: args.backgroundMode,
-            previousResponseId: args.previousResponseId,
             aborted: args.abortSignal?.aborted ? true : undefined,
             requestedServiceTier: args.serviceTier,
           });

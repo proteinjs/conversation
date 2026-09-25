@@ -31,6 +31,8 @@ type OpenAIProviderOptions = {
   reasoningSummary?: 'auto' | 'concise' | 'detailed' | 'none';
   serviceTier?: string;
   forceReasoning?: boolean;
+  store?: boolean;
+  include?: string[];
 };
 
 type GoogleProviderOptions = {
@@ -144,6 +146,37 @@ describe('Conversation.buildProviderOptions (openai)', () => {
     expect(openai.reasoningEffort).toBeUndefined();
     expect(openai.reasoningSummary).toBe('auto');
   });
+
+  // Every OpenAI request is stateless: `store: false` (the create reference's `store` "Defaults
+  // to true when omitted"), and on a reasoning model the encrypted reasoning is asked for by name
+  // so a tool loop can replay it (the reasoning guide, "Preserve reasoning without stored
+  // responses"). A non-reasoning model has no reasoning items to keep, so it asks for nothing.
+  test.each([
+    ['gpt-5.5', 'auto'],
+    ['gpt-5.5', 'high'],
+    ['gpt-6-sol', 'max'],
+    ['gpt-5-chat-latest', 'auto'],
+    ['gpt-4o', undefined],
+  ] as Array<[string, ReasoningEffort | undefined]>)('says store: false for model=%s effort=%s', (model, effort) => {
+    const openai = buildOpenAI(effort, model);
+    expect(openai.store).toBe(false);
+  });
+
+  test.each([['gpt-5.5'], ['gpt-6-sol'], ['o3-mini']])(
+    'asks for the encrypted reasoning on the reasoning model %s',
+    (model) => {
+      const openai = buildOpenAI('auto', model);
+      expect(openai.include).toEqual(['reasoning.encrypted_content']);
+    }
+  );
+
+  test.each([['gpt-5-chat-latest'], ['gpt-4o']])(
+    'asks for no encrypted reasoning on the non-reasoning model %s',
+    (model) => {
+      const openai = buildOpenAI('auto', model);
+      expect(openai.include).toBeUndefined();
+    }
+  );
 });
 
 describe('Conversation.buildProviderOptions (google)', () => {

@@ -63,18 +63,24 @@ describe('Conversation.buildProviderOptions (openai) states the rules to the SDK
   const build = (effort: any, model: string) =>
     (conv as any).buildProviderOptions('openai', { reasoningEffort: effort }, model).openai;
 
+  // Every request is stateless (OpenAiResponseRetention): `store: false`, and on a reasoning
+  // model the encrypted reasoning asked for by name — the two fields ride beside the rules.
+  const stateless = { store: false, include: ['reasoning.encrypted_content'] };
+
   test('a GPT-6 model reasons — forceReasoning true, and max is max', () => {
     expect(build('max', 'gpt-6-sol')).toEqual({
       reasoningEffort: 'max',
       reasoningSummary: 'auto',
       forceReasoning: true,
+      ...stateless,
     });
     expect(build('low', 'gpt-6-luna')).toEqual({
       reasoningEffort: 'low',
       reasoningSummary: 'auto',
       forceReasoning: true,
+      ...stateless,
     });
-    expect(build('auto', 'gpt-6-astra')).toEqual({ reasoningSummary: 'auto', forceReasoning: true });
+    expect(build('auto', 'gpt-6-astra')).toEqual({ reasoningSummary: 'auto', forceReasoning: true, ...stateless });
   });
 
   test('a GPT-5 model reasons — max is its top level, xhigh', () => {
@@ -82,11 +88,12 @@ describe('Conversation.buildProviderOptions (openai) states the rules to the SDK
       reasoningEffort: 'xhigh',
       reasoningSummary: 'auto',
       forceReasoning: true,
+      ...stateless,
     });
   });
 
   test('a non-reasoning model is said so', () => {
-    expect(build(undefined, 'gpt-4o')).toEqual({ reasoningSummary: 'auto', forceReasoning: false });
+    expect(build(undefined, 'gpt-4o')).toEqual({ reasoningSummary: 'auto', forceReasoning: false, store: false });
   });
 });
 
@@ -127,6 +134,8 @@ describe('the rules reach the request', () => {
       reasoningEffort: 'low',
       reasoningSummary: 'auto',
       forceReasoning: true,
+      store: false,
+      include: ['reasoning.encrypted_content'],
     });
   });
 });

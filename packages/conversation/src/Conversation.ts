@@ -23,6 +23,7 @@ import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTranspor
 import { ForcedToolChoice } from './ForcedToolChoice';
 import { RequestedEffort } from './RequestedEffort';
 import { OpenAiModelRules, type OpenAiReasoningEffort } from './OpenAiModelRules';
+import { OpenAiResponseRetention } from './OpenAiResponseRetention';
 import { ToolStrictness } from './ToolStrictness';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
 import { CutBoundary, type CutBoundaryKind } from './CutBoundary';
@@ -3170,6 +3171,11 @@ export class Conversation {
       if (params.serviceTier) {
         openaiOpts.serviceTier = params.serviceTier;
       }
+      // Every request is stateless — `store: false`, the encrypted reasoning asked for on a
+      // reasoning model (OpenAiResponseRetention, the one owner of the rule). The SDK then replays
+      // each step's reasoning items, `encrypted_content` aboard, in the next step's input instead
+      // of referring to a stored response by id.
+      Object.assign(openaiOpts, OpenAiResponseRetention.stateless(modelString ?? ''));
       options.openai = openaiOpts;
     }
 

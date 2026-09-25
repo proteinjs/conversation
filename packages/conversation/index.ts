@@ -27,6 +27,7 @@ export * from './src/LlmTransportRetry';
 export * from './src/ForcedToolChoice';
 export * from './src/RequestedEffort';
 export * from './src/OpenAiModelRules';
+export * from './src/OpenAiResponseRetention';
 export * from './src/TransientProviderError';
 export * from './src/ProviderBillingError';
 export * from './src/ProviderFailureLine';
