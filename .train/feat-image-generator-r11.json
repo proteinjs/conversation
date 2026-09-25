@@ -1,6 +1,8 @@
 {
-  "branch": "feat/image-generator",
-  "packages": ["conversation"],
+  "branch": "feat/image-generator-r11",
+  "packages": [
+    "conversation"
+  ],
   "suites": [
     "packages/conversation/test/image/OpenAiImageAdapter.test.ts",
     "packages/conversation/test/image/ImageCostCalculator.test.ts",
