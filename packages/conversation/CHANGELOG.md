@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.8.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.8...@proteinjs/conversation@6.8.0) (2026-09-25)
+
+
+### Bug Fixes
+
+* **conversation:** an ask for pictures always resolves with what it cost — a stop is an outcome ([3d305d5](https://github.com/proteinjs/conversation/commit/3d305d533beb7daf61758312c74cbbddc7be5039))
+
+
+### Features
+
+* **conversation:** pictures — ImageGenerator, the OpenAI Images adapter over an injectable transport, and picture pricing arms on ModelApiCost ([f0de323](https://github.com/proteinjs/conversation/commit/f0de323da0b100f5759964bcf2b14d8169897c18))
+* **conversation:** pictures from Google and Recraft — the Interactions adapter (one call per picture, JPEG by measurement, a follow-up by the earlier ask's handle) and the vector vendor's adapter (vector generation, vectorize, remove-background, flat per picture); an ask names its operation ([72d9d93](https://github.com/proteinjs/conversation/commit/72d9d93203db56170c624c7a7505d085f720223d))
+
+
+
+
+
 ## [6.7.8](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.7...@proteinjs/conversation@6.7.8) (2026-09-24)
 
 
