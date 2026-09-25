@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.8.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.8.0...@proteinjs/conversation@6.8.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* **conversation:** every OpenAI Responses request is stateless — store: false; the tool loop carries its own transcript ([453ceba](https://github.com/proteinjs/conversation/commit/453cebae6623d2bc5aaf9150384616d7c7199536))
+
+
+
+
+
 # [6.8.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.7.8...@proteinjs/conversation@6.8.0) (2026-09-25)
 
 
