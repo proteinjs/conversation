@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.9.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.8.1...@proteinjs/conversation@6.9.0) (2026-09-29)
+
+
+### Features
+
+* **conversation:** the consumer's veto of the provider's web search — webSearch: 'off' on the conversation ([eef41fe](https://github.com/proteinjs/conversation/commit/eef41fee1132f769526193990dfcd9a75bd52241))
+
+
+
+
+
 ## [6.8.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.8.0...@proteinjs/conversation@6.8.1) (2026-09-25)
 
 
