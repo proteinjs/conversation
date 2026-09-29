@@ -87,6 +87,17 @@ export type ConversationParams = {
    * Off when unset.
    */
   toolResultTokenBudget?: number;
+  /**
+   * The consumer's VETO of the provider's own web search for this conversation: `'off'` attaches
+   * no provider web-search tool on any request it makes — Anthropic, OpenAI, xAI and Google alike —
+   * and names none in `toolChoice`, whatever a request's `webSearch` asks (the veto answers the
+   * ask, never the other way round). Omitted, the library's default stands: the tool-use providers
+   * (Anthropic / OpenAI / xAI) carry the search on every request so the model decides when to
+   * search; Google only on a request's ask. The roster a consumer mounts is its own to shape —
+   * this is the one tool the library attaches by itself, so this is where a consumer whose turn
+   * must not reach the web says no.
+   */
+  webSearch?: 'off';
 };
 
 /** Message format accepted by Conversation methods. */
@@ -620,7 +631,13 @@ export class Conversation {
 
     this.logger.info({
       message: `generateStream`,
-      obj: { model: modelString, provider, reasoningEffort: params.reasoningEffort, webSearch: params.webSearch },
+      obj: {
+        model: modelString,
+        provider,
+        reasoningEffort: params.reasoningEffort,
+        webSearch: params.webSearch,
+        ...(this.params.webSearch === 'off' ? { webSearchVeto: 'off' } : {}),
+      },
     });
 
     // Build messages for the AI SDK
@@ -657,7 +674,9 @@ export class Conversation {
     // Include web search tools. For providers with true tool-use search
     // (Anthropic, OpenAI), always include so the model can autonomously
     // decide when to search.  For grounding-based providers (Google), only
-    // include when the user explicitly requests search via the toggle.
+    // include when the user explicitly requests search via the toggle. A
+    // conversation built with `webSearch: 'off'` (the consumer's veto) attaches
+    // none, for every provider.
     const webSearchTools = this.getWebSearchTools(provider, modelString, params.webSearch);
 
     // Provider-defined tools contributed by skills (e.g. Anthropic's native
@@ -3266,8 +3285,15 @@ export class Conversation {
    * Each provider SDK exposes a web search tool factory that creates a
    * provider-executed tool (the model calls it server-side; we just pass
    * the tool definition into `streamText`).
+   *
+   * THE CONSUMER'S VETO comes first: a conversation built with `webSearch: 'off'`
+   * attaches nothing for any provider — and `getWebSearchToolChoice`, which reads
+   * this set, then names nothing.
    */
   private getWebSearchTools(provider: string, modelString: string, webSearchRequested?: boolean): ToolSet {
+    if (this.params.webSearch === 'off') {
+      return {};
+    }
     try {
       // Models that don't support programmatic tool calling can't use web search tools.
       // Haiku and nano-class models are excluded.
@@ -3276,7 +3302,7 @@ export class Conversation {
       }
 
       switch (provider) {
-        // Tool-use search: always included so the model can decide when to search
+        // Tool-use search: always included (short of the veto above) so the model can decide when to search
         case 'openai': {
           const { openai } = require('@ai-sdk/openai');
           return { web_search: openai.tools.webSearch() };
@@ -3375,8 +3401,9 @@ export class Conversation {
    * - Google: search is grounding-based — attaching `googleSearch` already
    *   forces it on every response (no model choice involved). So
    *   toolChoice is irrelevant; we omit it.
-   * - Toggle off, or tool unavailable (e.g. Haiku/nano excluded models):
-   *   return `undefined` so the SDK falls back to its default (auto).
+   * - Toggle off, or tool unavailable (e.g. Haiku/nano excluded models, or the
+   *   conversation's veto — `webSearch: 'off'` attached nothing): return
+   *   `undefined` so the SDK falls back to its default (auto).
    * - A model whose provider REFUSES forcing (Claude Fable 5.1, Claude Opus 5.5: the API 400s
    *   `tool_choice: type "tool" and "any" are not supported for this model`) is not this
    *   helper's to know — the forcing is asked for here like any other model's, and
