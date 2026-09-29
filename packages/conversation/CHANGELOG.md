@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.11.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.10.0...@proteinjs/conversation@6.11.0) (2026-09-29)
+
+
+### Features
+
+* **conversation:** forward each step's SDK warnings as a step-start stream part; a refused reasoning effort is re-issued with the effort omitted (the provider's default) instead of a substituted level, said as a compatibility warning and remembered; utteranceEffort on the stream params; xAI efforts pass through as asked (@ai-sdk/xai ^3.0.138 carries none…xhigh); an SDK provider-option refusal is heard like the provider's ([d594e37](https://github.com/proteinjs/conversation/commit/d594e377f733ffb1d6b777cd7f6cf5821ee75adc))
+
+
+
+
+
 # [6.10.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.9.0...@proteinjs/conversation@6.10.0) (2026-09-29)
 
 
