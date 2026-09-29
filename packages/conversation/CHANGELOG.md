@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.10.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.9.0...@proteinjs/conversation@6.10.0) (2026-09-29)
+
+
+### Features
+
+* **conversation:** a structured answer that was not the object is a typed error, named by finish reason ([6394bd4](https://github.com/proteinjs/conversation/commit/6394bd4fbc52ede9b3c7d47bf5c041be4c44d094))
+
+
+
+
+
 # [6.9.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.8.1...@proteinjs/conversation@6.9.0) (2026-09-29)
 
 
