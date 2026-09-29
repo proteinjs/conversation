@@ -30,6 +30,7 @@ export * from './src/OpenAiModelRules';
 export * from './src/OpenAiResponseRetention';
 export * from './src/TransientProviderError';
 export * from './src/ProviderBillingError';
+export * from './src/ObjectGenerationError';
 export * from './src/ProviderFailureLine';
 export * from './src/ProviderLogPayloads';
 

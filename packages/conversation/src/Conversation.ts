@@ -7,9 +7,11 @@ import {
   jsonSchema,
   stepCountIs,
   hasToolCall,
+  NoObjectGeneratedError,
   type StopCondition,
 } from 'ai';
 import { SdkContentParts } from './sdkContentParts';
+import { ObjectGenerationError } from './ObjectGenerationError';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
 import { ConversationSkill } from './ConversationSkill';
@@ -1844,8 +1846,9 @@ export class Conversation {
     // assertInputWithinModelCap).
     this.assertInputWithinModelCap(messages, modelString);
 
-    // What the client library raises ABOVE the transport leaves through here (an answer that did
-    // not parse keeps the model's text and the response's headers): marked for log lines.
+    // What the client library raises ABOVE the transport leaves through here: an answer that was
+    // not the object becomes the library's typed error, by finish reason (typeObjectFailure —
+    // nothing re-issued, nothing repaired through the model); every error is marked for log lines.
     const result = await aiGenerateObject({
       model,
       messages,
@@ -1870,7 +1873,10 @@ export class Conversation {
         }
       }) as RepairTextFunction,
     }).catch((error: unknown) => {
-      throw ProviderFailureLine.mark(error, { modelId: modelString, provider });
+      throw ProviderFailureLine.mark(this.typeObjectFailure(error, { params, modelString, provider }), {
+        modelId: modelString,
+        provider,
+      });
     });
 
     // Record in history
@@ -3829,6 +3835,33 @@ export class Conversation {
     } catch {
       return String(error);
     }
+  }
+
+  /**
+   * What the client library raises when the answer was not the object (`NoObjectGeneratedError`
+   * — the answer's text, its finish reason and the usage ride it) becomes the library's own typed
+   * error, by finish reason (ObjectGenerationError.fromSdk): cut off at an output cap
+   * (ObjectTruncatedError — WHOSE cap, the caller's `maxTokens` or the model's own ceiling, and
+   * whether the model ran away to its ceiling with no reasoning), declined (ObjectRefusedError), or
+   * finished and still not parseable (ObjectParseError). Nothing is re-issued and nothing is
+   * repaired through the model here: every kind is deterministic on the same request (a generation
+   * that ran to the cap once is the same spend the second time), and the transport owns the
+   * retries that heal. Every other failure passes through as it is.
+   */
+  private typeObjectFailure<T>(
+    error: unknown,
+    call: { params: GenerateObjectParams<T>; modelString: string; provider: string }
+  ): unknown {
+    if (!NoObjectGeneratedError.isInstance(error)) {
+      return error;
+    }
+    return ObjectGenerationError.fromSdk(error, {
+      modelId: call.modelString,
+      provider: call.provider,
+      requestedMaxTokens: call.params.maxTokens,
+      modelMaxTokens: Conversation.defaultMaxOutputTokens(call.provider, call.modelString),
+      schema: call.params.schema,
+    });
   }
 
   /** `AbortSignal.any` exists at runtime (node ≥ 20.3) but not in this TS lib target. */

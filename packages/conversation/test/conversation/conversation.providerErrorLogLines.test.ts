@@ -583,7 +583,7 @@ describe('a provider error on a log line never carries the request, the response
         modelId: 'claude-test',
         doGenerate: async () => ({
           content: [{ type: 'text' as const, text: `not json at all ${RESPONSE_MARKER}` }],
-          finishReason: 'stop' as never,
+          finishReason: { unified: 'stop', raw: 'end_turn' } as never,
           usage: {
             inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
             outputTokens: { total: 1, text: 1, reasoning: 0 },
@@ -600,15 +600,19 @@ describe('a provider error on a log line never carries the request, the response
 
       const error = await generateObjectAgainst(model);
 
-      expect((error as Error).name).toBe('AI_NoObjectGeneratedError');
+      // The library's typed error (the client library's rides it as the cause, text and all).
+      expect((error as Error).name).toBe('ObjectParseError');
+      expect((error as { cause?: { name?: string } }).cause?.name).toBe('AI_NoObjectGeneratedError');
       expect(inspect(error, { depth: 10 })).toContain(RESPONSE_MARKER);
       const lines = new CapturedLines();
       expectNoMarker(lines.logWhole(error));
       expect(lines.structured()[0].error).toMatchObject({
-        name: 'AI_NoObjectGeneratedError',
+        name: 'ObjectParseError',
         modelId: 'claude-test',
+        provider: 'anthropic',
+        finishReason: 'stop',
         message:
-          'The model call failed (AI_NoObjectGeneratedError) on claude-test: the answer did not parse into the requested shape',
+          'The structured answer did not parse into the requested shape (finish reason "stop") for the schema with "answer" on claude-test.',
       });
     },
     TIMEOUT

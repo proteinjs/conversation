@@ -4,6 +4,7 @@ import { ErrorLine, LogLineErrors } from '@proteinjs/logger';
 import { ProviderLogPayloads } from './ProviderLogPayloads';
 import { ProviderBillingError, providerErrorCodes } from './ProviderBillingError';
 import { TransientProviderError } from './TransientProviderError';
+import { ObjectGenerationError, ObjectTruncatedError } from './ObjectGenerationError';
 
 /** What the marker knows about the call that failed; each part is optional. */
 export type ProviderFailureCall = {
@@ -125,16 +126,24 @@ export class ProviderFailureLine {
       AISDKError.isInstance(error) ||
       error instanceof OpenAiSdkError ||
       TransientProviderError.isInstance(error) ||
-      ProviderBillingError.isInstance(error)
+      ProviderBillingError.isInstance(error) ||
+      ObjectGenerationError.isInstance(error)
     );
   }
 
-  /** The transport's error under one of the library's typed errors. */
+  /** The transport's (or the client library's) error under one of the library's typed errors. */
   private static wrappedBy(error: unknown): unknown {
-    return TransientProviderError.isInstance(error) || ProviderBillingError.isInstance(error) ? error.cause : undefined;
+    return TransientProviderError.isInstance(error) ||
+      ProviderBillingError.isInstance(error) ||
+      ObjectGenerationError.isInstance(error)
+      ? error.cause
+      : undefined;
   }
 
   private static lineOf(error: unknown, call: ProviderFailureCall): ErrorLine {
+    if (ObjectGenerationError.isInstance(error)) {
+      return ProviderFailureLine.objectLineOf(error, call);
+    }
     const source = call.wordedFrom ?? ProviderFailureLine.wrappedBy(error) ?? error;
     const statusCode = ProviderFailureLine.statusOf(error) ?? ProviderFailureLine.statusOf(source);
     const codes = ProviderFailureLine.codesOf(source);
@@ -153,6 +162,36 @@ export class ProviderFailureLine {
         ...(modelId ? { modelId } : {}),
         ...(codes.length > 0 ? { providerErrorCodes: codes } : {}),
         ...ProviderFailureLine.retryableOf(source),
+      },
+    };
+  }
+
+  /**
+   * A typed object error's line is its own sentence (the library's words — the finish reason, the
+   * cap and whose, the runaway flag, the schema, the model) and the facts a caller classifies on;
+   * the answer's text stays on the error and off the line.
+   */
+  private static objectLineOf(error: ObjectGenerationError, call: ProviderFailureCall): ErrorLine {
+    const provider = ProviderFailureLine.familyOf(call.provider);
+    const modelId = call.modelId ?? error.modelId;
+    const truncation = ObjectTruncatedError.isInstance(error)
+      ? { ...(error.cap !== undefined ? { cap: error.cap } : {}), capOwner: error.capOwner, runaway: error.runaway }
+      : {};
+    return {
+      code: error.name,
+      sentence: error.message,
+      facts: {
+        ...(provider ? { provider } : {}),
+        ...(modelId ? { modelId } : {}),
+        finishReason: error.finishReason,
+        ...(error.rawStopReason ? { rawStopReason: error.rawStopReason } : {}),
+        ...(error.schemaTitle ? { schemaTitle: error.schemaTitle } : {}),
+        ...(error.schemaProperties ? { schemaProperties: error.schemaProperties } : {}),
+        ...(error.inputTokens !== undefined ? { inputTokens: error.inputTokens } : {}),
+        ...(error.outputTokens !== undefined ? { outputTokens: error.outputTokens } : {}),
+        ...(error.reasoningTokens !== undefined ? { reasoningTokens: error.reasoningTokens } : {}),
+        textLength: error.textLength,
+        ...truncation,
       },
     };
   }
