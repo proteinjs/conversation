@@ -14,9 +14,10 @@ import { fixtureModelData } from './fixtureModelData';
  * Hits the real xAI API (requires XAI_API_KEY env var).
  *
  * Notes on xAI specifics:
- * - Grok 4 / 4.20 / 4.3 do *not* accept the `reasoningEffort` parameter
- *   (the model decides effort internally). The `/fast/i` gate in
- *   buildProviderOptions reflects this.
+ * - `reasoning_effort` is model-dependent (the models API states each model's set: grok-4.5 /
+ *   4.6 / 4.7 low…xhigh, grok-4.3 none…xhigh; one live call per level on grok-4.5 accepted,
+ *   2026-09-29), so buildProviderOptions sends the effort as asked for every xAI model; a value
+ *   the model in hand refuses is RequestedEffort's to hear (re-issued with the effort omitted).
  * - Live Search via `xai.tools.webSearch()` is grounding-style — when
  *   attached, the model consults web/news sources rather than emitting
  *   a tool call. Sources surface via result.sources.

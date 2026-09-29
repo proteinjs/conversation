@@ -18,13 +18,20 @@ import { fixtureModelData } from './fixtureModelData';
  * `reasoning.effort: none`, and the model answered HTTP 400 with the clause below. Before this
  * rule EVERY GPT-6 Astra turn ran without its acknowledgment line and paid a refused request
  * each time, and no per-level probe could see it (a probe runs only the levels a model claims).
+ *
+ * Since 2026-09-29 the re-issue OMITS the effort (the provider's own default applies) instead of
+ * picking the nearest listed level — the ruling: "leave the current functionality of omitting
+ * effort so the api can default" — and the omission is a `step-start` warning on the stream.
  */
 
 const TIMEOUT = 30_000;
 
-/** The provider's verdict, in its own words — the ladder it accepts is IN the clause. */
+/** The provider's verdict, in its own words. */
 const ASTRA_CLAUSE =
   "Unsupported value: 'none' is not supported with the 'gpt-6-astra' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'.";
+
+/** xAI's verdict for grok-4.5, recorded live 2026-09-29 (`reasoning.effort: none` on the Responses API). */
+const GROK_CLAUSE = 'This model does not support `reasoning_effort` value `none`.';
 
 /** OpenAI's 400 for an unsupported parameter value, as the SDK surfaces it (the parsed body on `data`). */
 const openAiRefusal = (message: string, param = 'reasoning.effort') => {
@@ -93,8 +100,7 @@ const effortOf = (call: Call): unknown => call.providerOptions?.openai?.reasonin
 
 /**
  * A model shaped like the provider's adapter: refuses the efforts in `refuses` with the provider's
- * own clause (listing the efforts it accepts), answers the utterance with one line, the step with
- * a reasoned answer.
+ * own clause, answers the utterance with one line, the step with a reasoned answer.
  */
 const scriptedModel = (opts: {
   provider: string;
@@ -143,7 +149,7 @@ const newConversation = (name: string) =>
     limits: { enforceLimits: false },
   });
 
-type Part = { type: string; textDelta?: string; utterance?: true };
+type Part = { type: string; textDelta?: string; utterance?: true; warnings?: Array<Record<string, unknown>> };
 
 async function collect(fullStream: AsyncIterable<unknown>): Promise<Part[]> {
   const parts: Part[] = [];
@@ -166,8 +172,17 @@ const utteredLine = (parts: Part[]): string | undefined => {
     .join('');
 };
 
+/** Every warning the stream's `step-start` parts carried, in order. */
+const streamWarnings = (parts: Part[]): Array<Record<string, unknown>> =>
+  parts.filter((part) => part.type === 'step-start').flatMap((part) => part.warnings ?? []);
+
 /** A turn with the bounded utterance leading it, through the real wiring; the SDK's warning log captured. */
-const turn = async (name: string, model: MockLanguageModelV3, reasoningEffort: 'high' | 'auto' = 'high') => {
+const turn = async (
+  name: string,
+  model: MockLanguageModelV3,
+  reasoningEffort: 'high' | 'auto' = 'high',
+  extra: Partial<GenerateStreamParams> = {}
+) => {
   const logged: Array<{ warnings: unknown[]; model?: string }> = [];
   const g = globalThis as { AI_SDK_LOG_WARNINGS?: unknown };
   const prior = g.AI_SDK_LOG_WARNINGS;
@@ -178,6 +193,7 @@ const turn = async (name: string, model: MockLanguageModelV3, reasoningEffort: '
       model: model as never,
       reasoningEffort,
       ...utteranceParams(),
+      ...extra,
     });
     const parts = await collect(result.fullStream);
     return { parts, text: await result.text, warnings: logged.flatMap((entry) => entry.warnings) };
@@ -208,9 +224,9 @@ const dump = (name: string, json: string): void => {
 
 beforeEach(() => RequestedEffort.forgetAll());
 
-describe('the requested effort follows the model (the bounded utterance asks for none; a model without none gets its floor)', () => {
+describe('the requested effort follows the model (the bounded utterance asks for none; a model without none runs with the effort omitted)', () => {
   test(
-    'the provider refuses `none` — the utterance is re-issued at the nearest level the clause lists, and the acknowledgment line arrives',
+    'the provider refuses `none` — the utterance is re-issued with the effort OMITTED (the provider’s default), the acknowledgment line arrives, and the omission rides the stream as a step-start warning',
     async () => {
       const model = astra();
       const { parts, text, warnings } = await turn('effort-refused-once', model);
@@ -218,23 +234,30 @@ describe('the requested effort follows the model (the bounded utterance asks for
       // The line arrived: its own step, flagged, before the answer.
       expect(utteredLine(parts)).toBe(LINE);
       expect(text).toContain('THE ANSWER');
-      // Three requests: the utterance at none (refused, nothing billed), the utterance at the
-      // floor the clause lists (`low` — the nearest to none), the step at its own effort.
-      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', 'low', 'high']);
+      // Three requests: the utterance at none (refused, nothing billed), the utterance with NO
+      // effort field (the provider applies its own default — never a level of this library's
+      // choosing), the step at its own effort.
+      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', undefined, 'high']);
       expect(Utterance.isRequest(model.doStreamCalls[1].prompt as never)).toBe(true);
-      // The substitution is surfaced ONCE, as a warning on the stream (the SDK's warning
-      // channel), never as an error to the person.
+      expect(model.doStreamCalls[1].providerOptions?.openai).not.toHaveProperty('reasoningEffort');
+      // The omission is surfaced ONCE, as a warning on the stream (the SDK's warning channel),
+      // never as an error to the person — and the conversation forwards it on its own stream.
       expect(warnings).toHaveLength(1);
       expect(JSON.stringify(warnings[0])).toMatch(/none/);
-      expect(JSON.stringify(warnings[0])).toMatch(/low/);
+      expect(JSON.stringify(warnings[0])).toMatch(/omitted/);
       expect(JSON.stringify(warnings[0])).toMatch(/gpt-6-astra/);
-      expect(RequestedEffort.substituteFor('gpt-6-astra', 'none')).toBe('low');
+      expect(RequestedEffort.omits('gpt-6-astra', 'none')).toBe(true);
+      const forwarded = streamWarnings(parts);
+      expect(forwarded).toHaveLength(1);
+      expect(forwarded[0]).toMatchObject({ type: 'compatibility', feature: 'reasoningEffort' });
+      expect(String(forwarded[0].details)).toMatch(/gpt-6-astra does not accept reasoning effort 'none'/);
+      expect(String(forwarded[0].details)).toMatch(/omitted/);
     },
     TIMEOUT
   );
 
   test(
-    'the substitution is remembered for the process — a second turn on the same model never pays the refused request, and warns no more',
+    'the omission is remembered for the process — a second turn on the same model never pays the refused request, and warns no more',
     async () => {
       await turn('effort-remembered-first', astra());
 
@@ -242,8 +265,9 @@ describe('the requested effort follows the model (the bounded utterance asks for
       const { parts, warnings } = await turn('effort-remembered-second', second);
 
       expect(utteredLine(parts)).toBe(LINE);
-      expect(second.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['low', 'high']);
+      expect(second.doStreamCalls.map((call) => effortOf(call as never))).toEqual([undefined, 'high']);
       expect(warnings).toHaveLength(0);
+      expect(streamWarnings(parts)).toHaveLength(0);
     },
     TIMEOUT
   );
@@ -258,6 +282,20 @@ describe('the requested effort follows the model (the bounded utterance asks for
       expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', 'high']);
       expect(warnings).toHaveLength(0);
       dump('openai-accepts-none', requestsJson(model));
+    },
+    TIMEOUT
+  );
+
+  test(
+    'a caller that knows the model’s levels passes `utteranceEffort` — the utterance asks at that level, nothing is refused, nothing is remembered',
+    async () => {
+      const model = astra();
+      const { parts, warnings } = await turn('effort-utterance-level', model, 'high', { utteranceEffort: 'low' });
+
+      expect(utteredLine(parts)).toBe(LINE);
+      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['low', 'high']);
+      expect(warnings).toHaveLength(0);
+      expect(RequestedEffort.omits('gpt-6-astra', 'none')).toBe(false);
     },
     TIMEOUT
   );
@@ -301,36 +339,38 @@ describe('the requested effort follows the model (the bounded utterance asks for
       expect(text).toContain('THE ANSWER');
       expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', 'high']);
       expect(warnings).toHaveLength(0);
-      expect(RequestedEffort.substituteFor('gpt-6-astra', 'none')).toBeUndefined();
+      expect(RequestedEffort.omits('gpt-6-astra', 'none')).toBe(false);
     },
     TIMEOUT
   );
 
   test(
-    'the re-issue is ONCE — a model that refuses the substitute too surfaces that refusal, nothing remembered',
+    'the re-issue is ONCE — a model that refuses the effort-less request too surfaces that refusal, nothing remembered',
     async () => {
       const model = scriptedModel({
         provider: 'openai.responses',
         modelId: 'gpt-6-nova',
-        refuses: (effort) =>
-          effort === 'none' || effort === 'low'
+        refuses: (effort, call) =>
+          effort === 'none'
             ? openAiRefusal(
-                `Unsupported value: '${effort}' is not supported with the 'gpt-6-nova' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'.`
+                "Unsupported value: 'none' is not supported with the 'gpt-6-nova' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
               )
-            : undefined,
+            : effort === undefined && Utterance.isRequest(call.prompt as never)
+              ? otherBadRequest()
+              : undefined,
       });
       const { parts, text } = await turn('effort-refused-twice', model);
 
       expect(utteredLine(parts)).toBeUndefined();
       expect(text).toContain('THE ANSWER');
-      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', 'low', 'high']);
-      expect(RequestedEffort.substituteFor('gpt-6-nova', 'none')).toBeUndefined();
+      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', undefined, 'high']);
+      expect(RequestedEffort.omits('gpt-6-nova', 'none')).toBe(false);
     },
     TIMEOUT
   );
 
   test(
-    'the generate path hears the same verdict — a refused top-level effort is re-issued at the nearest listed level, the warning on the result',
+    'the generate path hears the same verdict — a refused top-level effort is re-issued with the effort omitted, the warning on the result',
     async () => {
       // A model without `xhigh` (Anthropic: "Not every model that supports max supports xhigh"),
       // refusing in the provider's shape — the field path leads the message, no `param` field.
@@ -375,37 +415,84 @@ describe('the requested effort follows the model (the bounded utterance asks for
       });
 
       expect(result.object.answer).toBe(4);
-      // xhigh sits between high and max: a tie, and the tie goes to the lower level.
-      expect(model.doGenerateCalls.map((call) => call.providerOptions?.anthropic?.effort)).toEqual(['xhigh', 'high']);
-      expect(RequestedEffort.substituteFor('claude-sonnet-5-5', 'xhigh')).toBe('high');
+      // The second request carries no effort at all — the provider's own default (high) applies.
+      expect(model.doGenerateCalls.map((call) => call.providerOptions?.anthropic?.effort)).toEqual([
+        'xhigh',
+        undefined,
+      ]);
+      expect(model.doGenerateCalls[1].providerOptions?.anthropic).not.toHaveProperty('effort');
+      expect(RequestedEffort.omits('claude-sonnet-5-5', 'xhigh')).toBe(true);
     },
     TIMEOUT
   );
 });
 
-describe('RequestedEffort — the verdict and the ladder', () => {
-  test('the nearest level: none → low on the listed ladder; the floor when nothing is listed; a tie goes lower; never the refused value', () => {
-    expect(RequestedEffort.nearest('none', ['low', 'medium', 'high', 'xhigh', 'max'])).toBe('low');
-    expect(RequestedEffort.nearest('max', ['low', 'medium', 'high', 'xhigh'])).toBe('xhigh');
-    expect(RequestedEffort.nearest('xhigh', ['low', 'medium', 'high', 'max'])).toBe('high');
-    expect(RequestedEffort.nearest('medium', ['low', 'high'])).toBe('low');
-    expect(RequestedEffort.nearest('none', [RequestedEffort.FLOOR])).toBe('low');
-    expect(RequestedEffort.nearest('low', ['low'])).toBeUndefined();
-    expect(RequestedEffort.nearest('none', [])).toBeUndefined();
-  });
+describe('a level the installed SDK cannot carry is a refusal too (the transport’s, before any request)', () => {
+  /**
+   * The SDK's own refusal, as `parseProviderOptions` raises it (an AI_InvalidArgumentError whose
+   * message names only the provider; the effort is named in its AI_TypeValidationError cause).
+   */
+  const sdkRefusal = (provider: string, value: Record<string, unknown>) => {
+    const cause = Object.assign(
+      new Error(
+        `Type validation failed: Value: ${JSON.stringify(value)}.\nError message: Invalid option: expected one of "none"|"low"|"medium"|"high"`
+      ),
+      { name: 'AI_TypeValidationError', value }
+    );
+    return Object.assign(new Error(`invalid ${provider} provider options`), {
+      name: 'AI_InvalidArgumentError',
+      argument: 'providerOptions',
+      cause,
+    });
+  };
 
-  test('the ladder is read from the clause in each provider’s grammar', () => {
-    expect(RequestedEffort.listedLadder(ASTRA_CLAUSE)).toEqual(['low', 'medium', 'high', 'xhigh', 'max']);
-    expect(
-      RequestedEffort.listedLadder(
-        "The value 'medium' is not supported for 'thinking_level'. Supported values: 'low', 'high'."
-      )
-    ).toEqual(['low', 'high']);
-    expect(RequestedEffort.listedLadder('The server had an error.')).toEqual([]);
-  });
+  test(
+    "xAI's provider options refuse 'xhigh' (recorded live 2026-09-29, @ai-sdk/xai 3.0.92 on grok-4.5): the step is re-issued with the effort OMITTED, the omission rides the stream as the same step-start warning, and it is remembered",
+    async () => {
+      const model = new MockLanguageModelV3({
+        provider: 'xai',
+        modelId: 'grok-4.5',
+        doStream: async (call) => {
+          const effort = (call as Call).providerOptions?.xai?.reasoningEffort;
+          if (effort === 'xhigh') {
+            throw sdkRefusal('xai', { reasoningEffort: 'xhigh' });
+          }
+          return { stream: reasonedStep('planning', 'THE ANSWER') };
+        },
+      });
+      const result = await newConversation('sdk-refusal-xhigh').generateStream({
+        messages: ['A train leaves at 9:40…'],
+        model: model as never,
+        reasoningEffort: 'xhigh',
+      });
+      const parts = await collect(result.fullStream);
+      expect(await result.text).toContain('THE ANSWER');
+      const sent = model.doStreamCalls.map((call) => (call as Call).providerOptions?.xai?.reasoningEffort);
+      expect(sent).toEqual(['xhigh', undefined]);
+      expect(model.doStreamCalls[1].providerOptions?.xai).not.toHaveProperty('reasoningEffort');
+      const forwarded = streamWarnings(parts);
+      expect(forwarded).toHaveLength(1);
+      expect(forwarded[0]).toMatchObject({ type: 'compatibility', feature: 'reasoningEffort' });
+      expect(String(forwarded[0].details)).toMatch(/grok-4.5 does not accept reasoning effort 'xhigh'/);
+      expect(String(forwarded[0].details)).toMatch(/invalid xai provider options/);
+      expect(RequestedEffort.omits('grok-4.5', 'xhigh')).toBe(true);
+    },
+    TIMEOUT
+  );
 
+  test('the verdict reads the cause: the SDK’s option refusal names the effort only in its cause', () => {
+    expect(RequestedEffort.isRefusal(sdkRefusal('xai', { reasoningEffort: 'xhigh' }), 'xhigh')).toBe(true);
+    expect(RequestedEffort.isRefusal(sdkRefusal('xai', { reasoningEffort: 'none' }), 'none')).toBe(true);
+    // Another option the schema refuses is not the effort's refusal.
+    expect(RequestedEffort.isRefusal(sdkRefusal('xai', { searchParameters: 'x' }), 'xhigh')).toBe(false);
+  });
+});
+
+describe('RequestedEffort — the verdict', () => {
   test('only the effort refusal is heard: by the named parameter, by the field path in the message, or by the quoted value — never another 400, never a 5xx', () => {
     expect(RequestedEffort.isRefusal(openAiRefusal(ASTRA_CLAUSE), 'none')).toBe(true);
+    // xAI's grammar (grok-4.5, 2026-09-29): the parameter named in the message, no `param` field.
+    expect(RequestedEffort.isRefusal(new Error(GROK_CLAUSE), 'none')).toBe(true);
     // OpenAI names the parameter: a different parameter's refusal is not ours, whatever the message says.
     expect(RequestedEffort.isRefusal(otherBadRequest(), 'none')).toBe(false);
     // No `param`: the message names the field path …

@@ -283,6 +283,14 @@ export type GenerateStreamParams = {
    */
   utterance?: boolean;
   /**
+   * The reasoning effort the bounded utterance (and the side utterance) is asked at — `none`
+   * when absent, as it always was: the line is a no-thinking completion. A caller that keeps a
+   * catalog of what each model accepts passes the least thinking the model in hand accepts
+   * (`none` where the model lists it, else its lowest listed level), so the utterance never asks
+   * for a value the provider refuses and `RequestedEffort` never has to hear a refusal for it.
+   */
+  utteranceEffort?: ReasoningEffort;
+  /**
    * The SIDE utterance (plans/FREE_AGENT.md §M.3 part 5 — the nudge's door): a promise that resolves
    * when the host wants ONE LINE said right now, mid-round, without touching the round — the harness
    * asking the mind what it is doing after a long silence. The loop asks the mind for the line over
@@ -322,8 +330,28 @@ export type GenerateStreamParams = {
   maxBackgroundWaitMs?: number;
 };
 
+/**
+ * A warning the SDK attached to one model request (its `CallWarning` shape, carried as data): an
+ * `unsupported` feature the adapter dropped, a `compatibility` substitution a middleware made
+ * (`RequestedEffort`'s omitted effort rides here with `feature: 'reasoningEffort'`), or an
+ * `other` note. Forwarded verbatim on the `step-start` part so a consumer can READ what the
+ * transport changed instead of inferring it from the answer.
+ */
+export type StreamWarning = { type: string; feature?: string; details?: string; message?: string };
+
 /** A single part emitted by the interleaved full stream. */
 export type StreamPart =
+  | {
+      /**
+       * A STEP (one model request) started, with the warnings the SDK attached to that request
+       * — the `start-step` part's `warnings`, forwarded as data ({@link StreamWarning}). A
+       * consumer that must know whether the request left as asked (the catalog's checks, a
+       * timeline that says when the transport substituted something) reads them here; nothing
+       * else in the stream carries them.
+       */
+      type: 'step-start';
+      warnings: StreamWarning[];
+    }
   | { type: 'text-delta'; textDelta: string }
   | { type: 'reasoning-start' }
   | { type: 'reasoning-delta'; textDelta: string }
@@ -867,6 +895,7 @@ export class Conversation {
                       provider,
                       modelString,
                       abortSignal: combinedAbortSignal,
+                      utteranceEffort: params.utteranceEffort,
                       onResult: (r) => roundResults.push(r),
                     })
                   : undefined;
@@ -936,6 +965,7 @@ export class Conversation {
         provider,
         modelString,
         abortSignal: combinedAbortSignal,
+        utteranceEffort: params.utteranceEffort,
         transcript,
         inputs: [ask],
         onResult: (r) => roundResults.push(r),
@@ -1103,7 +1133,13 @@ export class Conversation {
       // deadline) at the next boundary of any kind; past the window at the next word boundary —
       // never mid-word, never inside a code fence (CutBoundary).
       const softBudgetMs = ToolBudget.softBudgetMs();
-      const utterOptions = { model, provider, modelString, abortSignal: combinedAbortSignal };
+      const utterOptions = {
+        model,
+        provider,
+        modelString,
+        abortSignal: combinedAbortSignal,
+        utteranceEffort: params.utteranceEffort,
+      };
       const utter = (transcript: ModelMessage[], inputs: DrainedInput[]) =>
         self.utter({
           ...utterOptions,
@@ -3259,15 +3295,15 @@ export class Conversation {
 
     if (provider === 'xai') {
       const xaiOpts: Record<string, any> = {};
-      // Only models with reasoning support accept the reasoningEffort parameter.
-      // Models like grok-4 (no "-fast" suffix) reject it with a 400 error;
-      // the model decides effort internally.
-      const xaiSupportsReasoning = modelString ? /fast/i.test(modelString) : false;
-      if (effort && effort !== 'none' && effort !== 'auto' && xaiSupportsReasoning) {
-        // xAI accepts: low | high (Responses also accepts 'medium')
-        // Map everything to the closest valid value.
-        const xaiEffort = effort === 'low' ? 'low' : 'high';
-        xaiOpts.reasoningEffort = xaiEffort;
+      // xAI's `reasoning_effort` is model-dependent from {none, low, medium, high, xhigh} — the
+      // models API states each model's set (grok-4.5/4.6/4.7: low…xhigh, default high; grok-4.3:
+      // none…xhigh, default low; read 2026-09-29, one live call per level on grok-4.5 accepted).
+      // The effort is sent as asked for EVERY xAI model: the `/fast/` gate that stood here (a
+      // 2026-07 reading of grok-4 refusing the parameter) held grok-4.5's levels back from the
+      // wire. `auto` omits it (the model's default); `max` — a level xAI does not have — is its
+      // top, `xhigh`; a value the model in hand refuses is RequestedEffort's to hear.
+      if (effort && effort !== 'auto') {
+        xaiOpts.reasoningEffort = effort === 'max' ? 'xhigh' : effort;
       }
       // Live Search is enabled via the `webSearch` tool factory on the
       // Responses endpoint (handled in getWebSearchTools). The old
@@ -3986,6 +4022,8 @@ export class Conversation {
     provider: string;
     modelString: string;
     abortSignal: AbortSignal;
+    /** The effort the line is asked at ({@link GenerateStreamParams.utteranceEffort}); `none` when absent. */
+    utteranceEffort?: ReasoningEffort;
     onResult: (result: ReturnType<typeof streamText>) => void;
   }): AsyncGenerator<any, string | undefined> {
     const request = Utterance.request(args.transcript, args.inputs);
@@ -4003,13 +4041,19 @@ export class Conversation {
     // sentences before the cut. Retries stay off (maxRetries 0): a retry would hold the main step
     // at the boundary for the backoff on top of the failed attempt, while the degradation is free
     // — the step runs and its own first text is the acknowledgment. The call asks for NO thinking
-    // (`reasoningEffort: 'none'`) like any other model's; a model whose provider refuses that value
+    // (`reasoningEffort: 'none'`) unless the caller named the least thinking the model in hand
+    // accepts (`utteranceEffort` — a caller with a catalog of what each model lists passes `none`
+    // where listed, else the model's lowest level); a model whose provider refuses the value asked
     // (GPT-6 Astra lists no `none`) is not this call's to know — `RequestedEffort` (under the
-    // transport layer) hears the refusal once, re-issues at the model's floor and remembers it, so
-    // the line arrives and no later turn pays the refused request.
+    // transport layer) hears the refusal once, re-issues with the effort omitted and remembers it,
+    // so the line arrives and no later turn pays the refused request.
     let text = '';
     let lineEnded = false;
     let failure: unknown;
+    // The utterance request's own SDK warnings (RequestedEffort's omitted effort rides here when
+    // the provider refused the value asked): forwarded as the utterance step's `start-step`, the
+    // same way every step's are, so the consumer reads the substitution instead of guessing.
+    let stepStart: unknown;
     try {
       const result = streamText({
         model: args.model,
@@ -4017,7 +4061,11 @@ export class Conversation {
         onError: this.streamErrorLine({ modelId: args.modelString, provider: args.provider }),
         maxRetries: 0,
         abortSignal: args.abortSignal,
-        providerOptions: this.buildProviderOptions(args.provider, { reasoningEffort: 'none' }, args.modelString),
+        providerOptions: this.buildProviderOptions(
+          args.provider,
+          { reasoningEffort: args.utteranceEffort ?? 'none' },
+          args.modelString
+        ),
       });
       args.onResult(result);
       Promise.resolve(result.response).catch(() => {});
@@ -4027,7 +4075,9 @@ export class Conversation {
       const iterator = (result.fullStream as AsyncIterable<any>)[Symbol.asyncIterator]();
       for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
         const part = next.value;
-        if (part.type === 'text-delta') {
+        if (part.type === 'start-step') {
+          stepStart = { type: 'start-step', warnings: Array.isArray(part.warnings) ? part.warnings : [] };
+        } else if (part.type === 'text-delta') {
           const delta = String(part.delta ?? part.text ?? part.textDelta ?? '');
           if (!delta) {
             continue;
@@ -4058,6 +4108,9 @@ export class Conversation {
       }
       // The error itself, marked: the line below carries its status, code and a house sentence.
       failure = ProviderFailureLine.mark(error, { modelId: args.modelString, provider: args.provider });
+    }
+    if (stepStart) {
+      yield stepStart;
     }
     if (failure) {
       this.logger.warn({
@@ -4248,6 +4301,20 @@ export class Conversation {
               }
             } else if (part.type === 'reasoning-end') {
               yield { type: 'reasoning-end' as const };
+            } else if (part.type === 'start-step') {
+              // The step's request left: the SDK's warnings for it ride out as data (a dropped
+              // feature, a middleware's substitution — RequestedEffort's omitted effort), so a
+              // consumer reads what the transport changed instead of inferring it from the answer.
+              const warnings = Array.isArray(part.warnings) ? part.warnings : [];
+              yield {
+                type: 'step-start' as const,
+                warnings: warnings.map((warning: Record<string, unknown>) => ({
+                  type: String(warning?.type ?? 'other'),
+                  ...(typeof warning?.feature === 'string' ? { feature: warning.feature } : {}),
+                  ...(typeof warning?.details === 'string' ? { details: warning.details } : {}),
+                  ...(typeof warning?.message === 'string' ? { message: warning.message } : {}),
+                })),
+              };
             } else if (part.type === 'finish-step') {
               // The step delimiter (SDK-normalized finishReason: 'tool-calls' = more work
               // follows, 'stop' = this step's text was the final response). AI SDK v6 shapes

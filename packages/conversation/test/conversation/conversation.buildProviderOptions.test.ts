@@ -223,21 +223,24 @@ const buildXai = (
 };
 
 describe('Conversation.buildProviderOptions (xai)', () => {
-  describe('reasoningEffort gate', () => {
-    test('Fast models accept low/high mapped values', () => {
-      expect(buildXai('low', 'grok-4-1-fast-reasoning').reasoningEffort).toBe('low');
+  describe('reasoningEffort — sent as asked for every xAI model (the models API states each model’s levels; grok-4.5 accepted low…xhigh live, 2026-09-29)', () => {
+    test('every level rides as its own word on the flagship models — the /fast/ gate that held them back is gone', () => {
+      expect(buildXai('low', 'grok-4.5').reasoningEffort).toBe('low');
+      expect(buildXai('medium', 'grok-4.5').reasoningEffort).toBe('medium');
+      expect(buildXai('high', 'grok-4.5').reasoningEffort).toBe('high');
+      expect(buildXai('xhigh', 'grok-4.5').reasoningEffort).toBe('xhigh');
+      expect(buildXai('none', 'grok-4.3').reasoningEffort).toBe('none');
       expect(buildXai('high', 'grok-4-1-fast-reasoning').reasoningEffort).toBe('high');
-      expect(buildXai('medium', 'grok-4-1-fast-reasoning').reasoningEffort).toBe('high');
     });
 
-    test('Flagship models do not accept reasoningEffort (model decides internally)', () => {
-      expect(buildXai('high', 'grok-4.3').reasoningEffort).toBeUndefined();
-      expect(buildXai('low', 'grok-4').reasoningEffort).toBeUndefined();
+    test('max — a level xAI does not have — is sent as its top, xhigh', () => {
+      expect(buildXai('max', 'grok-4.5').reasoningEffort).toBe('xhigh');
     });
 
-    test('auto omits reasoningEffort everywhere', () => {
+    test('auto omits reasoningEffort everywhere (the model’s own default)', () => {
       expect(buildXai('auto', 'grok-4-1-fast-reasoning').reasoningEffort).toBeUndefined();
       expect(buildXai('auto', 'grok-4.3').reasoningEffort).toBeUndefined();
+      expect(buildXai(undefined, 'grok-4.5').reasoningEffort).toBeUndefined();
     });
   });
 
