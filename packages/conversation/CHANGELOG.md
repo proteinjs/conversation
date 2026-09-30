@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.13.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.12.0...@proteinjs/conversation@6.13.0) (2026-09-30)
+
+
+### Features
+
+* **conversation:** an ok picture result carries a later picture's failure ([bf56486](https://github.com/proteinjs/conversation/commit/bf5648697e04ceb1065f9f907e7d6f5bd14db0e5))
+
+
+
+
+
 # [6.12.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.11.0...@proteinjs/conversation@6.12.0) (2026-09-30)
 
 
