@@ -2,7 +2,8 @@
  * What an ask for pictures came to. Four kinds, and only four, so a ledger can record each ask
  * without re-reading a vendor's error:
  *
- * - `ok` — at least one picture was made;
+ * - `ok` — at least one picture was made; when a later picture of the same ask was not, the
+ *   `ok` CARRIES that ending under `failures`, so a record of the ask can say what was lost;
  * - `refused` — the vendor's moderation declined the ask (its reason is carried, in its words);
  * - `failed` — nothing was made for any other reason; `transient` says whether asking again
  *   later could work (a rate limit, a vendor outage, a dropped connection, a timeout);
@@ -79,7 +80,29 @@ export type ImageGenerationOk = ImageGenerationOutcomeBase & {
    * previousInteractionId`). Only a vendor that keeps such handles reports one.
    */
   continuationId?: string;
+  /**
+   * Why the ask came to fewer pictures than it asked for: the ending of the first later picture
+   * that was not made, after at least one was. A vendor that makes one picture per call stops
+   * asking at that point, so what was made stands and the entry says what was lost and why.
+   * Absent when every picture the vendor answered for was kept — an unreadable picture inside a
+   * vendor's answer is left out of `images` without an entry here.
+   *
+   * The spend: `usage` is what the answers that arrived reported; `cost` is ABSENT (not known)
+   * when a lost picture may have been billed and its answer never said what it used (a request
+   * that went out and was never answered; a 2xx with nothing readable), and present otherwise.
+   */
+  failures?: ImageGenerationLaterFailure[];
 };
+
+/**
+ * A later picture's ending, in the shape of the outcome it would have been on its own — the
+ * vendor's refusal, or a failure with its kind — minus what the `ok` already says about the ask
+ * (who made it, how long it took, what was sent and what it cost). `usage` is the failing
+ * answer's own, where the vendor reported one.
+ */
+export type ImageGenerationLaterFailure =
+  | Omit<ImageGenerationRefused, 'provider' | 'model' | 'latencyMs' | 'sent' | 'cost'>
+  | Omit<ImageGenerationFailed, 'provider' | 'model' | 'latencyMs' | 'sent' | 'cost'>;
 
 export type ImageGenerationRefused = ImageGenerationOutcomeBase & {
   kind: 'refused';

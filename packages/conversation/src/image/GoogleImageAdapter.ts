@@ -17,6 +17,7 @@ export type GoogleImageAdapterParams = {
 };
 
 type AdapterFailure = Extract<ImageAdapterResult, { kind: 'failed' }>;
+type AdapterRefusal = Extract<ImageAdapterResult, { kind: 'refused' }>;
 type AdapterOk = Extract<ImageAdapterResult, { kind: 'ok' }>;
 
 /** The vendor's output sizes, keyed by the long edge an ask names. */
@@ -59,7 +60,9 @@ const ASPECT_RATIOS: ReadonlyArray<[number, number]> = [
  *   'image/jpeg'"), so JPEG is always asked for and a PNG in the product is a conversion
  *   downstream; a transparent background is refused here before the wire (the model has no alpha);
  * - the answer carries ONE picture per call, so an ask for `count` pictures is `count` calls in a
- *   row, their usage summed; the stop and the deadline cut the sequence between calls.
+ *   row, their usage summed; the stop and the deadline cut the sequence between calls. A call
+ *   that fails after a picture was made ends the sequence: what was made is the `ok`, and the
+ *   failing call's ending rides on it under `failures` — never dropped.
  *
  * `billable`: an error answer made nothing (0); a 2xx with nothing readable, or a request never
  * answered, may have been billed. A follow-up edit passes the earlier ask's `continuationId` as
@@ -104,10 +107,7 @@ export class GoogleImageAdapter implements ImageProviderAdapter {
         if (context.signal?.aborted) {
           throw error;
         }
-        if (made) {
-          return made;
-        }
-        return {
+        const dropped: AdapterFailure = {
           kind: 'failed',
           errorKind: 'network',
           transient: true,
@@ -115,16 +115,25 @@ export class GoogleImageAdapter implements ImageProviderAdapter {
           billable: true,
           message: error instanceof Error ? error.message : String(error),
         };
+        return made ? this.withLaterFailure(made, dropped) : dropped;
       }
       const result =
         response.status >= 200 && response.status < 300 ? this.readAnswer(response) : this.readError(response);
       if (result.kind !== 'ok') {
-        // A picture already made stands; the failure of a later one is not its failure.
-        return made ?? result;
+        // A picture already made stands, and the later one's ending rides with it: the caller
+        // asked for more than it got, and the result says why.
+        return made ? this.withLaterFailure(made, result) : result;
       }
       made = made ? this.merge(made, result) : result;
     }
     return made ?? this.notSent('invalid_request', 'Nothing was asked for.');
+  }
+
+  /** The pictures made so far, carrying why the next one was not; the sequence ends here. */
+  private withLaterFailure(made: AdapterOk, ending: AdapterRefusal | AdapterFailure): AdapterOk {
+    // `sent` is the ask's fact and already true on the ok; everything else of the ending is kept.
+    const { sent: _sent, ...entry } = ending;
+    return { ...made, failures: [...(made.failures ?? []), entry] };
   }
 
   private validate(request: ImageGenerationRequest): AdapterFailure | undefined {

@@ -180,7 +180,7 @@ describe('more than one picture', () => {
     expect(outcome.continuationId).toBe('interaction_2');
   });
 
-  test('a picture already made stands when a later one fails', async () => {
+  test('a picture already made stands when a later one fails, and the failure rides on the result', async () => {
     let calls = 0;
     const transport = new RecordingImageTransport(() => (++calls === 1 ? googleInteraction() : googleRateLimited()));
     const outcome = await generatorOver(transport).generate({
@@ -195,6 +195,98 @@ describe('more than one picture', () => {
       return;
     }
     expect(outcome.images).toHaveLength(1);
+    expect(outcome.failures).toEqual([
+      {
+        kind: 'failed',
+        errorKind: 'rate_limited',
+        transient: true,
+        statusCode: 429,
+        code: 'RESOURCE_EXHAUSTED',
+        message: 'Resource has been exhausted (e.g. check quota).',
+      },
+    ]);
+    // The rate limit made nothing and billed nothing: the ask cost the one picture, a known price.
+    expect(outcome.cost?.totalUsd).toBeCloseTo(0.0686, 4);
+  });
+
+  test('the vendor rejects the second of two (4xx): the first stands, the rejection is on the result, priced as one', async () => {
+    let calls = 0;
+    const transport = new RecordingImageTransport(() => (++calls === 1 ? googleInteraction() : googlePngRefused()));
+    const outcome = await generatorOver(transport).generate({
+      provider: 'google',
+      model: MODEL,
+      prompt: 'A lamp.',
+      count: 2,
+    });
+    expect(transport.requests).toHaveLength(2);
+    expect(outcome.kind).toBe('ok');
+    if (outcome.kind !== 'ok') {
+      return;
+    }
+    expect(outcome.images).toHaveLength(1);
+    expect(outcome.failures).toEqual([
+      {
+        kind: 'failed',
+        errorKind: 'invalid_request',
+        transient: false,
+        statusCode: 400,
+        code: 'INVALID_ARGUMENT',
+        message: "Unsupported response mime type 'image/png'. Supported values: 'image/jpeg'",
+      },
+    ]);
+    expect(outcome.failures?.[0]).not.toHaveProperty('billable');
+    expect(outcome.usage?.imageOutputTokens).toBe(1120);
+    expect(outcome.cost?.totalUsd).toBeCloseTo(0.0686, 4);
+  });
+
+  test('the vendor declines the second: the first stands and the refusal is on the result', async () => {
+    let calls = 0;
+    const transport = new RecordingImageTransport(() => (++calls === 1 ? googleInteraction() : googleSafetyBlocked()));
+    const outcome = await generatorOver(transport).generate({
+      provider: 'google',
+      model: MODEL,
+      prompt: 'A lamp.',
+      count: 2,
+    });
+    expect(outcome.kind).toBe('ok');
+    if (outcome.kind !== 'ok') {
+      return;
+    }
+    expect(outcome.images).toHaveLength(1);
+    expect(outcome.failures).toHaveLength(1);
+    expect(outcome.failures?.[0]).toMatchObject({ kind: 'refused', reason: 'INVALID_ARGUMENT', stage: 'unknown' });
+    expect(outcome.failures?.[0].message).toContain('SAFETY');
+    expect(outcome.cost?.totalUsd).toBeCloseTo(0.0686, 4);
+  });
+
+  test('the connection drops on the second: the first stands, the drop is on the result, and the cost is not known', async () => {
+    let calls = 0;
+    const transport = new RecordingImageTransport(() => {
+      if (++calls === 1) {
+        return googleInteraction();
+      }
+      throw new Error('connection reset');
+    });
+    const outcome = await generatorOver(transport).generate({
+      provider: 'google',
+      model: MODEL,
+      prompt: 'A lamp.',
+      count: 2,
+    });
+    expect(transport.requests).toHaveLength(2);
+    expect(outcome.kind).toBe('ok');
+    if (outcome.kind !== 'ok') {
+      return;
+    }
+    expect(outcome.images).toHaveLength(1);
+    expect(outcome.failures).toEqual([
+      { kind: 'failed', errorKind: 'network', transient: true, message: 'connection reset' },
+    ]);
+    // The second request went out and was never answered: the vendor may have made and billed it,
+    // so the ask's price cannot be established — the first picture's usage is still reported.
+    expect(outcome.sent).toBe(true);
+    expect(outcome.usage?.imageOutputTokens).toBe(1120);
+    expect(outcome.cost).toBeUndefined();
   });
 });
 

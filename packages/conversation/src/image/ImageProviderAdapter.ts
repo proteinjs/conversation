@@ -1,5 +1,10 @@
 import type { ImageGenerationRequest } from './ImageGenerationRequest';
-import type { ImageGenerationFailed, ImageGenerationOk, ImageGenerationRefused } from './ImageGenerationOutcome';
+import type {
+  ImageGenerationFailed,
+  ImageGenerationLaterFailure,
+  ImageGenerationOk,
+  ImageGenerationRefused,
+} from './ImageGenerationOutcome';
 
 /**
  * One vendor's way of making pictures. An adapter turns the vendor-neutral ask into that vendor's
@@ -32,12 +37,16 @@ type Unpriced<Outcome> = Omit<Outcome, 'provider' | 'model' | 'latencyMs' | 'cos
  * - on `refused` / `failed`, `billable` — true when the vendor may have charged although no
  *   picture came back (a picture made and then withheld, a 2xx with nothing readable, a request
  *   that went out and was never answered); false when it cannot have (nothing was sent, or the
- *   vendor answered with an error before making anything).
+ *   vendor answered with an error before making anything). A later picture's ending carried on
+ *   an `ok` says the same of itself, so the ask's cost can be left unknown where it must be.
  */
 export type ImageAdapterResult =
-  | (Unpriced<ImageGenerationOk> & { answeredCount: number })
+  | (Omit<Unpriced<ImageGenerationOk>, 'failures'> & { answeredCount: number; failures?: ImageAdapterLaterFailure[] })
   | (Unpriced<ImageGenerationRefused> & { billable: boolean })
   | (Unpriced<ImageGenerationFailed> & { billable: boolean });
+
+/** A later picture's ending as the adapter reports it: the outcome's entry plus the billing fact only the adapter knows. */
+export type ImageAdapterLaterFailure = ImageGenerationLaterFailure & { billable: boolean };
 
 /**
  * The wire, as a seam. The body is described (JSON, or named multipart parts) rather than

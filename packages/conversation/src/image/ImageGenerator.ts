@@ -124,8 +124,15 @@ export class ImageGenerator {
     const stamp = { provider: request.provider, model: request.model, latencyMs };
     const cost = this.costOf(request, result);
     if (result.kind === 'ok') {
-      const { answeredCount, ...ok } = result;
-      return { ...ok, ...stamp, ...(cost ? { cost } : {}) };
+      // The adapter's billing facts (`answeredCount`, each carried ending's `billable`) are spent
+      // here, on the cost; the outcome carries the price they led to, not them.
+      const { answeredCount, failures, ...ok } = result;
+      return {
+        ...ok,
+        ...(failures ? { failures: failures.map(({ billable, ...ending }) => ending) } : {}),
+        ...stamp,
+        ...(cost ? { cost } : {}),
+      };
     }
     const { billable, ...notMade } = result;
     return { ...notMade, ...stamp, ...(cost ? { cost } : {}) };
@@ -158,11 +165,16 @@ export class ImageGenerator {
 
   /**
    * What one adapter result cost: a known zero when nothing can have been billed; otherwise the
-   * vendor's usage × the model's rates; otherwise `undefined` — not known, never a guess.
+   * vendor's usage × the model's rates; otherwise `undefined` — not known, never a guess. An ok
+   * that lost a later picture the vendor may have billed for is in the last class: what the
+   * answers reported does not cover what the ask cost.
    */
   private costOf(request: ImageGenerationRequest, result: ImageAdapterResult): ImageCostUsd | undefined {
     if (!result.sent || (result.kind !== 'ok' && !result.billable)) {
       return this.costCalculator.nothing();
+    }
+    if (result.kind === 'ok' && result.failures?.some((ending) => ending.billable)) {
+      return undefined;
     }
     return this.costCalculator.cost({
       model: request.model,
@@ -182,7 +194,9 @@ export class ImageGenerator {
       sent: outcome.sent,
       priced: !!outcome.cost,
       totalUsd: outcome.cost?.totalUsd,
-      ...(outcome.kind === 'ok' ? { images: outcome.images.length } : {}),
+      ...(outcome.kind === 'ok'
+        ? { images: outcome.images.length, ...(outcome.failures ? { lost: outcome.failures.length } : {}) }
+        : {}),
       ...(outcome.kind === 'refused' ? { reason: outcome.reason, stage: outcome.stage } : {}),
       ...(outcome.kind === 'failed'
         ? { errorKind: outcome.errorKind, transient: outcome.transient, statusCode: outcome.statusCode }
