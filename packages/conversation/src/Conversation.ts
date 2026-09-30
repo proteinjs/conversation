@@ -28,6 +28,12 @@ import { OpenAiModelRules, type OpenAiReasoningEffort } from './OpenAiModelRules
 import { OpenAiResponseRetention } from './OpenAiResponseRetention';
 import { ToolStrictness } from './ToolStrictness';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
+import {
+  ToolResultOverflow,
+  MULTIMODAL_TOOL_RESULT,
+  type ToolResultCeiling,
+  type ToolResultRecord,
+} from './ToolResultOverflow';
 import { CutBoundary, type CutBoundaryKind } from './CutBoundary';
 import { Utterance, type DrainedInput } from './Utterance';
 import type { ToolInvocationProgressEvent, ToolInvocationResult } from './OpenAi';
@@ -150,6 +156,24 @@ export type RefusedStep = {
  */
 export type RefusalLadder = (refused: RefusedStep) => LanguageModel | string | undefined;
 
+/**
+ * The request a call is about to send — every per-step request of a tool loop (the first step
+ * included) and every single-shot request, with the FINAL outgoing messages after the per-step
+ * projection (budget pruning, cache marks). What `beforeRequest` receives.
+ */
+export type OutgoingRequest = {
+  messages: ModelMessage[];
+  modelString: string;
+  provider: string;
+  /** The step's number within its call — 0 for the first request; absent for a side prompt built over the transcript. */
+  stepNumber?: number;
+  /**
+   * The provider's own count of the previous step's request, when a step has finished and
+   * reported one — an exact prefix a consumer's estimate can lean on.
+   */
+  previousRequestInputTokens?: number;
+};
+
 export type GenerateStreamParams = {
   messages: ConversationMessage[];
   model?: LanguageModel | string;
@@ -186,6 +210,27 @@ export type GenerateStreamParams = {
    */
   toolBudget?: ToolBudgetHost;
   maxToolCalls?: number;
+  /**
+   * THE PER-REQUEST SEAT: called with every request this call is about to send — each step of
+   * the tool loop (the first included) and every side prompt built over its transcript —
+   * carrying the final outgoing messages. A consumer that bounds requests (a model's input
+   * window, measured its own way) checks HERE, because only here does it see what the loop has
+   * accumulated: a check before the first send alone misses the later steps, where tool results
+   * pile up until the provider refuses the request itself. A throw REFUSES that request before
+   * the transport is asked: the call ends on the thrown error itself (the same object, so a typed
+   * error stays classifiable by its owner). Synchronous by design: a count, never I/O.
+   */
+  beforeRequest?: (request: OutgoingRequest) => void;
+  /**
+   * The per-result ceiling ({@link ToolResultCeiling}): a tool result over `tokensPerResult`
+   * never enters the transcript whole — it is set aside (the whole kept: the conversation's own
+   * registry, and the store's durable record) and its head + a pointer take its place; the model
+   * opens it through the `read_tool_result` tool this call then offers (a range of lines, or a
+   * search). Every tool the loop executes in-process is bound this way — function tools and a
+   * skill's provider-defined tools alike. A result `toolResultTokenBudget` evicts gets the same
+   * pointer instead of a dead placeholder. See {@link ToolResultOverflow}.
+   */
+  toolResultCeiling?: ToolResultCeiling;
   /**
    * Token ceiling for THIS call's whole tool loop: usage is checked at every step boundary
    * (the same stop-condition seam as `maxToolCalls`), and once the steps' cumulative total
@@ -541,6 +586,10 @@ export type GenerateObjectParams<T> = {
   tools?: Function[];
   /** Tool-loop progress events (same shape as generateStream's). */
   onToolInvocation?: (evt: ToolInvocationProgressEvent) => void;
+  /** The per-request seat — see `GenerateStreamParams.beforeRequest`; the single-shot call and every step of the tool loop pass through it. */
+  beforeRequest?: (request: OutgoingRequest) => void;
+  /** The per-result ceiling for the tool loop — see `GenerateStreamParams.toolResultCeiling`. */
+  toolResultCeiling?: ToolResultCeiling;
 
   // OpenAI-specific
   serviceTier?: OpenAiServiceTier;
@@ -616,6 +665,8 @@ export class Conversation {
   // makes (each tool-loop step included) — see resolveModelInstance. The SDKs' own retries are disabled
   // (maxRetries: 0 at the streamText/generateObject call sites) so exactly one layer owns retrying.
   private transportRetry = new LlmTransportRetry();
+  /** Tool results set aside whole (ToolResultOverflow) — shared across this conversation's calls so a later read finds an earlier set-aside. */
+  private readonly setAsideToolResults = new Map<string, ToolResultRecord>();
 
   constructor(params: ConversationParams) {
     this.params = params;
@@ -683,7 +734,10 @@ export class Conversation {
     const pendingImageInjections = needsUserMessageImageInjection
       ? new Map<string, Array<TextPart | ImagePart | FilePart>>()
       : undefined;
-    const allFunctions = [...this.functions, ...(params.tools ?? [])];
+    // The per-result ceiling's owner for this call, when the call sets one: it bounds every tool's
+    // output below and offers the read door as one more function.
+    const overflow = this.toolResultOverflow(params.toolResultCeiling);
+    const allFunctions = [...this.functions, ...(params.tools ?? []), ...(overflow ? [overflow.readFunction()] : [])];
     // Ground truth for this call's tool outcomes (ok/error/timing), captured by the execute
     // wrapper — the SDK's step data can't distinguish a failed tool from a successful one.
     const capturedInvocations: ToolInvocationResult[] = [];
@@ -715,7 +769,10 @@ export class Conversation {
     // tools, not our `Function` shape.
     const skillProviderTools = this.getSkillProviderDefinedTools(provider);
 
-    const allTools = { ...tools, ...webSearchTools, ...skillProviderTools };
+    const unboundTools = { ...tools, ...webSearchTools, ...skillProviderTools };
+    // Every in-process tool's output bounded at the one place the tool set is final — function
+    // tools and a skill's provider-defined tools alike (ToolResultOverflow).
+    const allTools = overflow ? overflow.wrapTools(unboundTools) : unboundTools;
 
     // Names of tools WE execute in-process (they carry an execute()) — the liveness guard
     // suspends its idle race while one of these is outstanding, because the SDK emits no
@@ -765,7 +822,7 @@ export class Conversation {
     // runs a deferred search cannot be cut — its continuation would carry blocks behind the open
     // call, and only this step's response carries the search's result.
     let stepOpenOnServerTool = false;
-    const projection = { provider, tools: allTools, modelString };
+    const projection = { provider, tools: allTools, modelString, beforeRequest: params.beforeRequest, overflow };
 
     // Cumulative per-step usage for live in-flight reporting. Each step (tool-call
     // round) is a separate billed call, so summing step usage reconciles exactly
@@ -788,9 +845,8 @@ export class Conversation {
       ? Conversation.anySignal([params.abortSignal, livenessController.signal])
       : livenessController.signal;
 
-    // Loud pre-dispatch failure when a hard-capped model's input would overflow (see
-    // assertInputWithinModelCap).
-    this.assertInputWithinModelCap(messages, modelString);
+    // The hard input-cap guard and the caller's per-request seat run at every step's projection
+    // (projectOutgoingStepMessages) — the first step included, and every step after it.
 
     // The model a round dispatches to. The requested model for every round of the call, until
     // the refusal ladder (params.refusalLadder) moves a refused step one rung down: from then
@@ -839,7 +895,7 @@ export class Conversation {
         // guard's idle timer sees them.
         includeRawChunks: true,
         providerOptions: callRung.providerOptions,
-        prepareStep: async ({ messages: stepMessages, stepNumber }) => {
+        prepareStep: async ({ messages: stepMessages, stepNumber, steps }) => {
           latestStepMessages = stepMessages;
           let next = stepMessages;
           // A boundary where the last assistant message is still OPEN on a server tool — the model
@@ -920,7 +976,11 @@ export class Conversation {
           // own tool choice (the SDK would otherwise carry the call-level forcing into each step).
           const firstStepOfTurn = stepNumber === 0 && !turnHasFinishedStep;
           return {
-            messages: this.projectOutgoingStepMessages(next, { provider, tools: allTools, modelString }),
+            messages: this.projectOutgoingStepMessages(next, {
+              ...projection,
+              stepNumber,
+              previousRequestInputTokens: Conversation.lastStepInputTokens(steps),
+            }),
             ...(webSearchToolChoice && !firstStepOfTurn ? { toolChoice: 'auto' as const } : {}),
           };
         },
@@ -1881,6 +1941,8 @@ export class Conversation {
     // Loud pre-dispatch failure when a hard-capped model's input would overflow (see
     // assertInputWithinModelCap).
     this.assertInputWithinModelCap(messages, modelString);
+    // The caller's per-request seat (GenerateStreamParams.beforeRequest): the one request this call sends.
+    params.beforeRequest?.({ messages, modelString, provider, stepNumber: 0 });
 
     // What the client library raises ABOVE the transport leaves through here: an answer that was
     // not the object becomes the library's typed error, by finish reason (typeObjectFailure —
@@ -1988,10 +2050,17 @@ export class Conversation {
     };
 
     const capturedInvocations: ToolInvocationResult[] = [];
-    const tools = this.buildAiSdkTools([...args.loopFunctions, submitFunction], args.provider, {
-      onToolInvocation: params.onToolInvocation,
-      recordInvocation: (r) => capturedInvocations.push(r),
-    });
+    const overflow = this.toolResultOverflow(params.toolResultCeiling);
+    const loopTools = this.buildAiSdkTools(
+      [...args.loopFunctions, submitFunction, ...(overflow ? [overflow.readFunction()] : [])],
+      args.provider,
+      {
+        onToolInvocation: params.onToolInvocation,
+        recordInvocation: (r) => capturedInvocations.push(r),
+      }
+    );
+    // Every in-process tool's output bounded at the one place the loop's tool set is final.
+    const tools = overflow ? overflow.wrapTools(loopTools) : loopTools;
 
     // The submit contract rides a system message — inserted at the END of the LEADING system
     // block (messages arrive system-first for Anthropic/Google, which reject system messages
@@ -2019,9 +2088,7 @@ export class Conversation {
     const loopSignals = [AbortSignal.timeout(loopTimeoutMs), ...(params.abortSignal ? [params.abortSignal] : [])];
     const loopAbortSignal = Conversation.anySignal(loopSignals);
 
-    // Loud pre-dispatch failure when a hard-capped model's input would overflow (see
-    // assertInputWithinModelCap).
-    this.assertInputWithinModelCap(loopMessages, args.modelString);
+    // The hard input-cap guard and the caller's per-request seat run at every step's projection.
 
     // Streamed call shape: the previous non-streaming `generateText` held each step's whole
     // response server-side until completion — a large step (e.g. a fresh review context on a
@@ -2046,11 +2113,15 @@ export class Conversation {
       // Without this every step re-sent the entire accumulated context (gather context +
       // all prior tool results) at full input price: review-shaped gates measured 0% cache
       // reads, the dominant cost of a dev-skill implement leg.
-      prepareStep: ({ messages: stepMessages }) => ({
+      prepareStep: ({ messages: stepMessages, stepNumber, steps }) => ({
         messages: this.projectOutgoingStepMessages(stepMessages, {
           provider: args.provider,
           tools,
           modelString: args.modelString,
+          stepNumber,
+          previousRequestInputTokens: Conversation.lastStepInputTokens(steps),
+          beforeRequest: params.beforeRequest,
+          overflow,
         }),
       }),
     });
@@ -2402,7 +2473,7 @@ export class Conversation {
     // Solution: resolve content parts eagerly inside execute(), stash them
     // on a sentinel, and let toModelOutput project them into the SDK's
     // ToolResultOutput shape for the provider adapter.
-    const MULTIMODAL_SENTINEL = Symbol.for('conversation.tool.multimodal');
+    const MULTIMODAL_SENTINEL = MULTIMODAL_TOOL_RESULT;
     const debugToolResults = !!process.env.CONVERSATION_DEBUG_TOOL_RESULTS;
     const logger = this.logger;
 
@@ -2943,11 +3014,29 @@ export class Conversation {
    */
   private projectOutgoingStepMessages(
     stepMessages: ModelMessage[],
-    args: { provider: string; tools: ToolSet; modelString: string }
+    args: {
+      provider: string;
+      tools: ToolSet;
+      modelString: string;
+      /** The step within its call; absent for a side prompt built over the transcript. */
+      stepNumber?: number;
+      previousRequestInputTokens?: number;
+      /** The caller's per-request seat (GenerateStreamParams.beforeRequest). */
+      beforeRequest?: (request: OutgoingRequest) => void;
+      /** The call's per-result ceiling owner — an evicted result becomes its pointer, never a dead placeholder. */
+      overflow?: ToolResultOverflow;
+    }
   ): ModelMessage[] {
     let next = stepMessages;
     if (this.params.toolResultTokenBudget != null) {
-      next = Conversation.pruneToolResultsOverBudget(next, this.params.toolResultTokenBudget);
+      const overflow = args.overflow;
+      next = Conversation.pruneToolResultsOverBudget(
+        next,
+        this.params.toolResultTokenBudget,
+        undefined,
+        undefined,
+        overflow ? (part, text) => overflow.evicted(part, text) : undefined
+      );
     }
     if (args.provider === 'anthropic') {
       // Runs for every step including the first, so this is the single seam
@@ -2959,7 +3048,38 @@ export class Conversation {
     // messages (after pruning + cache marking).
     const finalMessages = this.sanitizeToolCallInputs(next);
     Conversation.dumpOutgoingRequest(finalMessages, args.tools, args.modelString);
+    // The two refusals that run BEFORE the transport is asked, on the request as it will be sent —
+    // every step, the first included: the library's own hard input cap, then the caller's seat.
+    this.assertInputWithinModelCap(finalMessages, args.modelString);
+    args.beforeRequest?.({
+      messages: finalMessages,
+      modelString: args.modelString,
+      provider: args.provider,
+      ...(args.stepNumber !== undefined ? { stepNumber: args.stepNumber } : {}),
+      ...(args.previousRequestInputTokens !== undefined
+        ? { previousRequestInputTokens: args.previousRequestInputTokens }
+        : {}),
+    });
     return finalMessages;
+  }
+
+  /** The per-result ceiling's owner for one call — none when the call sets no ceiling. */
+  private toolResultOverflow(ceiling: ToolResultCeiling | undefined): ToolResultOverflow | undefined {
+    if (!ceiling) {
+      return undefined;
+    }
+    return new ToolResultOverflow({
+      ceiling,
+      registry: this.setAsideToolResults,
+      countTokens: Conversation.countToolResultTokens,
+      logger: this.logger,
+    });
+  }
+
+  /** The provider's count of the last finished step's request (the SDK's step usage). */
+  private static lastStepInputTokens(steps: ReadonlyArray<{ usage?: LanguageModelUsage }>): number | undefined {
+    const input = steps[steps.length - 1]?.usage?.inputTokens;
+    return typeof input === 'number' ? input : undefined;
   }
 
   /**
@@ -2986,7 +3106,9 @@ export class Conversation {
     messages: ModelMessage[],
     budget: number,
     evictionFloorRatio = 0.75,
-    countTokens: (text: string) => number = Conversation.countToolResultTokens
+    countTokens: (text: string) => number = Conversation.countToolResultTokens,
+    /** What replaces an evicted result's output — the pointer to its kept whole (ToolResultOverflow); the dead placeholder without one. */
+    setAside?: (part: { toolCallId?: string; toolName?: string; input?: unknown }, text: string) => string
   ): ModelMessage[] {
     if (!(budget > 0)) {
       return messages;
@@ -3032,8 +3154,8 @@ export class Conversation {
 
     // Pass 1: replay the eviction epochs over the results in chronological order.
     const floor = Math.floor(budget * evictionFloorRatio);
-    const evicted = new Set<object>();
-    const evictable: Array<{ part: object; tokens: number }> = [];
+    const evicted = new Map<object, string>();
+    const evictable: Array<{ part: object; tokens: number; text: string }> = [];
     let evictCursor = 0; // oldest not-yet-evicted evictable result
     let liveTokens = 0;
     for (let i = 0; i < messages.length; i++) {
@@ -3049,12 +3171,12 @@ export class Conversation {
         const tokens = tokensFor(part as object, text);
         liveTokens += tokens;
         if (i <= lastAssistantIndex) {
-          evictable.push({ part: part as object, tokens });
+          evictable.push({ part: part as object, tokens, text });
         }
         if (liveTokens > budget) {
           while (liveTokens > floor && evictCursor < evictable.length) {
             const oldest = evictable[evictCursor++];
-            evicted.add(oldest.part);
+            evicted.set(oldest.part, oldest.text);
             liveTokens -= oldest.tokens;
           }
         }
@@ -3075,7 +3197,12 @@ export class Conversation {
           changed = true;
           return {
             ...(part as object),
-            output: { type: 'text', value: Conversation.TOOL_RESULT_PRUNED_PLACEHOLDER },
+            output: {
+              type: 'text',
+              value: setAside
+                ? setAside(part as { toolCallId?: string; toolName?: string }, evicted.get(part as object) ?? '')
+                : Conversation.TOOL_RESULT_PRUNED_PLACEHOLDER,
+            },
           };
         }
         return part;

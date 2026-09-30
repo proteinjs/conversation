@@ -4,6 +4,7 @@ export * from './src/Paragraph';
 export * from './src/OpenAi';
 export * from './src/code_template/CodeTemplate';
 export * from './src/Conversation';
+export * from './src/ToolResultOverflow';
 export * from './src/CodegenConversation';
 export * from './src/code_template/Code';
 export * from './src/ConversationSkill';
