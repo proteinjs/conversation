@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.12.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.11.0...@proteinjs/conversation@6.12.0) (2026-09-30)
+
+
+### Features
+
+* **conversation:** a per-request seat and a per-result ceiling for tool loops ([0d09551](https://github.com/proteinjs/conversation/commit/0d095513c9b8c74c364115dd901b20f8d5b8112d))
+
+
+
+
+
 # [6.11.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.10.0...@proteinjs/conversation@6.11.0) (2026-09-29)
 
 
