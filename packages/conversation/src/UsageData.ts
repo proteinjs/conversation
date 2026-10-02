@@ -51,14 +51,57 @@ export type UsageCostUsd = {
 };
 
 /**
+ * ONE tool call of a loop step, as a consumer's usage record sees it: which tool, whether the loop's own
+ * execution of it succeeded, and what the call put into the conversation on each side — its
+ * arguments and its result. Both sizes are counted with the package's shared encoder (o200k, the
+ * encoder every budgeting layer here uses) over the text form — an ESTIMATE in those units, not
+ * the provider's billed count. `resultTokens` is the result AS THE MODEL RECEIVED IT: after the
+ * per-result ceiling (`toolResultCeiling`), a set-aside result counts its head + pointer, never
+ * the kept whole.
+ */
+export type StepToolUsage = {
+  /** The call's id as the model issued it (the SDK's `toolCallId`). */
+  toolCallId: string;
+  /** The tool's name. */
+  name: string;
+  /**
+   * False when the loop's own execution of the call failed (the tool threw; the model received
+   * the error text). True otherwise — including a call the loop never executed itself (a
+   * provider-executed tool), which has no execution outcome to report.
+   */
+  ok: boolean;
+  /** The call's arguments as their JSON, counted with the shared encoder — an estimate. */
+  argTokens: number;
+  /**
+   * The result as the model received it — after the per-result ceiling — counted with the shared
+   * encoder: a string result verbatim, any other value as its JSON, a multimodal result's text
+   * parts, a failed call's error text; 0 for a call the step carries no result for. An estimate.
+   */
+  resultTokens: number;
+};
+
+/**
  * ONE loop step's usage — one billed provider request inside a tool loop (the initial request,
  * then every tool-call continuation). The SDK reports each step's usage on the step itself
  * (`StepResult.usage`); `UsageData.steps` keeps that list instead of only its sum, so a
  * downstream ledger can tell the FIRST request (the cross-turn prompt-cache read) from the
  * later steps (within-turn re-reads of the same prefix) — `totalTokenUsage` cannot: it is the
- * sum. `toolCalls` = how many tools the model called in that step.
+ * sum. `tools` names what the step called and what each call added (see {@link StepToolUsage}),
+ * and `costUsd` prices the step on its own, so a consumer can attribute one request to the tools
+ * it served without re-deriving either from the sum.
  */
-export type StepUsage = TokenUsage & { toolCalls: number };
+export type StepUsage = TokenUsage & {
+  /** How many tools the model called in that step. */
+  toolCalls: number;
+  /** The step's tool calls in call order — one entry per call; empty for a step that called none. */
+  tools: StepToolUsage[];
+  /**
+   * The USD cost of the step's OWN token usage, priced exactly as `totalCostUsd` prices the sum
+   * (`calculateUsageCostUsd` with the same pricing data) — Σ over `steps` reconciles to
+   * `totalCostUsd.totalUsd`. 0 for an unpriced model, as the totals are.
+   */
+  costUsd: number;
+};
 
 /**
  * Usage data accumulated throughout the lifecycle of a single call to

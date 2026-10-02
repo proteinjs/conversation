@@ -298,8 +298,13 @@ export class ToolResultOverflow {
     return text;
   }
 
-  /** A result's text form: a string verbatim, a multimodal result's text parts, anything else as JSON; none for a value with no text form. */
-  private static textOf(output: unknown): string | undefined {
+  /**
+   * A result's text form — what the model reads of it: a string verbatim, a multimodal result's
+   * text parts, anything else as its JSON; none for a value with no text form (a streaming tool's
+   * iterable). The ceiling judges a result by this text, and the per-step usage measures it by
+   * the same text, so the two agree on a result's size.
+   */
+  static textOf(output: unknown): string | undefined {
     if (typeof output === 'string') {
       return output;
     }

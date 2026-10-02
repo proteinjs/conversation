@@ -18,7 +18,14 @@ import { ConversationSkill } from './ConversationSkill';
 import { Function, ToolTimelineDetail } from './Function';
 import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
-import { UsageData, UsageDataAccumulator, TokenUsage, StepUsage } from './UsageData';
+import {
+  UsageData,
+  UsageDataAccumulator,
+  TokenUsage,
+  StepUsage,
+  StepToolUsage,
+  calculateUsageCostUsd,
+} from './UsageData';
 import type { ModelDataResolver } from './ModelData';
 import { resolveModel, routedProvider } from './resolveModel';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
@@ -614,6 +621,20 @@ export type GenerateResponseResult = {
   toolInvocations: ToolInvocationResult[];
 };
 
+/**
+ * A loop step as the usage mapper reads it — the fields of the SDK's `StepResult` it needs: the
+ * step's own usage, its tool calls (id, name, input), its tool results (id, output — the bounded
+ * output when the call's result was over the per-result ceiling) and the `tool-error` parts of
+ * its content for a call that failed. Loose on purpose: the partial-usage path hands the mapper
+ * placeholder steps carrying none of these.
+ */
+type UsageStep = {
+  usage?: LanguageModelUsage;
+  toolCalls?: Array<{ toolCallId?: string; toolName?: string; input?: unknown }>;
+  toolResults?: Array<{ toolCallId?: string; output?: unknown }>;
+  content?: Array<{ type?: string; toolCallId?: string; error?: unknown }>;
+};
+
 // ────────────────────────────────────────────────────────────────
 // Default constants
 // ────────────────────────────────────────────────────────────────
@@ -1125,7 +1146,7 @@ export class Conversation {
           }
         );
         const allSteps = rounds.flatMap(({ steps }) => steps ?? []);
-        const usage = this.mapSdkUsage(summed as LanguageModelUsage, modelString, allSteps);
+        const usage = this.mapSdkUsage(summed as LanguageModelUsage, modelString, allSteps, capturedInvocations);
         if (params.onUsageData) {
           await params.onUsageData(usage);
         }
@@ -3825,7 +3846,13 @@ export class Conversation {
   private mapSdkUsage(
     sdkUsage: LanguageModelUsage,
     modelString: string,
-    steps?: Array<{ toolCalls?: Array<{ toolName?: string }>; usage?: LanguageModelUsage }>
+    steps?: UsageStep[],
+    /**
+     * The execute wrapper's captured outcomes (`recordInvocation`) — read for each call's `ok`
+     * only. A capture's `data` is the tool's whole return BEFORE the per-result ceiling; the
+     * sizes come from the step itself (see `stepToolUsage`).
+     */
+    capturedInvocations?: ToolInvocationResult[]
   ): UsageData {
     const inputTokens = sdkUsage?.inputTokens ?? 0;
     const outputTokens = sdkUsage?.outputTokens ?? 0;
@@ -3875,14 +3902,21 @@ export class Conversation {
       }
       const stepInput = su.inputTokens ?? 0;
       const stepOutput = su.outputTokens ?? 0;
-      stepUsages.push({
+      const stepTokens: TokenUsage = {
         inputTokens: stepInput,
         cachedInputTokens: su.inputTokenDetails?.cacheReadTokens ?? 0,
         cacheWriteTokens: su.inputTokenDetails?.cacheWriteTokens ?? 0,
         reasoningTokens: su.outputTokenDetails?.reasoningTokens ?? 0,
         outputTokens: stepOutput,
         totalTokens: su.totalTokens ?? stepInput + stepOutput,
+      };
+      stepUsages.push({
+        ...stepTokens,
         toolCalls: step.toolCalls?.length ?? 0,
+        tools: Conversation.stepToolUsage(step, capturedInvocations),
+        // The step's OWN usage, priced as the accumulator prices the sum — never the summed usage
+        // (every step would then carry the whole call's price).
+        costUsd: calculateUsageCostUsd(modelString, stepTokens, { modelData: this.params.modelData }).totalUsd,
       });
     }
 
@@ -3900,6 +3934,73 @@ export class Conversation {
    */
   private processAiSdkUsage(result: { usage: LanguageModelUsage }, modelString: string): UsageData {
     return this.mapSdkUsage(result.usage, modelString);
+  }
+
+  /**
+   * One step's tool calls as `StepUsage.tools`: in call order, each call's result joined by its
+   * `toolCallId` — never by position (the SDK lists a step's results in completion order). The
+   * sizes are the shared encoder over what the call put into the conversation: the arguments'
+   * JSON, and the result AS THE MODEL RECEIVED IT — the step's own `toolResults[].output`, which
+   * for a result over the per-result ceiling is the bounded output (its head + pointer), or the
+   * error text of a call that failed (the SDK renders a `tool-error` part as `error-text`). A
+   * captured invocation's `data` is the tool's whole return before the ceiling: it is never
+   * measured here; only the capture's `ok` is read, and a call with no capture (one the loop did
+   * not execute itself) is `ok`.
+   */
+  private static stepToolUsage(step: UsageStep, capturedInvocations?: ToolInvocationResult[]): StepToolUsage[] {
+    return (step.toolCalls ?? []).map((toolCall) => {
+      const toolCallId = toolCall.toolCallId ?? '';
+      const captured = capturedInvocations?.find((r) => r.id === toolCallId);
+      const result = (step.toolResults ?? []).find((r) => r.toolCallId === toolCallId);
+      let resultText: string | undefined;
+      if (result) {
+        resultText = ToolResultOverflow.textOf(result.output);
+      } else {
+        const failure = (step.content ?? []).find(
+          (part) => part.type === 'tool-error' && part.toolCallId === toolCallId
+        );
+        if (failure) {
+          resultText = Conversation.toolErrorText(failure.error);
+        }
+      }
+      return {
+        toolCallId,
+        name: toolCall.toolName ?? 'unknown',
+        ok: captured ? captured.ok : true,
+        argTokens: Conversation.jsonTokens(toolCall.input),
+        resultTokens: resultText === undefined ? 0 : Conversation.countToolResultTokens(resultText),
+      };
+    });
+  }
+
+  /** The shared encoder over a value's JSON — 0 for a value with no JSON form. */
+  private static jsonTokens(value: unknown): number {
+    try {
+      return Conversation.countToolResultTokens(JSON.stringify(value) ?? '');
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * A failed call's error as the SDK renders it for the model (the `error-text` output): an
+   * Error's message, a string verbatim, anything else as its JSON, "unknown error" for none.
+   */
+  private static toolErrorText(error: unknown): string {
+    if (error === undefined || error === null) {
+      return 'unknown error';
+    }
+    if (typeof error === 'string') {
+      return error;
+    }
+    if (error instanceof Error) {
+      return error.message;
+    }
+    try {
+      return JSON.stringify(error) ?? String(error);
+    } catch {
+      return String(error);
+    }
   }
 
   // ────────────────────────────────────────────────────────────
