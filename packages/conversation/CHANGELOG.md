@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.14.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.13.0...@proteinjs/conversation@6.14.0) (2026-10-02)
+
+
+### Features
+
+* **conversation:** per-step tool usage — names, sizes and cost on StepUsage ([e5c4dc4](https://github.com/proteinjs/conversation/commit/e5c4dc4d4b9e193bdbece58e9c389818a251ad0a))
+
+
+
+
+
 # [6.13.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.12.0...@proteinjs/conversation@6.13.0) (2026-09-30)
 
 
