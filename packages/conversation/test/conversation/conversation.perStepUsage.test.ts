@@ -1,5 +1,5 @@
 import { Conversation } from '../../src/Conversation';
-import { aggregateUsageData, type UsageData } from '../../src/UsageData';
+import { aggregateUsageData, calculateUsageCostUsd, type UsageData } from '../../src/UsageData';
 import { fixtureModelData } from './fixtureModelData';
 
 /**
@@ -70,24 +70,36 @@ describe('UsageData.steps — per-step usage rides beside the summed totals', ()
     expect(usage.totalRequestsToAssistant).toBe(2);
     expect(usage.callsPerTool).toEqual({ editThoughts: 1 });
 
+    const step1Tokens = {
+      inputTokens: 40_000,
+      cachedInputTokens: 9_000,
+      cacheWriteTokens: 31_000,
+      reasoningTokens: 120,
+      outputTokens: 300,
+      totalTokens: 40_300,
+    };
+    const step2Tokens = {
+      inputTokens: 41_000,
+      cachedInputTokens: 40_000,
+      cacheWriteTokens: 1_000,
+      reasoningTokens: 200,
+      outputTokens: 900,
+      totalTokens: 41_900,
+    };
+    // Each step also names its calls and carries its own price (the per-step tool usage suite owns
+    // those laws); a bare call with no id, input or result lists as an empty-sized entry.
     expect(usage.steps).toEqual([
       {
-        inputTokens: 40_000,
-        cachedInputTokens: 9_000,
-        cacheWriteTokens: 31_000,
-        reasoningTokens: 120,
-        outputTokens: 300,
-        totalTokens: 40_300,
+        ...step1Tokens,
         toolCalls: 1,
+        tools: [{ toolCallId: '', name: 'editThoughts', ok: true, argTokens: 0, resultTokens: 0 }],
+        costUsd: calculateUsageCostUsd('claude-opus-4-8', step1Tokens, { modelData: fixtureModelData }).totalUsd,
       },
       {
-        inputTokens: 41_000,
-        cachedInputTokens: 40_000,
-        cacheWriteTokens: 1_000,
-        reasoningTokens: 200,
-        outputTokens: 900,
-        totalTokens: 41_900,
+        ...step2Tokens,
         toolCalls: 0,
+        tools: [],
+        costUsd: calculateUsageCostUsd('claude-opus-4-8', step2Tokens, { modelData: fixtureModelData }).totalUsd,
       },
     ]);
     // Σ steps reconciles to the summed totals — the list is a partition of the sum, not a copy.
