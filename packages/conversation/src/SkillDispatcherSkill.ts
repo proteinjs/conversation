@@ -96,6 +96,8 @@ export class SkillDispatcherSkill implements ConversationSkill {
     // recognize when a request matches a skill *without* first having to call
     // listAvailableSkills. This is what lets it engage the right skill on the
     // first turn rather than handling the request with its general tools.
+    // The summary is the ROUTING line (`ConversationSkill.getSummary`); a skill's
+    // person-facing `getDescription` is never rendered here or by the tools below.
     const catalog = this.sortedSkills()
       .map((skill) => {
         const summary = skill.getSummary?.()?.trim();

@@ -14,10 +14,22 @@ export interface ConversationSkill {
   getName(): string;
   /**
    * One-line, model-facing summary of what this skill is and roughly when to
-   * reach for it. Surfaced by `SkillDispatcherSkill` in its catalog so an
-   * unpinned skill can be discovered. Keep it short (a single sentence).
+   * reach for it — the line the model routes on: `SkillDispatcherSkill` renders
+   * `name — summary` in its catalog so an unpinned skill can be discovered.
+   * Keep it short (a single sentence). A person never reads it; their line is
+   * `getDescription()`.
    */
   getSummary?(): string;
+  /**
+   * One-line, person-facing description of what this skill does for the
+   * person, in their everyday words — the line a picker or a catalog shows
+   * under `getName()`. The model never reads it: `SkillDispatcherSkill` routes
+   * on `getSummary()` alone and renders this line nowhere, so it is written for
+   * people without moving what the model matches on. One declaration, two
+   * renderings: the summary for the model, the description for the person.
+   * Optional — a skill with no surface for people omits it.
+   */
+  getDescription?(): string;
   /**
    * Optional usage hint — extra detail on when to reach for this skill, what
    * it's best at, and when *not* to use it. Surfaced by

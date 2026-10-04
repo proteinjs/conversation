@@ -134,6 +134,39 @@ describe('SkillDispatcherSkill', () => {
     });
   });
 
+  describe('the person-facing description (getDescription)', () => {
+    /** One skill, with and without its person-facing line — everything else identical. */
+    const routed = (): Parameters<typeof makeSkill>[0] => ({
+      id: 'alpha',
+      name: 'Alpha',
+      summary: 'does alpha things',
+      whenToUse: 'when alpha is asked for',
+      instructions: 'Alpha instructions.',
+      functions: [makeFn('go', 'Go alpha.', async () => 'went')],
+    });
+    const withDescription = (): ConversationSkill => ({
+      ...makeSkill(routed()),
+      getDescription: () => 'Does alpha things for you, in plain words',
+    });
+    const withoutDescription = (): ConversationSkill => makeSkill(routed());
+
+    it('never reaches the model: the catalog, the listing and the detail are byte-equal with and without it', async () => {
+      const described = new SkillDispatcherSkill([withDescription()]);
+      const plain = new SkillDispatcherSkill([withoutDescription()]);
+      expect(described.getSystemMessages()).toBe(plain.getSystemMessages());
+      expect(await callTool(described, 'listAvailableSkills', {})).toBe(
+        await callTool(plain, 'listAvailableSkills', {})
+      );
+      expect(await callTool(described, 'describeSkill', { skill: 'alpha' })).toBe(
+        await callTool(plain, 'describeSkill', { skill: 'alpha' })
+      );
+      // The routing line is name — summary; the person's words appear nowhere the model reads.
+      expect(described.getSystemMessages()).toContain('Alpha — does alpha things (id: `alpha`)');
+      expect(described.getSystemMessages()).not.toContain('in plain words');
+      expect(await callTool(described, 'describeSkill', { skill: 'alpha' })).not.toContain('in plain words');
+    });
+  });
+
   describe('listAvailableSkills', () => {
     it('renders id, name and summary for each registered skill', async () => {
       const dispatcher = new SkillDispatcherSkill([
