@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.15.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.14.0...@proteinjs/conversation@6.15.0) (2026-10-05)
+
+
+### Features
+
+* **conversation:** getDescription — a person-facing line beside the routing summary ([a40ec0b](https://github.com/proteinjs/conversation/commit/a40ec0b861c753900c07676eeb131c0e51de8294))
+
+
+
+
+
 # [6.14.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.13.0...@proteinjs/conversation@6.14.0) (2026-10-02)
 
 
