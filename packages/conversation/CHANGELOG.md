@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.16.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.15.0...@proteinjs/conversation@6.16.0) (2026-10-06)
+
+
+### Features
+
+* **conversation:** the timeline detail's glyph is a type face — the icon carried whole with its drawing terms ([3fff250](https://github.com/proteinjs/conversation/commit/3fff250b719c27074358ac431e81102ad7ee8bf5))
+
+
+
+
+
 # [6.15.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.14.0...@proteinjs/conversation@6.15.0) (2026-10-05)
 
 
