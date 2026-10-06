@@ -1,18 +1,40 @@
 import { ChatCompletionFunctionTool } from 'openai/resources/chat';
 
 /**
+ * The acted-on entity's TYPE identity as its renderer draws it — a FACE: the type's icon carried
+ * WHOLE (its name, its style, and every drawing term the producing domain declares on it — a term
+ * this package does not know rides through untouched; the index signature is that promise), the
+ * type's canonical hue, and the type's id when the producer has one (a renderer never needs it —
+ * two faces of one drawing draw alike with or without it). Serializable: it rides the timeline
+ * event, so a rendering layer shows typed identity without importing the producing domain's code.
+ */
+export type ToolTimelineGlyph = {
+  id?: string;
+  icon: { name: string; style?: 'solid' | 'regular' | 'light'; [term: string]: unknown };
+  color?: string;
+};
+
+/**
+ * The FLAT glyph shape details carried before the face (the icon's NAME on `icon`, its style and hue
+ * beside it): admitted by the type so a producer still composing it compiles, and lifted by the
+ * rendering layer into a {@link ToolTimelineGlyph} with no drawing terms. This package never reads a
+ * glyph — the detail passes through the harness whole — so the admission is the type's alone.
+ * Compatibility, dated 2026-10-05: removable once every producer hands the face.
+ */
+export type ToolTimelineFlatGlyph = { icon: string; style?: 'solid' | 'regular' | 'light'; color?: string };
+
+/**
  * A tool call's timeline subject: display text plus an optional app deep-link href that lets the
  * rendering layer make the timeline detail clickable (e.g. `thought://nav?...` opens the edited
  * document). Plain-string details remain valid — most tools have nothing to link to.
  *
- * `glyph` carries the acted-on entity's TYPE identity as a serializable FontAwesome
- * string-lookup icon plus its canonical hue (e.g. a thought's ThoughtType record icon/color),
- * so rendering layers can show typed identity without importing the producing domain's code.
+ * `glyph` carries the acted-on entity's TYPE identity as a face ({@link ToolTimelineGlyph}; the
+ * flat form {@link ToolTimelineFlatGlyph} is admitted for its dated window).
  */
 export type ToolTimelineDetail = {
   text: string;
   href?: string;
-  glyph?: { icon: string; style?: 'solid' | 'regular' | 'light'; color?: string };
+  glyph?: ToolTimelineGlyph | ToolTimelineFlatGlyph;
 };
 
 /**
