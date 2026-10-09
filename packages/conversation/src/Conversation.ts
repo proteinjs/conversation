@@ -14,7 +14,7 @@ import { SdkContentParts } from './sdkContentParts';
 import { ObjectGenerationError } from './ObjectGenerationError';
 import type { RepairTextFunction } from 'ai';
 import { Logger, LogLevel } from '@proteinjs/logger';
-import { ConversationSkill } from './ConversationSkill';
+import { ConversationSkill, type SystemMessageSegment } from './ConversationSkill';
 import { Function, ToolTimelineDetail } from './Function';
 import { MessageModerator } from './history/MessageModerator';
 import { MessageHistory } from './history/MessageHistory';
@@ -677,6 +677,11 @@ export class Conversation {
   private tokenLimit: number;
   private history: MessageHistory;
   private systemMessages: ConversationMessage[] = [];
+  /**
+   * The skills' STABLE system blocks (the cached head): laid out ahead of every other system
+   * message, whatever order the history was added in — see `buildAiSdkMessages`.
+   */
+  private readonly stableSystemBlocks = new Set<ConversationMessage>();
   private functions: Function[] = [];
   private messageModerators: MessageModerator[] = [];
   private logger: Logger;
@@ -744,7 +749,8 @@ export class Conversation {
     });
 
     // Build messages for the AI SDK
-    const messages = this.normalizeMessagesForProvider(provider, this.buildAiSdkMessages(params.messages));
+    const built = this.buildAiSdkMessages(params.messages);
+    const messages = this.normalizeMessagesForProvider(provider, built.messages);
 
     // Build tools from skill functions + any extra tools. For providers
     // whose tool-result adapter strips image content (xAI — see
@@ -793,8 +799,12 @@ export class Conversation {
 
     const unboundTools = { ...tools, ...webSearchTools, ...skillProviderTools };
     // Every in-process tool's output bounded at the one place the tool set is final — function
-    // tools and a skill's provider-defined tools alike (ToolResultOverflow).
-    const allTools = overflow ? overflow.wrapTools(unboundTools) : unboundTools;
+    // tools and a skill's provider-defined tools alike (ToolResultOverflow); then the tools tier's
+    // cache breakpoint on the final set.
+    const allTools = Conversation.applyAnthropicToolsTierCaching(
+      provider,
+      overflow ? overflow.wrapTools(unboundTools) : unboundTools
+    );
 
     // Names of tools WE execute in-process (they carry an execute()) — the liveness guard
     // suspends its idle race while one of these is outstanding, because the SDK emits no
@@ -844,7 +854,14 @@ export class Conversation {
     // runs a deferred search cannot be cut — its continuation would carry blocks behind the open
     // call, and only this step's response carries the search's result.
     let stepOpenOnServerTool = false;
-    const projection = { provider, tools: allTools, modelString, beforeRequest: params.beforeRequest, overflow };
+    const projection = {
+      provider,
+      tools: allTools,
+      modelString,
+      beforeRequest: params.beforeRequest,
+      overflow,
+      stableSystemBlocks: built.stableSystemBlocks,
+    };
 
     // Cumulative per-step usage for live in-flight reporting. Each step (tool-call
     // round) is a separate billed call, so summing step usage reconciles exactly
@@ -1932,7 +1949,8 @@ export class Conversation {
     const modelString = this.getModelString(params.model);
     const provider = routedProvider(params.model ?? this.params.defaultModel ?? DEFAULT_MODEL);
 
-    const messages = this.normalizeMessagesForProvider(provider, this.buildAiSdkMessages(params.messages));
+    const built = this.buildAiSdkMessages(params.messages);
+    const messages = this.normalizeMessagesForProvider(provider, built.messages);
 
     // Schema normalization. Strict-mode rewriting (every property required) is an OpenAI
     // Structured Outputs requirement ONLY — other providers get the schema as authored.
@@ -1954,6 +1972,7 @@ export class Conversation {
         modelString,
         provider,
         messages,
+        stableSystemBlocks: built.stableSystemBlocks,
         loopFunctions,
         normalizedSchema,
       });
@@ -2046,6 +2065,8 @@ export class Conversation {
       modelString: string;
       provider: string;
       messages: ModelMessage[];
+      /** The cached head's size in system messages (`buildAiSdkMessages`). */
+      stableSystemBlocks: number;
       loopFunctions: Function[];
       normalizedSchema: unknown;
     }
@@ -2085,8 +2106,12 @@ export class Conversation {
         recordInvocation: (r) => capturedInvocations.push(r),
       }
     );
-    // Every in-process tool's output bounded at the one place the loop's tool set is final.
-    const tools = overflow ? overflow.wrapTools(loopTools) : loopTools;
+    // Every in-process tool's output bounded at the one place the loop's tool set is final; then
+    // the tools tier's cache breakpoint on the final set.
+    const tools = Conversation.applyAnthropicToolsTierCaching(
+      args.provider,
+      overflow ? overflow.wrapTools(loopTools) : loopTools
+    );
 
     // The submit contract rides a system message — inserted at the END of the LEADING system
     // block (messages arrive system-first for Anthropic/Google, which reject system messages
@@ -2148,6 +2173,7 @@ export class Conversation {
           previousRequestInputTokens: Conversation.lastStepInputTokens(steps),
           beforeRequest: params.beforeRequest,
           overflow,
+          stableSystemBlocks: args.stableSystemBlocks,
         }),
       }),
     });
@@ -2293,15 +2319,22 @@ export class Conversation {
 
     for (const skill of this.params.skills) {
       const skillName = skill.getName();
+      const heading = `The following are instructions from the ${skillName} skill:\n`;
 
-      // System messages
-      const rawSystem = await Promise.resolve(skill.getSystemMessages());
-      const sysArr = Array.isArray(rawSystem) ? rawSystem : rawSystem ? [rawSystem] : [];
-      const trimmed = sysArr.map((s) => String(s ?? '').trim()).filter(Boolean);
-
-      if (trimmed.length > 0) {
-        const formatted = trimmed.join('. ');
-        this.addSystemMessagesToHistory([`The following are instructions from the ${skillName} skill:\n${formatted}`]);
+      // System messages: by segments when the skill declares them (the stable-first layout —
+      // see `systemBlocksBySegment`), else one stable block.
+      if (skill.getSystemMessageSegments) {
+        const segments = await Promise.resolve(skill.getSystemMessageSegments());
+        for (const block of Conversation.systemBlocksBySegment(heading, segments)) {
+          this.addSkillSystemBlock(block.text, block.stable);
+        }
+      } else {
+        const rawSystem = await Promise.resolve(skill.getSystemMessages());
+        const sysArr = Array.isArray(rawSystem) ? rawSystem : rawSystem ? [rawSystem] : [];
+        const trimmed = sysArr.map((s) => String(s ?? '').trim()).filter(Boolean);
+        if (trimmed.length > 0) {
+          this.addSkillSystemBlock(`${heading}${trimmed.join('. ')}`, true);
+        }
       }
 
       // Functions
@@ -2319,12 +2352,72 @@ export class Conversation {
         }
       }
       if (hasInstructions) {
-        this.addSystemMessagesToHistory([functionInstructions]);
+        this.addSkillSystemBlock(functionInstructions, true);
       }
 
       // Message moderators
       this.messageModerators.push(...skill.getMessageModerators());
     }
+  }
+
+  /** One of a skill's system blocks into the history, remembered as the head's when it is stable. */
+  private addSkillSystemBlock(text: string, stable: boolean): void {
+    const block: ConversationMessage = { role: 'system', content: text };
+    this.addMessagesToHistory([block]);
+    if (stable) {
+      this.stableSystemBlocks.add(block);
+    }
+  }
+
+  /**
+   * A segmented skill's system blocks (the stable-first layout). The segments' texts, concatenated
+   * in order, are the one message the skill renders, trimmed at its ends as every skill's message
+   * is; the STABLE segments join into one block under the skill's heading, and each VOLATILE
+   * segment is a block of its own, verbatim. A skill with no stable text puts its heading on its
+   * first volatile block. Nothing is added and nothing is dropped: the blocks' texts, less the
+   * heading, are the message's bytes — regrouped by stability, never reworded. A whitespace-only
+   * segment rides into the block that follows it (a provider rejects a text block with no text).
+   */
+  private static systemBlocksBySegment(
+    heading: string,
+    segments: SystemMessageSegment[]
+  ): Array<{ text: string; stable: boolean }> {
+    const texts = segments.map((segment) => String(segment.text ?? ''));
+    const whole = texts.join('');
+    const lead = whole.length - whole.trimStart().length;
+    const trail = whole.trimEnd().length;
+    const kept: Array<{ text: string; stable: boolean }> = [];
+    let offset = 0;
+    let carried = '';
+    for (let index = 0; index < texts.length; index++) {
+      const text = texts[index];
+      const start = Math.max(offset, lead);
+      const end = Math.min(offset + text.length, trail);
+      offset += text.length;
+      const slice = end > start ? whole.slice(start, end) : '';
+      if (!slice) {
+        continue;
+      }
+      if (!slice.trim()) {
+        carried += slice;
+        continue;
+      }
+      kept.push({ text: carried + slice, stable: segments[index].stable });
+      carried = '';
+    }
+    const stable = kept
+      .filter((segment) => segment.stable)
+      .map((segment) => segment.text)
+      .join('');
+    const volatile = kept.filter((segment) => !segment.stable).map((segment) => segment.text);
+    const blocks: Array<{ text: string; stable: boolean }> = [];
+    if (stable) {
+      blocks.push({ text: `${heading}${stable}`, stable: true });
+    }
+    for (let index = 0; index < volatile.length; index++) {
+      blocks.push({ text: `${!stable && index === 0 ? heading : ''}${volatile[index]}`, stable: false });
+    }
+    return blocks;
   }
 
   // ────────────────────────────────────────────────────────────
@@ -2362,14 +2455,28 @@ export class Conversation {
     return messages;
   }
 
-  private buildAiSdkMessages(callMessages: ConversationMessage[]): ModelMessage[] {
+  /**
+   * THE STABLE-FIRST LAYOUT. The skills' stable system blocks (the cached head: instructions, conduct,
+   * function instructions — `stableSystemBlocks`) come first, in skill order; then everything else
+   * in the order it was added — the history's own system blocks (a caller's summaries and
+   * preludes), the skills' volatile blocks (a document, an index, a tree, a per-user line), the
+   * transcript — and the call's messages last. Providers that hoist system messages to the prompt's
+   * head keep this relative order, so the head's cache breakpoint lands on the last stable block
+   * (`applyAnthropicPromptCaching`) and a volatile change rewrites only what follows it. Returns
+   * the head's size beside the messages: the breakpoint builder counts system messages to it.
+   */
+  private buildAiSdkMessages(callMessages: ConversationMessage[]): {
+    messages: ModelMessage[];
+    stableSystemBlocks: number;
+  } {
+    const head: ModelMessage[] = [];
     const result: ModelMessage[] = [];
 
-    // Add history messages
+    // Add history messages — the stable skill blocks to the head, the rest in order
     for (const msg of this.history.getMessages()) {
       const built = this.toModelMessage(msg as unknown as Record<string, unknown>);
       if (built) {
-        result.push(built);
+        (this.stableSystemBlocks.has(msg as unknown as ConversationMessage) ? head : result).push(built);
       }
     }
 
@@ -2387,7 +2494,7 @@ export class Conversation {
       }
     }
 
-    return result;
+    return { messages: [...head, ...result], stableSystemBlocks: head.length };
   }
 
   /**
@@ -3051,6 +3158,8 @@ export class Conversation {
       beforeRequest?: (request: OutgoingRequest) => void;
       /** The call's per-result ceiling owner — an evicted result becomes its pointer, never a dead placeholder. */
       overflow?: ToolResultOverflow;
+      /** The cached head's size in system messages (`buildAiSdkMessages`); 0 = no stable skill block. */
+      stableSystemBlocks?: number;
     }
   ): ModelMessage[] {
     let next = stepMessages;
@@ -3068,7 +3177,7 @@ export class Conversation {
       // Runs for every step including the first, so this is the single seam
       // where outgoing Anthropic requests get cache breakpoints (after pruning —
       // marks must land on the final per-step messages).
-      next = Conversation.applyAnthropicPromptCaching(next);
+      next = Conversation.applyAnthropicPromptCaching(next, args.stableSystemBlocks ?? 0);
     }
     // Coerce non-object tool-call inputs LAST, so it sees the final per-step
     // messages (after pruning + cache marking).
@@ -3243,8 +3352,12 @@ export class Conversation {
    * whole conversation at full input price (agentic loops resend the entire
    * prefix every step — uncached, that dominates turn cost).
    *
-   * Breakpoints (≤3 of Anthropic's max 4):
-   *  - the last system message — caches tools + system, stable across turns;
+   * Breakpoints on the messages (3 of Anthropic's max 4; the fourth is the tools tier's —
+   * `applyAnthropicToolsTierCaching`):
+   *  - the HEAD — the last STABLE system block (the skills' instructions, laid out first by
+   *    `buildAiSdkMessages`), so the volatile system blocks behind it (a document, an index, a
+   *    tree, a caller's summaries) can change without the head being written again; when the
+   *    layout has no stable block, the last system message, as before;
    *  - the last TWO non-system messages — a rolling pair: the next request's
    *    penultimate breakpoint is this request's last one, so the longest
    *    cached prefix is re-read every step even as the transcript grows.
@@ -3283,16 +3396,27 @@ export class Conversation {
 
   private static promptDumpSeq = 0;
 
-  private static applyAnthropicPromptCaching(messages: ModelMessage[]): ModelMessage[] {
+  private static applyAnthropicPromptCaching(messages: ModelMessage[], stableSystemBlocks: number): ModelMessage[] {
     type WithProviderOptions = { providerOptions?: Record<string, Record<string, unknown>> };
     const cacheControl = { type: 'ephemeral' as const };
 
     const markIndexes = new Set<number>();
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === 'system') {
-        markIndexes.add(i);
-        break;
+    let headIndex = -1;
+    let lastSystemIndex = -1;
+    let systemSeen = 0;
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i].role !== 'system') {
+        continue;
       }
+      lastSystemIndex = i;
+      systemSeen++;
+      if (systemSeen === stableSystemBlocks) {
+        headIndex = i;
+      }
+    }
+    const systemMark = headIndex >= 0 ? headIndex : lastSystemIndex;
+    if (systemMark >= 0) {
+      markIndexes.add(systemMark);
     }
     let rollingMarks = 0;
     for (let i = messages.length - 1; i >= 0 && rollingMarks < 2; i--) {
@@ -3326,6 +3450,44 @@ export class Conversation {
         providerOptions: Object.keys(nextOptions).length > 0 ? nextOptions : undefined,
       } as ModelMessage;
     });
+  }
+
+  /**
+   * Anthropic prompt caching, the tools tier: a cache breakpoint on the LAST function tool, so the
+   * roster — the first bytes of every request's prefix — is its own cache entry. A request whose
+   * head changed (a skill's instructions, a pinned skill joining) over the same roster then reads
+   * the tools tier instead of writing it again; a roster change, as before, writes everything
+   * from the roster on. A provider-defined tool (a server-side search) carries no breakpoint in
+   * this SDK and rides after the function tools, in the head's entry. The fourth of Anthropic's
+   * four breakpoints beside `applyAnthropicPromptCaching`'s three; other providers' tool sets
+   * pass through untouched.
+   */
+  private static applyAnthropicToolsTierCaching(provider: string, tools: ToolSet): ToolSet {
+    if (provider !== 'anthropic') {
+      return tools;
+    }
+    const entries = Object.entries(tools);
+    let last = -1;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const type = (entries[i][1] as { type?: string }).type;
+      if (type === undefined || type === 'function' || type === 'dynamic') {
+        last = i;
+        break;
+      }
+    }
+    if (last < 0) {
+      return tools;
+    }
+    const [name, tool] = entries[last];
+    const prev = (tool as { providerOptions?: Record<string, Record<string, unknown>> }).providerOptions;
+    entries[last] = [
+      name,
+      {
+        ...tool,
+        providerOptions: { ...prev, anthropic: { ...(prev?.anthropic ?? {}), cacheControl: { type: 'ephemeral' } } },
+      } as ToolSet[string],
+    ];
+    return Object.fromEntries(entries) as ToolSet;
   }
 
   /**

@@ -2,6 +2,22 @@ import type { ToolSet } from 'ai';
 import { Function } from './Function';
 import { MessageModerator } from './history/MessageModerator';
 
+/**
+ * One segment of a skill's system message, by stability — see
+ * {@link ConversationSkill.getSystemMessageSegments}.
+ */
+export interface SystemMessageSegment {
+  /** The segment's text, verbatim: the bytes the model reads. */
+  text: string;
+  /**
+   * `true` for text that is byte-stable across requests and across users (instructions, conduct,
+   * how-to) — it rides the prompt's cached head; `false` for text that changes turn to turn or
+   * user to user (an open document, an index, a memory tree, a per-user or per-conversation line)
+   * — it rides the tail, behind the head's cache breakpoint.
+   */
+  stable: boolean;
+}
+
 export interface ConversationSkill {
   /**
    * Stable, kebab-case identifier for this skill. Must be unique across all
@@ -39,6 +55,16 @@ export interface ConversationSkill {
   getWhenToUse?(): string;
   /** Return array of strings that will be formatted with periods in between or return a preformatted string */
   getSystemMessages(): string[] | string | Promise<string[] | string>;
+  /**
+   * Optional: the system message as ORDERED SEGMENTS by stability. A conversation lays its prompt
+   * out stable-first — every skill's stable segments ride the cached head as one block under the
+   * skill's heading, and every volatile segment rides the tail as a block of its own, behind the
+   * head's cache breakpoint — so a volatile change (a document edited, a tree written, another
+   * user's lines) rewrites the tail only while the head is read from the cache. The segments'
+   * texts, concatenated in order, are the one message `getSystemMessages()` renders: the same
+   * bytes, regrouped by stability, never reworded. A skill without this reads as one stable block.
+   */
+  getSystemMessageSegments?(): SystemMessageSegment[] | Promise<SystemMessageSegment[]>;
   getFunctions(): Function[];
   getMessageModerators(): MessageModerator[];
   /**
