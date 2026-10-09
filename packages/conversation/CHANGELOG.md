@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.17.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.16.1...@proteinjs/conversation@6.17.0) (2026-10-09)
+
+
+### Features
+
+* **conversation:** the stable-first prompt layout — a skill's system message by segments, the head's breakpoint on the last stable block, the tools tier's own breakpoint ([5b96fa2](https://github.com/proteinjs/conversation/commit/5b96fa2a86097f01ce40c97861c3fe920036989c))
+
+
+
+
+
 ## [6.16.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.16.0...@proteinjs/conversation@6.16.1) (2026-10-09)
 
 
