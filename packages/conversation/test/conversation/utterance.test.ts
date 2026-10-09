@@ -6,7 +6,8 @@ import { fixtureModelData } from './fixtureModelData';
 /**
  * THE BOUNDED UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c — the load-bearing guarantee of the
  * 10-second bar): before the mind takes an input into a step, the loop asks it for ONE LINE in a
- * separate no-tools, no-thinking call over the same transcript, streams that line as its own step
+ * separate no-thinking call over the same transcript and the same tool roster as the step (the
+ * step's cache prefix; nothing runnable on the call), streams that line as its own step
  * (a `step-finish` flagged `utterance`), and runs the step with the line riding as the agent's own
  * prior message + the continue framing. On every door: turn start (the idle path), the step
  * boundary (`prepareStep`), the thinking-phase restart, the mid-text cut, the exit absorption.
@@ -215,7 +216,7 @@ const expectFraming = (prompt: Prompt, line: string, input?: string): void => {
 
 describe('the bounded utterance — one line before every step that takes an input in (FREE_AGENT §M.3 part 2c)', () => {
   test(
-    'IDLE PATH: the take-in line is a separate no-tools, no-thinking, UNCAPPED call over the request whose ask carries the length guidance — streamed first, flagged utterance, then the first step runs under the framing',
+    'IDLE PATH: the take-in line is a separate no-thinking, UNCAPPED call over the request whose ask carries the length guidance, on the step’s own tool roster — streamed first, flagged utterance, then the first step runs under the framing',
     async () => {
       const calls: CallOptions[] = [];
       const model = new MockLanguageModelV3({
@@ -236,12 +237,14 @@ describe('the bounded utterance — one line before every step that takes an inp
       const { parts } = await collect(result.fullStream);
 
       expect(calls).toHaveLength(2);
-      // The utterance call: the request with the instruction appended; no tools; thinking off;
-      // the small ceiling.
+      // The utterance call: the request with the instruction appended; the step's own tool
+      // roster (the cache prefix the step reads — the roster is the key's first bytes); thinking
+      // off; no ceiling.
       const utterance = calls[0];
       expect(Utterance.isRequest(utterance.prompt)).toBe(true);
       expect(messageText(utterance.prompt[utterance.prompt.length - 1] as never)).toContain('compare sql and nosql');
-      expect(utterance.tools ?? []).toHaveLength(0);
+      expect((utterance.tools ?? []).length).toBeGreaterThan(0);
+      expect(utterance.tools).toEqual(calls[1].tools);
       // No output cap on the request: the length is guidance in the ask (the ruling 2026-09-13 —
       // never a cut), so the line is never truncated by the harness.
       expect(utterance.maxOutputTokens).toBeUndefined();
@@ -508,7 +511,8 @@ describe('the bounded utterance — one line before every step that takes an inp
       expect(mainStep).toBe(2);
       const side = calls[2];
       expect(Utterance.isRequest(side.prompt)).toBe(true);
-      expect(side.tools ?? []).toHaveLength(0);
+      // On the round's own roster, like every utterance (the step's cache prefix).
+      expect(side.tools).toEqual(calls[1].tools);
       const sideText = messageText(side.prompt[side.prompt.length - 1] as never);
       expect(sideText).toContain(NUDGE.text);
       // The input's OWN ask, not the default acknowledgment instruction.

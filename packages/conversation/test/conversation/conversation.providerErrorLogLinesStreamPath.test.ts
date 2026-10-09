@@ -249,6 +249,7 @@ describe('the provider`s words stay off the library`s own lines on the stream pa
           model: unknown;
           transcript: unknown[];
           inputs: { text: string }[];
+          tools: Record<string, unknown>;
           provider: string;
           modelString: string;
           abortSignal: AbortSignal;
@@ -261,6 +262,7 @@ describe('the provider`s words stay off the library`s own lines on the stream pa
         model: new LlmTransportRetry({ budgetMs: 5_000 }).wrap(rawPayloadBeforeText() as never),
         transcript: [{ role: 'user', content: 'and the login page?' }],
         inputs: [{ text: 'also the header' }],
+        tools: {},
         provider: 'anthropic',
         modelString: 'claude-test',
         abortSignal: new AbortController().signal,

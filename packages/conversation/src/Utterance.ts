@@ -3,8 +3,10 @@ import type { ModelMessage } from 'ai';
 /**
  * The BOUNDED UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c — the load-bearing guarantee of the
  * 10-second bar): before the mind takes an input into its next step, the harness asks it for ONE
- * LINE — a separate call on the same model over the same transcript (a prompt-cache hit) with the
- * input appended and this instruction, no tools, thinking off, NO output cap: the length is
+ * LINE — a separate call on the same model over the same transcript and the same tool roster as
+ * the step that follows (the step's own cache prefix: the call's cache write is the step's read;
+ * no tool runs on the call), with the input appended and this instruction, thinking off, NO
+ * output cap: the length is
  * guidance in the ask ("one short sentence — two at most"), never a cut (the ruling 2026-09-13:
  * "it needs to be a guidance on how long the response should be, but we should never cut off a
  * response"). The line is the acknowledgment the user is owed at once, in the agent's own words;

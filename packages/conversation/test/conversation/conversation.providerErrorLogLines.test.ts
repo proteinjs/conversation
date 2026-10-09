@@ -424,6 +424,7 @@ describe('a provider error on a log line never carries the request, the response
           model: unknown;
           transcript: unknown[];
           inputs: { text: string }[];
+          tools: Record<string, unknown>;
           provider: string;
           modelString: string;
           abortSignal: AbortSignal;
@@ -441,6 +442,7 @@ describe('a provider error on a log line never carries the request, the response
         model: new LlmTransportRetry({ budgetMs: 5_000 }).wrap(model as never),
         transcript: [{ role: 'user', content: 'and the login page?' }],
         inputs: [{ text: 'also the header' }],
+        tools: {},
         provider: 'anthropic',
         modelString: 'claude-test',
         abortSignal: new AbortController().signal,

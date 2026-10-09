@@ -328,8 +328,9 @@ export type GenerateStreamParams = {
    * The bounded UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c; see {@link Utterance}): before the
    * mind takes an input into a step — at turn start, and at every drain that hands inputs to
    * the model (a step boundary, a thinking-phase restart, a mid-text cut, the exit absorption) —
-   * the loop asks it for ONE LINE in a separate no-tools, no-thinking call over the same
-   * transcript, streams that line as its own step (a `step-finish` part flagged `utterance`, the
+   * the loop asks it for ONE LINE in a separate no-thinking call over the same transcript and the
+   * same tool roster (the step's cache prefix, so the call's cache write serves the step; no tool
+   * runs on it), streams that line as its own step (a `step-finish` part flagged `utterance`, the
    * acknowledgment the consumer commits to the response), then runs the step with the inputs
    * spliced and the line riding as the agent's own prior message + the continue framing. A
    * failed or empty utterance is logged and the step runs as it would have without one.
@@ -971,6 +972,7 @@ export class Conversation {
                         projection
                       ),
                       inputs: drained,
+                      tools: allTools,
                       provider,
                       modelString,
                       abortSignal: combinedAbortSignal,
@@ -1038,8 +1040,9 @@ export class Conversation {
     // ONE logical response (see finalizeAcrossRounds); the bounded utterance's calls ride here too.
     const roundResults: Array<ReturnType<typeof startCall>> = [];
     let liveResult: ReturnType<typeof startCall> | undefined;
-    // The side utterance said over a transcript (plans/FREE_AGENT.md §M.3 part 5): one no-tools call
-    // with the input's own ask; the line lands as ONE `side-utterance` part and its framing rides
+    // The side utterance said over a transcript (plans/FREE_AGENT.md §M.3 part 5): one call over the
+    // step's roster (nothing runnable on it) with the input's own ask; the line lands as ONE
+    // `side-utterance` part and its framing rides
     // the next step (`pendingSideFramings`). The transcript must be CLOSED (no server tool open —
     // `openServerToolCallIds`); the callers own that check.
     const sayAside = async (ask: DrainedInput, transcript: ModelMessage[]): Promise<void> => {
@@ -1049,6 +1052,7 @@ export class Conversation {
         modelString,
         abortSignal: combinedAbortSignal,
         utteranceEffort: params.utteranceEffort,
+        tools: allTools,
         transcript,
         inputs: [ask],
         onResult: (r) => roundResults.push(r),
@@ -1222,6 +1226,7 @@ export class Conversation {
         modelString,
         abortSignal: combinedAbortSignal,
         utteranceEffort: params.utteranceEffort,
+        tools: allTools,
       };
       const utter = (transcript: ModelMessage[], inputs: DrainedInput[]) =>
         self.utter({
@@ -4269,17 +4274,30 @@ export class Conversation {
   }
 
   /**
-   * The bounded utterance (plans/FREE_AGENT.md §M.3 part 2c; {@link Utterance}): one no-tools,
-   * no-thinking call over `transcript` + `inputs` + the instruction, its line yielded as ONE
-   * text-delta part and closed by a step-finish flagged `utterance`. Returns the line, or nothing
-   * when the call produced no line — no text, a failure, or the provider's output limit reached
-   * before the line's end (logged — the step then runs without its line, and the consumer's
-   * acknowledgment window commits that step's own first text as before).
+   * The bounded utterance (plans/FREE_AGENT.md §M.3 part 2c; {@link Utterance}): one no-thinking
+   * call over `transcript` + `inputs` + the instruction, its line yielded as ONE text-delta part
+   * and closed by a step-finish flagged `utterance`. Returns the line, or nothing when the call
+   * produced no line — no text, a failure, or the provider's output limit reached before the
+   * line's end (logged — the step then runs without its line, and the consumer's acknowledgment
+   * window commits that step's own first text as before).
+   *
+   * THE REQUEST'S ENVELOPE IS THE STEP'S. The call rides the same tool roster as the step that
+   * follows it, over the same projected transcript (the same system prefix, the same cache
+   * breakpoints — `projectOutgoingStepMessages`): a provider's prompt cache is keyed on the
+   * request's prefix bytes in order — the roster first, then the system prefix, then the
+   * messages — so only a request with the step's roster writes an entry the step then reads.
+   * Sent without it (as it was), the utterance wrote the whole system region to the cache at the
+   * write price and the step wrote it again. The words the model reads are unchanged: the roster
+   * is the step's own; the ask is for the line. No tool is runnable on this call (`execute`
+   * stripped — {@link Conversation.unexecutableTools}): a tool-call answer is a missing line,
+   * logged, never a run.
    */
   private async *utter(args: {
     model: LanguageModel;
     transcript: ModelMessage[];
     inputs: DrainedInput[];
+    /** The step's tool roster — carried on the request so the cache entry it writes is the step's. */
+    tools: ToolSet;
     provider: string;
     modelString: string;
     abortSignal: AbortSignal;
@@ -4288,6 +4306,7 @@ export class Conversation {
     onResult: (result: ReturnType<typeof streamText>) => void;
   }): AsyncGenerator<any, string | undefined> {
     const request = Utterance.request(args.transcript, args.inputs);
+    const tools = Conversation.unexecutableTools(args.tools);
     const startedAt = Date.now();
     // The LINE is the first paragraph of what the model writes, WHOLE or nothing (the ruling
     // 2026-09-13: the length is guidance in the ask — Utterance.INSTRUCTION's "one short sentence
@@ -4315,10 +4334,14 @@ export class Conversation {
     // the provider refused the value asked): forwarded as the utterance step's `start-step`, the
     // same way every step's are, so the consumer reads the substitution instead of guessing.
     let stepStart: unknown;
+    // Whether the model answered the ask with a tool call: nothing runs (no tool here can), and
+    // the call has no line.
+    let toolCallAnswer = false;
     try {
       const result = streamText({
         model: args.model,
         messages: request,
+        tools,
         onError: this.streamErrorLine({ modelId: args.modelString, provider: args.provider }),
         maxRetries: 0,
         abortSignal: args.abortSignal,
@@ -4351,6 +4374,8 @@ export class Conversation {
             Conversation.drainInBackground(iterator);
             break;
           }
+        } else if (part.type === 'tool-call') {
+          toolCallAnswer = true;
         } else if (part.type === 'finish-step' || part.type === 'finish') {
           const reason = String(part.finishReason?.unified ?? part.finishReason ?? '');
           if (reason === 'length') {
@@ -4372,6 +4397,9 @@ export class Conversation {
     }
     if (stepStart) {
       yield stepStart;
+    }
+    if (!failure && toolCallAnswer && !text.trim()) {
+      failure = 'the model answered the ask with a tool call instead of a line (nothing ran)';
     }
     if (failure) {
       this.logger.warn({
@@ -4396,6 +4424,25 @@ export class Conversation {
       },
     });
     return line;
+  }
+
+  /**
+   * The step's tool roster with nothing runnable in it: every tool as the provider sees it (its
+   * name, description and schema — the bytes the cache key begins with), its `execute` dropped so
+   * a call the model draws on an utterance ask is handed back as a part and never run. Undefined
+   * for an empty roster (a request carries no `tools` field then, as the step's would not).
+   */
+  private static unexecutableTools(tools: ToolSet): ToolSet | undefined {
+    const entries = Object.entries(tools);
+    if (entries.length === 0) {
+      return undefined;
+    }
+    return Object.fromEntries(
+      entries.map(([name, tool]) => {
+        const { execute: _execute, ...rest } = tool as { execute?: unknown };
+        return [name, rest];
+      })
+    ) as ToolSet;
   }
 
   /** Read a provider stream to its end without holding anyone: the tail of an utterance call past
