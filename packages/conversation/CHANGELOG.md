@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.18.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.17.0...@proteinjs/conversation@6.18.0) (2026-10-15)
+
+
+### Features
+
+* a thought signature streamed on an empty text delta rides to the block's end ([e8e964b](https://github.com/proteinjs/conversation/commit/e8e964b5fd3c3dd4e4579ce6198c505168547d8e))
+
+
+
+
+
 # [6.17.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.16.1...@proteinjs/conversation@6.17.0) (2026-10-09)
 
 
