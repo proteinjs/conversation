@@ -1,0 +1,6 @@
+{
+  "branch": "feat/google-thought-signatures-ride-every-step",
+  "packages": ["conversation"],
+  "suites": ["packages/conversation/test/conversation/conversation.googleThoughtSignatures.test.ts"],
+  "removes": []
+}
