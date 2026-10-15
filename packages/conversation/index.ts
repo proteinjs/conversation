@@ -27,6 +27,7 @@ export * from './src/resolveModel';
 export * from './src/LlmTransportRetry';
 export * from './src/ForcedToolChoice';
 export * from './src/RequestedEffort';
+export * from './src/EmptyDeltaMetadata';
 export * from './src/OpenAiModelRules';
 export * from './src/OpenAiResponseRetention';
 export * from './src/TransientProviderError';

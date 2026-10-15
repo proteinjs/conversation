@@ -28,6 +28,7 @@ import {
 } from './UsageData';
 import type { ModelDataResolver } from './ModelData';
 import { resolveModel, routedProvider } from './resolveModel';
+import { EmptyDeltaMetadata } from './EmptyDeltaMetadata';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import { ForcedToolChoice } from './ForcedToolChoice';
 import { RequestedEffort } from './RequestedEffort';
@@ -3805,9 +3806,12 @@ export class Conversation {
     // tool choice it refuses is re-issued softened (ForcedToolChoice), a reasoning effort it
     // refuses is re-issued at the nearest level it accepts (RequestedEffort) — each heard once,
     // each remembered for the process, no list of ids.
-    return this.transportRetry.wrap(RequestedEffort.follow(ForcedToolChoice.follow(resolveModel(m) as never)), {
-      onRetryActivity,
-    });
+    // Innermost, on the provider's own stream: the metadata of an empty text delta (a streamed
+    // thought signature) rides to the block's end before the core discards the delta (EmptyDeltaMetadata).
+    return this.transportRetry.wrap(
+      RequestedEffort.follow(ForcedToolChoice.follow(EmptyDeltaMetadata.follow(resolveModel(m) as never))),
+      { onRetryActivity }
+    );
   }
 
   private getModelString(model?: LanguageModel | string): string {
