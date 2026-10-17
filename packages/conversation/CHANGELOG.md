@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.19.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.18.0...@proteinjs/conversation@6.19.0) (2026-10-17)
+
+
+### Features
+
+* a call through a dispatching function takes its target's budget hints and identity, settles under the target's name with its outcome, and its conversion carries the call's outcome hook ([024d6c4](https://github.com/proteinjs/conversation/commit/024d6c49420e015d236276ac43723cb5041dc0fd))
+
+
+
+
+
 # [6.18.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.17.0...@proteinjs/conversation@6.18.0) (2026-10-15)
 
 
