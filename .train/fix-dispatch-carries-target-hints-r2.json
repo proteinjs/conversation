@@ -1,9 +1,0 @@
-{
-  "branch": "fix/dispatch-carries-target-hints-r2",
-  "packages": ["conversation"],
-  "suites": [
-    "packages/conversation/test/conversation/toolBudget.test.ts",
-    "packages/conversation/test/SkillDispatcherSkill.test.ts"
-  ],
-  "removes": []
-}
