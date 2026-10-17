@@ -222,22 +222,27 @@ export class SkillDispatcherSkill implements ConversationSkill {
         }
         return [skill?.getName() ?? input.skill, input.tool].filter(Boolean).join(' → ');
       },
-      // The dispatched tool's outcome is this node's outcome: a tool that reports a refusal by
-      // returning an error message (`ok: false`) settles the dispatch node errored, and a
-      // relabeled detail rides through. The node keeps its own name (`useSkill`), so a retry of
-      // the same intent through the dispatcher still lands on the same node.
+      // The dispatched tool IS the call's target (`Function.dispatchTarget`): the executor reads the
+      // budget hints — `background`, `softBudgetMs`, `hardBudgetMs`, the dedupe identity — off it,
+      // with its own arguments, so a tool declared awaited (or always-background) behaves so on its
+      // first use through the dispatcher exactly as it does once pinned and called directly.
+      dispatchTarget: (input: { skill?: string; tool?: string; args?: unknown }) => {
+        const fn = this.resolve(input);
+        return fn ? { fn, args: input.args ?? {} } : undefined;
+      },
+      // The dispatched tool's outcome is this node's outcome, and the node SETTLES UNDER THE
+      // DISPATCHED TOOL'S NAME — the tool's own relabel when it gave one (`tool:variant`), else the
+      // tool's name: the identity a person recognizes is the tool that ran, so the rendering layer's
+      // vocabulary, summary and acts for that tool apply whichever road the call took. A tool that
+      // reports a refusal by returning an error message (`ok: false`) settles the node errored, and
+      // a relabeled detail rides through. A dispatch that reached no tool keeps its own name.
       getTimelineOutcome: async (input: { skill?: string; tool?: string; args?: unknown }, result: unknown) => {
-        const skill = input.skill ? this.skills.get(input.skill) : undefined;
-        const fn = skill && input.tool ? this.findTool(skill, input.tool) : undefined;
-        if (!fn?.getTimelineOutcome) {
+        const fn = this.resolve(input);
+        if (!fn) {
           return undefined;
         }
-        const outcome = await fn.getTimelineOutcome(input.args ?? {}, result);
-        if (!outcome) {
-          return undefined;
-        }
-        const { name: _name, ...rest } = outcome;
-        return rest;
+        const outcome = fn.getTimelineOutcome ? await fn.getTimelineOutcome(input.args ?? {}, result) : undefined;
+        return { ...(outcome ?? {}), name: outcome?.name ?? fn.definition.name };
       },
       call: async ({ skill, tool, args }: { skill?: string; tool?: string; args?: unknown }, ctx?: ToolCallContext) =>
         this.dispatch(skill, tool, args, ctx),
@@ -246,6 +251,12 @@ export class SkillDispatcherSkill implements ConversationSkill {
 
   private findTool(skill: ConversationSkill, tool: string): ConvFunction | undefined {
     return skill.getFunctions().find((f) => f.definition.name === tool);
+  }
+
+  /** The tool a `useSkill` call names, when the skill is registered here and exposes it. */
+  private resolve(input: { skill?: string; tool?: string }): ConvFunction | undefined {
+    const skill = input.skill ? this.skills.get(input.skill) : undefined;
+    return skill && input.tool ? this.findTool(skill, input.tool) : undefined;
   }
 
   // ─── rendering ─────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import { Function, type ToolCallContext, type ToolPhase } from '../../src/Functi
 import { MessageModerator } from '../../src/history/MessageModerator';
 import { ToolBudget, type ToolBudgetConversion, type ToolBudgetHost } from '../../src/ToolBudget';
 import { fixtureModelData } from './fixtureModelData';
+import { SkillDispatcherSkill } from '../../src/SkillDispatcherSkill';
 
 /**
  * The tool-call BUDGET (plans/FREE_AGENT.md §M.3 part 1; §6 #1 and #6): the executor races every
@@ -692,5 +693,246 @@ describe('a tool’s own SOFT budget — `softBudgetMs` per tool (deliverable wr
     expect(plainRun.prompts[1].atMs).toBeGreaterThanOrEqual(LOOP_N_MS - 50);
     expect(plainRun.prompts[1].atMs).toBeLessThan(900);
     await expect(plainHost.conversions[0].promise).resolves.toEqual({ written: true, id: 'doc-1' });
+  }, 20_000);
+});
+
+/**
+ * A call made THROUGH A DISPATCHING FUNCTION takes its TARGET's hints and identity
+ * (`Function.dispatchTarget`): a lazy-loading skill catalog's `useSkill` names the tool it reaches;
+ * the executor reads `softBudgetMs` / `background` / `hardBudgetMs` and the dedupe identity off
+ * that tool with its own arguments, and the node settles under that tool's name with its outcome
+ * intact — so a tool declared awaited behaves awaited on its first use through the catalog exactly
+ * as it does once pinned and called directly.
+ *
+ * RED at the pre-fix executor: the hints are read off the function it CALLS (`useSkill` declares
+ * none), so a target declaring `Infinity` converts at the loop's N like any other call; the
+ * conversion is named `useSkill` and keyed on the dispatch's whole input; the settle keeps the
+ * name `useSkill` and strips the target's outcome of its name.
+ */
+describe('a dispatching function takes its TARGET’s hints and identity (`Function.dispatchTarget`)', () => {
+  const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
+  const LOOP_N_MS = 250;
+
+  beforeEach(() => {
+    process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = String(LOOP_N_MS);
+  });
+
+  afterAll(() => {
+    if (savedSoft === undefined) {
+      delete process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
+    } else {
+      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = savedSoft;
+    }
+  });
+
+  /** The catalog: one deferred skill behind the real dispatcher, its tools reached through `useSkill`. */
+  const catalog = (fns: Function[]) =>
+    new SkillDispatcherSkill([
+      {
+        getId: () => 'writer',
+        getName: () => 'Writer',
+        getSystemMessages: () => '',
+        getFunctions: () => fns,
+        getMessageModerators: () => [] as MessageModerator[],
+      },
+    ]);
+  const dispatch = (tool: string, args: Record<string, unknown>, task?: string) =>
+    JSON.stringify({ skill: 'writer', tool, args, ...(task ? { task } : {}) });
+  const tool = (name: string, properties: Record<string, unknown> = {}): Function['definition'] => ({
+    name,
+    description: name,
+    parameters: { type: 'object', properties },
+  });
+
+  test('a target declaring `softBudgetMs: Infinity` is AWAITED through the dispatcher: the boundary waits for it, the model reads the tool’s own result, the host is never asked', async () => {
+    const state = { settled: 0 };
+    const write: Function = {
+      definition: tool('writeDocument', { title: { type: 'string' } }),
+      softBudgetMs: Number.POSITIVE_INFINITY,
+      call: async ({ title }: { title: string }) => {
+        await sleep(1_500);
+        state.settled++;
+        return { written: true, title };
+      },
+    };
+    const { host, conversions } = recordingHost();
+    const run = await runLoop({
+      fns: catalog([write]).getFunctions(),
+      host,
+      steps: [
+        () => toolCallStep('useSkill', ['tc-1'], dispatch('writeDocument', { title: 'Notes' })),
+        () => textStep('here it is'),
+      ],
+    });
+
+    expect(run.prompts).toHaveLength(2);
+    // The boundary came AFTER the write (6× past the loop's N), not at N.
+    expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(1_400);
+    expect(state.settled).toBe(1);
+    expect(conversions).toHaveLength(0);
+    const toolResults = toolResultTexts(run.prompts[1].prompt);
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0]).toContain('"written": true');
+    expect(toolResults[0]).not.toContain('Started in the background');
+    expect(run.toolInvocations[0].converted).toBeUndefined();
+    expect(run.text).toBe('here it is');
+  }, 20_000);
+
+  test('a `background: true` target converts at t = 0 through the dispatcher — the conversion named and keyed by the TARGET (its name, its own arguments, its HARD ceiling), and a repeat through the dispatcher is the same work', async () => {
+    let resolveTool!: (v: unknown) => void;
+    const long: Function = {
+      definition: tool('longSearch', { q: { type: 'string' } }),
+      background: true,
+      hardBudgetMs: 60_000,
+      call: () => new Promise((resolve) => (resolveTool = resolve)),
+    };
+    const { host, conversions, runningLookups } = recordingHost();
+    const run = await runLoop({
+      fns: catalog([long]).getFunctions(),
+      host,
+      steps: [
+        () => toolCallStep('useSkill', ['tc-1'], dispatch('longSearch', { q: 'a' })),
+        () => toolCallStep('useSkill', ['tc-2'], dispatch('longSearch', { q: 'a' }, 'Searching again')),
+        () => textStep('went on'),
+      ],
+    });
+    expect(run.prompts[1].atMs).toBeLessThan(500);
+    expect(conversions).toHaveLength(1);
+    expect(conversions[0].name).toBe('longSearch');
+    expect(conversions[0].args).toEqual({ q: 'a' });
+    expect(conversions[0].hardBudgetMs).toBe(60_000);
+    expect(conversions[0].dedupeKey).toBe(ToolBudget.argsKey({ q: 'a' }));
+    // The repeat through the dispatcher is deduped on the target's identity (§2.8), label or not.
+    expect(runningLookups).toHaveLength(2);
+    expect(runningLookups[0]).toBe(runningLookups[1]);
+    expect(run.toolInvocations[1].converted).toMatchObject({ jobId: 'job-1', deduped: true });
+    resolveTool('late');
+    await expect(conversions[0].promise).resolves.toBe('late');
+  });
+
+  test('the node settles under the TARGET’s name with its outcome intact: the settle relabels `useSkill` to the tool that ran (the tool’s own relabel when it gave one), the detail rides through, the invocation record carries the same', async () => {
+    const save: Function = {
+      definition: tool('saveNote', { title: { type: 'string' } }),
+      getTimelineDetail: (args: { title?: string }) => args.title,
+      getTimelineOutcome: (_args: unknown, result: unknown) =>
+        typeof result === 'string' && result.startsWith('Saved')
+          ? { detail: { text: 'Monday', href: 'app://notes/1' } }
+          : { ok: false, name: 'saveNote:refused' },
+      call: async ({ title }: { title: string }) => (title === 'Monday' ? `Saved "${title}"` : 'Refused'),
+    };
+    const plain: Function = { definition: tool('plainTool'), call: async () => 'ok' };
+    const fns = catalog([save, plain]).getFunctions();
+
+    const saved = await runLoop({
+      fns,
+      host: recordingHost().host,
+      steps: [() => toolCallStep('useSkill', ['tc-1'], dispatch('saveNote', { title: 'Monday' })), () => textStep('x')],
+    });
+    expect(saved.parts.find((p) => p.type === 'tool-settled')).toMatchObject({
+      id: 'tc-1',
+      toolName: 'useSkill',
+      ok: true,
+    });
+    expect(saved.parts.find((p) => p.type === 'tool-outcome')).toEqual({
+      type: 'tool-outcome',
+      toolName: 'useSkill',
+      name: 'saveNote',
+      detail: { text: 'Monday', href: 'app://notes/1' },
+    });
+    expect(saved.toolInvocations[0].name).toBe('useSkill');
+    expect(saved.toolInvocations[0].outcome).toEqual({
+      name: 'saveNote',
+      detail: { text: 'Monday', href: 'app://notes/1' },
+    });
+
+    // The target's own relabel wins over its name; its refusal settles the node errored.
+    const refused = await runLoop({
+      fns,
+      host: recordingHost().host,
+      steps: [() => toolCallStep('useSkill', ['tc-2'], dispatch('saveNote', { title: 'Nope' })), () => textStep('x')],
+    });
+    expect(refused.parts.find((p) => p.type === 'tool-settled')).toMatchObject({ id: 'tc-2', ok: false });
+    expect(refused.parts.find((p) => p.type === 'tool-outcome')).toEqual({
+      type: 'tool-outcome',
+      toolName: 'useSkill',
+      name: 'saveNote:refused',
+    });
+
+    // A target with no outcome hook still settles under its own name, its call-time detail kept.
+    const named = await runLoop({
+      fns,
+      host: recordingHost().host,
+      steps: [() => toolCallStep('useSkill', ['tc-3'], dispatch('plainTool', {})), () => textStep('x')],
+    });
+    expect(named.parts.find((p) => p.type === 'tool-outcome')).toEqual({
+      type: 'tool-outcome',
+      toolName: 'useSkill',
+      name: 'plainTool',
+    });
+  }, 20_000);
+
+  test('the conversion carries the call’s outcome hook bound to its arguments (a dispatcher’s reaches its target’s) for the host to settle the job’s node with; a dispatch that names no tool runs under the dispatcher’s own name and hints', async () => {
+    const slow: Function = {
+      definition: tool('slowWrite'),
+      getTimelineOutcome: (_args: unknown, result: unknown) => ({ detail: `made ${String(result)}` }),
+      call: async () => {
+        await sleep(600);
+        return 'doc-1';
+      },
+    };
+    const fns = catalog([slow]).getFunctions();
+    const { host, conversions } = recordingHost();
+    const run = await runLoop({
+      fns,
+      host,
+      steps: [() => toolCallStep('useSkill', ['tc-1'], dispatch('slowWrite', {})), () => textStep('started')],
+    });
+    expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(LOOP_N_MS - 50);
+    expect(run.prompts[1].atMs).toBeLessThan(550);
+    expect(conversions).toHaveLength(1);
+    expect(conversions[0].name).toBe('slowWrite');
+    const result = await conversions[0].promise;
+    expect(result).toBe('doc-1');
+    await expect(conversions[0].outcome!(result)).resolves.toEqual({ name: 'slowWrite', detail: 'made doc-1' });
+
+    // A direct call's conversion carries its own hook; a tool without one carries none.
+    const direct: Function = {
+      definition: tool('directWrite'),
+      getTimelineOutcome: (_args: unknown, result: unknown) => ({ detail: `kept ${String(result)}` }),
+      call: async () => {
+        await sleep(600);
+        return 'k-1';
+      },
+    };
+    const bare: Function = {
+      definition: tool('bareWrite'),
+      call: async () => {
+        await sleep(600);
+        return 'b-1';
+      },
+    };
+    const directHost = recordingHost();
+    await runLoop({
+      fns: [direct, bare],
+      host: directHost.host,
+      steps: [
+        () => toolCallStep('directWrite', ['tc-4']),
+        () => toolCallStep('bareWrite', ['tc-5']),
+        () => textStep('started'),
+      ],
+    });
+    expect(directHost.conversions.map((c) => c.name)).toEqual(['directWrite', 'bareWrite']);
+    await expect(directHost.conversions[0].outcome!('k-1')).resolves.toEqual({ detail: 'kept k-1' });
+    expect(directHost.conversions[1].outcome).toBeUndefined();
+
+    // No tool reached: the dispatcher's own name and the loop's N, its own message as the result, no relabel.
+    const missing = await runLoop({
+      fns,
+      host: recordingHost().host,
+      steps: [() => toolCallStep('useSkill', ['tc-9'], dispatch('nothing', {})), () => textStep('x')],
+    });
+    expect(toolResultTexts(missing.prompts[1].prompt)[0]).toContain('has no dispatcher-reachable tool named "nothing"');
+    expect(missing.parts.find((p) => p.type === 'tool-outcome')).toBeUndefined();
+    expect(missing.toolInvocations[0].converted).toBeUndefined();
   }, 20_000);
 });

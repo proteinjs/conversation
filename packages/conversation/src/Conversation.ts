@@ -4874,8 +4874,10 @@ export class Conversation {
               //      freshness/lock fence renders as deferred, not done) — only for tools
               //      implementing the hook and returning a name/detail.
               const fn = functions.find((f) => f.definition.name === part.toolName);
-              // A call the budget converted settled as a HAND-OFF: its output is the harness's
-              // yield sentence, not the tool's result — the tool's own outcome hook never sees it.
+              // A call the budget converted settled here as its HAND-OFF: this part's output is the
+              // harness's sentence, so the tool's outcome is not read from it — it rides the
+              // conversion (`ToolBudgetConversion.outcome`, the hook bound to the call's arguments)
+              // for the host to settle the job's node with when the tool's own result arrives.
               const converted = convertedCalls?.get(String(part.toolCallId ?? ''));
               let outcome: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined;
               if (fn?.getTimelineOutcome && !converted) {

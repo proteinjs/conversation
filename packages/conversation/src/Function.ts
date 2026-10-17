@@ -88,6 +88,18 @@ export interface Function {
   /** The repeat-call identity when the arguments' hash is not it (a tool whose repeat is unsafe). */
   dedupeKey?(args: any): string;
   /**
+   * Optional, for a DISPATCHING function — one that invokes another function chosen by its own
+   * arguments (a lazy-loading catalog's "use this tool of that skill"): the function this call
+   * reaches, with the arguments it receives. The executor reads the budget hints off the TARGET
+   * (`background`, `softBudgetMs`, `hardBudgetMs`, `dedupe`, `dedupeKey`) and keys the call's
+   * identity on the target's own name and arguments, so a tool keeps its declared behavior
+   * whether it is called directly or through the dispatcher — a declaration is made once, at the
+   * tool. A target that dispatches in turn is followed to the function that does the work. Return
+   * undefined when the arguments name no reachable target: the call then runs under this
+   * function's own hints.
+   */
+  dispatchTarget?(args: any): { fn: Function; args: any } | undefined;
+  /**
    * Optional: produce a short, human-meaningful subject for a call to this
    * tool — typically the acted-on entity's name/title — to personalize the
    * call's node in the chat thinking timeline. May do a lookup. Best-effort:

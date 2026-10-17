@@ -719,7 +719,7 @@ describe('SkillDispatcherSkill', () => {
       );
     });
 
-    it("settles with the dispatched tool's outcome (ok/detail), keeping its own node name", async () => {
+    it("settles UNDER THE DISPATCHED TOOL'S NAME with its outcome intact (ok/detail, its own relabel when it gave one); a dispatch that reached no tool keeps the node's own name", async () => {
       const fn: ConvFunction = {
         ...makeFn('save', 's', async () => 'Refused: nothing saved'),
         getTimelineOutcome: (_args: unknown, result: unknown) =>
@@ -732,12 +732,63 @@ describe('SkillDispatcherSkill', () => {
         { skill: 'j', tool: 'save', args: {} },
         'Refused: nothing saved'
       );
-      expect(outcome).toEqual({ ok: false, detail: 'not saved' });
+      // The tool's own relabel (`tool:variant`) wins; its refusal and detail ride through.
+      expect(outcome).toEqual({ ok: false, name: 'save:refused', detail: 'not saved' });
+      // No relabel from the tool: the node still settles under the tool's name.
       expect(
         await useSkillTool(dispatcher).getTimelineOutcome!({ skill: 'j', tool: 'save', args: {} }, 'saved')
-      ).toBeUndefined();
+      ).toEqual({ name: 'save' });
       const plain = new SkillDispatcherSkill([makeSkill({ id: 'j', functions: [makeFn('x', 'x', async () => 'ok')] })]);
-      expect(await useSkillTool(plain).getTimelineOutcome!({ skill: 'j', tool: 'x', args: {} }, 'ok')).toBeUndefined();
+      expect(await useSkillTool(plain).getTimelineOutcome!({ skill: 'j', tool: 'x', args: {} }, 'ok')).toEqual({
+        name: 'x',
+      });
+      // An unknown skill or tool: the dispatch answered with its own message — the node is its own.
+      expect(
+        await useSkillTool(plain).getTimelineOutcome!({ skill: 'j', tool: 'nope', args: {} }, 'err')
+      ).toBeUndefined();
+      expect(
+        await useSkillTool(plain).getTimelineOutcome!({ skill: 'zz', tool: 'x', args: {} }, 'err')
+      ).toBeUndefined();
+    });
+  });
+
+  describe('useSkill — the dispatched tool is the call’s TARGET (`Function.dispatchTarget`)', () => {
+    const useSkillTool = (dispatcher: SkillDispatcherSkill) =>
+      dispatcher.getFunctions().find((f) => f.definition.name === 'useSkill')!;
+
+    it('names the tool a call reaches with the arguments it receives — the executor reads the budget hints and the identity off it', () => {
+      const write: ConvFunction = { ...makeFn('write', 'w', async () => 'ok'), softBudgetMs: Number.POSITIVE_INFINITY };
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'j', functions: [write] })]);
+      const target = useSkillTool(dispatcher).dispatchTarget!({ skill: 'j', tool: 'write', args: { value: 'v' } });
+      expect(target).toEqual({ fn: write, args: { value: 'v' } });
+      expect(target!.fn.softBudgetMs).toBe(Number.POSITIVE_INFINITY);
+      // Arguments left off reach the tool as the empty object — exactly what the dispatch hands it.
+      expect(useSkillTool(dispatcher).dispatchTarget!({ skill: 'j', tool: 'write' })).toEqual({ fn: write, args: {} });
+    });
+
+    it('names no target for an unknown skill or tool, or a call missing either — the call is then the dispatcher’s own', () => {
+      const dispatcher = new SkillDispatcherSkill([
+        makeSkill({ id: 'j', functions: [makeFn('x', 'x', async () => 'ok')] }),
+      ]);
+      const target = useSkillTool(dispatcher).dispatchTarget!;
+      expect(target({ skill: 'j', tool: 'nope', args: {} })).toBeUndefined();
+      expect(target({ skill: 'zz', tool: 'x', args: {} })).toBeUndefined();
+      expect(target({ tool: 'x', args: {} })).toBeUndefined();
+      expect(target({ skill: 'j', args: {} })).toBeUndefined();
+    });
+
+    it('a dispatcher nested inside a dispatcher names the inner `useSkill` with its dispatch — the executor follows it to the tool that does the work', () => {
+      const write: ConvFunction = { ...makeFn('write', 'w', async () => 'ok'), background: true };
+      const inner = new SkillDispatcherSkill([makeSkill({ id: 'j', functions: [write] })]);
+      const outer = new SkillDispatcherSkill([inner]);
+      const hop = useSkillTool(outer).dispatchTarget!({
+        skill: 'skill-dispatcher',
+        tool: 'useSkill',
+        args: { skill: 'j', tool: 'write', args: { value: 'v' } },
+      });
+      expect(hop?.fn.definition.name).toBe('useSkill');
+      expect(hop?.args).toEqual({ skill: 'j', tool: 'write', args: { value: 'v' } });
+      expect(hop!.fn.dispatchTarget!(hop!.args)).toEqual({ fn: write, args: { value: 'v' } });
     });
   });
 });

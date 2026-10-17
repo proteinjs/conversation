@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import type { Function, ToolPhase } from './Function';
+import type { Function, ToolPhase, ToolTimelineDetail } from './Function';
 
 /**
  * A call handed to the host at its conversion (plans/FREE_AGENT.md §2.2 SOFT, §2.5 the job record):
@@ -8,8 +8,13 @@ import type { Function, ToolPhase } from './Function';
  */
 export type ToolBudgetConversion = {
   toolCallId: string;
+  /**
+   * The name of the function that does the work: the called function's, or — for a call made
+   * through a dispatching function (`Function.dispatchTarget`) — its TARGET's, so the job and the
+   * §2.8 identity read as the tool they are whichever road the call took.
+   */
   name: string;
-  /** The tool's arguments WITHOUT the harness's `task` label (what the tool itself received). */
+  /** The arguments of the function that does the work (a dispatch's target's), WITHOUT the harness's `task` label. */
   args: unknown;
   /**
    * The job's visible NAME (the founder's ruling 2026-09-04 22:00Z, FREE_AGENT §M "promoted calls
@@ -40,6 +45,16 @@ export type ToolBudgetConversion = {
   abort: () => void;
   /** Subscribe to the phases the tool reports AFTER the conversion (the job's node moves in place). */
   onPhase: (listener: (phase: ToolPhase) => void) => void;
+  /**
+   * The called function's outcome hook (`Function.getTimelineOutcome`), bound to this call's
+   * arguments — a dispatcher's hook reaches its target's. A converted call's result part carries
+   * the hand-off, not the tool's result, so the executor's stream never relabels its node; the
+   * host reads the outcome here when the job settles with the tool's own result, and settles the
+   * node with what the call made. Absent when the function declares no hook.
+   */
+  outcome?: (
+    result: unknown
+  ) => Promise<{ name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined>;
 };
 
 /**
@@ -117,10 +132,16 @@ export class ToolBudget {
    */
   async run(): Promise<ToolBudgetOutcome> {
     const { host, fn, toolCallId, input, task, detail } = this.call;
-    const name = fn.definition.name;
-    const dedupeKey = fn.dedupe === false ? undefined : fn.dedupeKey?.(input) ?? ToolBudget.argsKey(input);
+    // The function that does the work — the called one, or through a dispatching function its
+    // TARGET: its hints are this call's budget and its name + arguments this call's identity, so a
+    // tool behaves as it declared on either road (a dispatcher declares nothing of its own).
+    const target = ToolBudget.reach(fn, input);
+    const name = target.fn.definition.name;
+    const hints = target.fn;
+    const dedupeKey =
+      hints.dedupe === false ? undefined : hints.dedupeKey?.(target.args) ?? ToolBudget.argsKey(target.args);
     if (dedupeKey !== undefined && host.running) {
-      const running = await host.running({ name, args: input, dedupeKey });
+      const running = await host.running({ name, args: target.args, dedupeKey });
       if (running) {
         const title = ToolBudget.title({ task, detail });
         return {
@@ -139,8 +160,8 @@ export class ToolBudget {
         onPhase: (phase) => this.reportPhase(phase),
       }))();
     // This call's N: `background: true` → 0; else the tool's own soft budget (`Infinity` = awaited
-    // inline, never converted — a deliverable write); else the loop's.
-    const budgetMs = fn.background ? 0 : fn.softBudgetMs ?? host.softBudgetMs ?? ToolBudget.softBudgetMs();
+    // inline, never converted — a deliverable write); else the loop's. The hints are the target's.
+    const budgetMs = hints.background ? 0 : hints.softBudgetMs ?? host.softBudgetMs ?? ToolBudget.softBudgetMs();
     const raced = await ToolBudget.race(promise, budgetMs);
     if (raced.settled) {
       return { kind: 'settled', result: raced.value };
@@ -148,20 +169,24 @@ export class ToolBudget {
     // Handed off: the host observes the settlement (done or failed) — never an unhandled rejection here.
     promise.catch(() => undefined);
     const title = ToolBudget.title({ task, phase: this.lastPhase, detail });
+    // The called function's outcome hook rides the conversion (a dispatcher's reaches its target's):
+    // the host settles the job's node with what the call made, read from the tool's own result.
+    const outcome = fn.getTimelineOutcome;
     const { jobId } = await host.convert({
       toolCallId,
       name,
-      args: input,
+      args: target.args,
       title,
       ...(task ? { task } : {}),
       ...(detail ? { detail } : {}),
       ...(this.lastPhase ? { phase: this.lastPhase } : {}),
-      hardBudgetMs: fn.hardBudgetMs ?? ToolBudget.hardBudgetMs(),
+      hardBudgetMs: hints.hardBudgetMs ?? ToolBudget.hardBudgetMs(),
       ...(dedupeKey !== undefined ? { dedupeKey } : {}),
       promise,
       signal: controller.signal,
       abort: () => controller.abort(),
       onPhase: (listener) => this.phaseListeners.push(listener),
+      ...(outcome ? { outcome: async (result: unknown) => (await outcome.call(fn, input, result)) || undefined } : {}),
     });
     return {
       kind: 'converted',
@@ -278,6 +303,29 @@ export class ToolBudget {
   }
 
   // ─── helpers ────────────────────────────────────────────────────────────────
+
+  /**
+   * The function a call reaches: the called one, or — through dispatching functions
+   * (`Function.dispatchTarget`), followed until one does the work — the target with its own
+   * arguments. A hook that throws or loops names no target: the call is its own.
+   */
+  private static reach(fn: Function, input: unknown): { fn: Function; args: unknown } {
+    let at = { fn, args: input };
+    const seen = new Set<Function>([fn]);
+    for (;;) {
+      let next: { fn: Function; args: unknown } | undefined;
+      try {
+        next = at.fn.dispatchTarget?.(at.args);
+      } catch {
+        return at;
+      }
+      if (!next || seen.has(next.fn)) {
+        return at;
+      }
+      seen.add(next.fn);
+      at = next;
+    }
+  }
 
   private reportPhase(phase: ToolPhase): void {
     this.lastPhase = phase;
