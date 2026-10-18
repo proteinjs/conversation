@@ -654,9 +654,10 @@ describe('SkillDispatcherSkill', () => {
       expect(received[0]).toBe(ctx);
     });
 
-    it('under a budgeted executor, a long dispatched tool names its phase and Stop ends it', async () => {
+    it('under a budgeted executor, a kind-declared dispatched tool converts at its start, names its phase, and Stop ends it', async () => {
       const fn: ConvFunction = {
         ...makeFn('work', 'w', async () => 'ok'),
+        job: { kind: 'shell' },
         call: (_args: unknown, ctx?: ToolCallContext) =>
           new Promise<string>((resolve) => {
             ctx?.onPhase({ on: 'Setting up the workspace' });
@@ -667,7 +668,6 @@ describe('SkillDispatcherSkill', () => {
       const conversions: ToolBudgetConversion[] = [];
       const outcome = await new ToolBudget({
         host: {
-          softBudgetMs: 20,
           convert: async (call) => {
             conversions.push(call);
             return { jobId: 'job-1' };
@@ -678,9 +678,10 @@ describe('SkillDispatcherSkill', () => {
         input: { skill: 'mod', tool: 'work', args: {} },
       }).run();
 
-      // Past its budget the call became a background job, named by the DISPATCHED tool's phase…
+      // The call became a job of the DISPATCHED tool's kind at its start, named by the tool's phase…
       expect(outcome.kind).toBe('converted');
       expect(conversions).toHaveLength(1);
+      expect(conversions[0].kind).toBe('shell');
       expect(conversions[0].phase).toEqual({ on: 'Setting up the workspace' });
       // …and the job's Stop reaches the dispatched tool, which ends.
       conversions[0].abort();
@@ -811,12 +812,12 @@ describe('SkillDispatcherSkill', () => {
     const useSkillTool = (dispatcher: SkillDispatcherSkill) =>
       dispatcher.getFunctions().find((f) => f.definition.name === 'useSkill')!;
 
-    it('names the tool a call reaches with the arguments it receives — the executor reads the budget hints and the identity off it', () => {
-      const write: ConvFunction = { ...makeFn('write', 'w', async () => 'ok'), softBudgetMs: Number.POSITIVE_INFINITY };
+    it('names the tool a call reaches with the arguments it receives — the executor reads the job declaration and the identity off it', () => {
+      const write: ConvFunction = { ...makeFn('write', 'w', async () => 'ok'), job: { kind: 'agent' } };
       const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'j', functions: [write] })]);
       const target = useSkillTool(dispatcher).dispatchTarget!({ skill: 'j', tool: 'write', args: { value: 'v' } });
       expect(target).toEqual({ fn: write, args: { value: 'v' } });
-      expect(target!.fn.softBudgetMs).toBe(Number.POSITIVE_INFINITY);
+      expect(target!.fn.job).toEqual({ kind: 'agent' });
       // Arguments left off reach the tool as the empty object — exactly what the dispatch hands it.
       expect(useSkillTool(dispatcher).dispatchTarget!({ skill: 'j', tool: 'write' })).toEqual({ fn: write, args: {} });
     });
@@ -833,7 +834,7 @@ describe('SkillDispatcherSkill', () => {
     });
 
     it('a dispatcher nested inside a dispatcher names the inner `useSkill` with its dispatch — the executor follows it to the tool that does the work', () => {
-      const write: ConvFunction = { ...makeFn('write', 'w', async () => 'ok'), background: true };
+      const write: ConvFunction = { ...makeFn('write', 'w', async () => 'ok'), job: { kind: 'shell' } };
       const inner = new SkillDispatcherSkill([makeSkill({ id: 'j', functions: [write] })]);
       const outer = new SkillDispatcherSkill([inner]);
       const hop = useSkillTool(outer).dispatchTarget!({

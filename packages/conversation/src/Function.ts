@@ -40,20 +40,32 @@ export type ToolTimelineDetail = {
 /**
  * A long call's progress, in the tool's own present-progressive words ("Setting up the
  * workspace" — "getting the code (n3xa app)"). Reported through {@link ToolCallContext.onPhase};
- * the harness names the current phase in its yield sentence when the call converts to a
- * background job and moves the job's node in place afterwards (plans/FREE_AGENT.md §2.2 `phases`).
+ * the harness names the phase a kind-declared call reported at its start in its yield sentence and
+ * moves the job's node in place afterwards (plans/FREE_AGENT.md §2.2 `phases`).
  */
 export type ToolPhase = { on: string; detail?: string };
 
 /**
- * What the harness hands a tool beside its arguments (plans/FREE_AGENT.md §M.3 part 1 — the
- * tool-call budget). Present only under a budgeted executor (`GenerateStreamParams.toolBudget`);
- * a tool never depends on it.
+ * THE KINDS OF WORK THAT RUN ON THEIR OWN (plans/DECISIONS.md 630 — the one-response class rule;
+ * plans/AGENT_ON_THE_BOX_DESIGN_2026-10-01.md §B the kinds): a spawned agent, a shell on a box, a
+ * line-notifying watcher, an orchestration of agents, a routine. A function whose call IS one of
+ * these declares it ({@link Function.job}) and the executor converts the call into a job of that
+ * kind at its start; every other call is awaited whole. The chat's row vocabulary (chat-common
+ * `ChatJobKind`) holds these and the pre-rule `tool` reading.
+ */
+export type ToolJobKind = 'agent' | 'shell' | 'watcher' | 'orchestration' | 'routine';
+
+/**
+ * What the harness hands a tool beside its arguments (plans/FREE_AGENT.md §M.3 part 1; DECISIONS
+ * 630). Present only under a budgeted executor (`GenerateStreamParams.toolBudget`); a tool never
+ * depends on it.
  */
 export type ToolCallContext = {
   /**
-   * The call's OWN abort signal: fired by the background job's Stop (D9) or its HARD budget once
-   * the call has converted — never by the turn's yield. A tool that can stop honours it.
+   * The call's OWN abort signal: for a kind-declared call, fired by the job's Stop (D9) or its
+   * HARD budget — never by the turn's yield. An awaited call's signal is minted the same way and
+   * nothing fires it yet (the per-call Stop on an awaited call's node is the next build; the
+   * turn's own Stop is the person's handle meanwhile). A tool that can stop honors it.
    */
   signal: AbortSignal;
   /** Report a phase (see {@link ToolPhase}). Cheap; safe to call before or after a conversion. */
@@ -65,20 +77,17 @@ export interface Function {
   call(obj: any, ctx?: ToolCallContext): Promise<any>;
   instructions?: string[];
   /**
-   * Optional budget hints (plans/FREE_AGENT.md §2.2, D2 — "declarations are optional and only an
-   * optimization"; a missing or wrong one costs nothing, the budget catches it):
-   * `background` — the call is ALWAYS long: the executor converts it to a background job at t = 0
-   * instead of after the SOFT budget, so the yield is immediate.
+   * THE ONE JOB DECLARATION (plans/DECISIONS.md 630 — the one-response class rule): this call IS
+   * a job of the named kind — work that genuinely runs on its own ({@link ToolJobKind}) — and the
+   * executor converts it at its start, the kind riding to the host. A function that declares
+   * nothing is AWAITED WHOLE, however long it runs: a deck, a document, a picture, a catalog check
+   * lands in the reply the person asked in. No per-tool opt-in exists in either direction: no
+   * "always awaited" hint, no "always background" hint — the class is the rule. A tool that mints
+   * its own job through the turn's job door and returns at once (a spawnAgent, a StartJob)
+   * declares nothing here: its call is short; the job it made is the door's.
    */
-  background?: boolean;
-  /**
-   * The tool's OWN soft budget in ms — this call's N in place of the loop's (`ToolBudgetHost.
-   * softBudgetMs`, else `ToolBudget.softBudgetMs()`). `Infinity` = the call is always awaited
-   * inline, never converted: for a tool whose result IS the reply's substance (a document write —
-   * the model must report what it wrote, not that it started). `background: true` still wins.
-   */
-  softBudgetMs?: number;
-  /** The tool's own generous HARD ceiling in ms (D8); the host arms it on the job. Default 30 min. */
+  job?: { kind: ToolJobKind };
+  /** A kind-declared call's own generous HARD ceiling in ms (D8); the host arms it on the job. Default 30 min. */
   hardBudgetMs?: number;
   /**
    * §2.8 idempotency: `false` = a repeat call IS the intended act (a second createDevelopmentTask
@@ -90,13 +99,12 @@ export interface Function {
   /**
    * Optional, for a DISPATCHING function — one that invokes another function chosen by its own
    * arguments (a lazy-loading catalog's "use this tool of that skill"): the function this call
-   * reaches, with the arguments it receives. The executor reads the budget hints off the TARGET
-   * (`background`, `softBudgetMs`, `hardBudgetMs`, `dedupe`, `dedupeKey`) and keys the call's
-   * identity on the target's own name and arguments, so a tool keeps its declared behavior
-   * whether it is called directly or through the dispatcher — a declaration is made once, at the
-   * tool. A target that dispatches in turn is followed to the function that does the work. Return
-   * undefined when the arguments name no reachable target: the call then runs under this
-   * function's own hints.
+   * reaches, with the arguments it receives. The executor reads the declarations off the TARGET
+   * (`job`, `hardBudgetMs`, `dedupe`, `dedupeKey`) and keys the call's identity on the target's
+   * own name and arguments, so a tool keeps its declared class whether it is called directly or
+   * through the dispatcher — a declaration is made once, at the tool. A target that dispatches in
+   * turn is followed to the function that does the work. Return undefined when the arguments
+   * name no reachable target: the call then runs under this function's own declarations.
    */
   dispatchTarget?(args: any): { fn: Function; args: any } | undefined;
   /**

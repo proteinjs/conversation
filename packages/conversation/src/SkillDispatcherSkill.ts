@@ -214,9 +214,9 @@ export class SkillDispatcherSkill implements ConversationSkill {
         return own ?? [skill?.getName() ?? input.skill, input.tool].filter(Boolean).join(' → ');
       },
       // The dispatched tool IS the call's target (`Function.dispatchTarget`): the executor reads the
-      // budget hints — `background`, `softBudgetMs`, `hardBudgetMs`, the dedupe identity — off it,
-      // with its own arguments, so a tool declared awaited (or always-background) behaves so on its
-      // first use through the dispatcher exactly as it does once pinned and called directly.
+      // declarations — `job` (the kind), `hardBudgetMs`, the dedupe identity — off it, with its own
+      // arguments, so a tool keeps its class (a job by kind, or awaited whole) on its first use
+      // through the dispatcher exactly as it does once pinned and called directly.
       dispatchTarget: (input: { skill?: string; tool?: string; args?: unknown }) => {
         const fn = this.resolve(input);
         return fn ? { fn, args: input.args ?? {} } : undefined;

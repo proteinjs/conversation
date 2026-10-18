@@ -1,10 +1,11 @@
 import { createHash } from 'crypto';
-import type { Function, ToolPhase, ToolTimelineDetail } from './Function';
+import type { Function, ToolJobKind, ToolPhase, ToolTimelineDetail } from './Function';
 
 /**
- * A call handed to the host at its conversion (plans/FREE_AGENT.md §2.2 SOFT, §2.5 the job record):
- * everything the host needs to own the job from here — the running promise, its abort control,
- * the phase relay, the task's visible name, and the identity the §2.8 dedupe keys on.
+ * A call handed to the host at its conversion (plans/FREE_AGENT.md §2.5 the job record; DECISIONS
+ * 630 the class rule): everything the host needs to own the job from here — the kind the function
+ * declared, the running promise, its abort control, the phase relay, the task's visible name, and
+ * the identity the §2.8 dedupe keys on.
  */
 export type ToolBudgetConversion = {
   toolCallId: string;
@@ -16,6 +17,8 @@ export type ToolBudgetConversion = {
   name: string;
   /** The arguments of the function that does the work (a dispatch's target's), WITHOUT the harness's `task` label. */
   args: unknown;
+  /** What runs behind the promise — the kind the function declared (`Function.job`); the row's kind. */
+  kind: ToolJobKind;
   /**
    * The job's visible NAME (the founder's ruling 2026-09-04 22:00Z, FREE_AGENT §M "promoted calls
    * are NAMED TASKS"): what the agent is trying to do, in plain English — the model's own `task`
@@ -28,7 +31,7 @@ export type ToolBudgetConversion = {
   task?: string;
   /** The call's timeline detail text (the tool's `getTimelineDetail`), when any. */
   detail?: string;
-  /** The last phase the tool reported BEFORE the conversion, when any. */
+  /** The phase the tool reported at its start, BEFORE the conversion, when any. */
   phase?: ToolPhase;
   /** The HARD ceiling to arm (the tool's own declaration, else the default — D8). */
   hardBudgetMs: number;
@@ -58,14 +61,12 @@ export type ToolBudgetConversion = {
 };
 
 /**
- * The host side of the tool-call budget (`GenerateStreamParams.toolBudget`) — implemented by the
+ * The host side of the job conversion (`GenerateStreamParams.toolBudget`) — implemented by the
  * chat turn (thought-server wires it to `ChatJobRegistry`); the conversation package cannot know
  * what a job is, only that one exists once `convert` returns.
  */
 export type ToolBudgetHost = {
-  /** N for this loop's calls; default {@link ToolBudget.softBudgetMs} (the one place). */
-  softBudgetMs?: number;
-  /** Convert an over-budget call IN PLACE into a background job; the id names it to the model. */
+  /** Convert a kind-declared call IN PLACE into a job of its kind; the id names it to the model. */
   convert(call: ToolBudgetConversion): Promise<{ jobId: string }>;
   /**
    * §2.8: the job already RUNNING for the same (tool, dedupeKey), if any — a repeat call returns
@@ -74,22 +75,27 @@ export type ToolBudgetHost = {
   running?(call: { name: string; args: unknown; dedupeKey: string }): Promise<{ jobId: string } | undefined>;
 };
 
-/** What a budgeted call came to: the tool's own result, or its conversion (the text the model reads). */
+/** What a call came to: the tool's own result, or its conversion (the text the model reads). */
 export type ToolBudgetOutcome =
   | { kind: 'settled'; result: unknown }
   | { kind: 'converted'; jobId: string; title: string; text: string; deduped?: boolean };
 
 /**
- * The tool-call BUDGET (plans/FREE_AGENT.md §2 and §M.3 part 1): the harness owns the clock on
- * every in-process tool call. A call that has not resolved by N — SOFT, default 5 s, the ONE
- * number every layer reads through {@link ToolBudget.softBudgetMs} — is CONVERTED IN PLACE into
- * a background job: the running promise is handed to the host with its abort control and phase
- * relay, and the model reads a typed "started in the background — job {id}" result at the step
- * boundary, so the round continues and the next input reaches the one mind within the bar. The
- * promise runs on; its later settlement is the host's to deliver as an input (I3). No per-tool
- * special case and no timer-as-fallback: the budget IS the contract; a tool's optional hints
- * (`background`, `softBudgetMs` — its own N, `Infinity` = always awaited — `hardBudgetMs`,
- * `dedupe`/`dedupeKey`) only tune it (D2). One instance per call.
+ * THE ONE-RESPONSE CLASS RULE at the executor (plans/DECISIONS.md 630, ruled 2026-10-17; plans/
+ * FREE_AGENT.md §M.23 stage C): a call converts into a job ONLY when the function it reaches
+ * declares its job kind (`Function.job` — spawned agents, shells, watchers, orchestrations,
+ * routines: the things that genuinely run on their own, jobs by what they ARE), and it converts
+ * AT ITS START — no clock: the running promise is handed to the host with its kind, its abort
+ * control and its phase relay, and the model reads a typed "started in the background — job {id}"
+ * result at the step boundary. EVERY OTHER CALL IS AWAITED WHOLE: a deck, a document, a picture,
+ * a catalog check — whatever the agent makes for the person — lands in the reply they asked in;
+ * nothing they wait on is ever split into "I started that" and a second message later (the third
+ * leak of that shape was his 1.32.0 smoke finding 6). No per-tool opt-in, no allowlist of
+ * always-awaited declarations: the class is the rule. One instance per call.
+ *
+ * N ({@link ToolBudget.softBudgetMs}) is no longer a clock on any tool call. It remains the
+ * ROUND's number (§M.3 part 2b — the time a streaming round gets to finish on its own once a
+ * mid-turn note lands, `Conversation`'s cut-and-continue) and the number the job row records.
  *
  * The job's NAME is a task in plain English (the founder's ruling, FREE_AGENT §M): under a budgeted
  * executor every tool's schema offers the model a `task` label ({@link ToolBudget.TASK_PARAMETER}
@@ -116,7 +122,11 @@ export class ToolBudget {
     }
   ) {}
 
-  /** N (§M.2): env `CONVERSATION_TOOL_SOFT_BUDGET_MS`, default 5 000 ms. The bar is not tunable; N is. */
+  /**
+   * N — the ROUND's soft budget (§M.2, §M.3 part 2b): env `CONVERSATION_TOOL_SOFT_BUDGET_MS`,
+   * default 5 000 ms. Read by the round loop's cut-and-continue clock and recorded on the job row;
+   * never a clock on a tool call (the class rule above).
+   */
   static softBudgetMs(): number {
     return Number(process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS || 5_000);
   }
@@ -127,15 +137,27 @@ export class ToolBudget {
   }
 
   /**
-   * Run the call under the budget: the §2.8 running-job check first (a repeat never executes),
-   * then the call raced against N (`background: true` → t = 0); past N the call converts.
+   * Run the call under the class rule: a function that declares no job kind is awaited whole —
+   * the host is never asked; a kind-declared function is checked against the §2.8 running jobs
+   * first (a repeat never executes) and otherwise converts at its start.
    */
   async run(): Promise<ToolBudgetOutcome> {
     const { host, fn, toolCallId, input, task, detail } = this.call;
     // The function that does the work — the called one, or through a dispatching function its
-    // TARGET: its hints are this call's budget and its name + arguments this call's identity, so a
-    // tool behaves as it declared on either road (a dispatcher declares nothing of its own).
+    // TARGET: its declaration is this call's class and its name + arguments this call's identity,
+    // so a tool behaves as it declared on either road (a dispatcher declares nothing of its own).
     const target = ToolBudget.reach(fn, input);
+    const controller = new AbortController();
+    const ctx = {
+      signal: controller.signal,
+      onPhase: (phase: ToolPhase) => this.reportPhase(phase),
+    };
+    const job = target.fn.job;
+    if (!job) {
+      // AWAITED WHOLE: the deliverable lands in this reply; a rejection propagates to the
+      // executor's failure path exactly as it always has.
+      return { kind: 'settled', result: await fn.call(input, ctx) };
+    }
     const name = target.fn.definition.name;
     const hints = target.fn;
     const dedupeKey =
@@ -153,20 +175,9 @@ export class ToolBudget {
         };
       }
     }
-    const controller = new AbortController();
-    const promise = (async () =>
-      fn.call(input, {
-        signal: controller.signal,
-        onPhase: (phase) => this.reportPhase(phase),
-      }))();
-    // This call's N: `background: true` → 0; else the tool's own soft budget (`Infinity` = awaited
-    // inline, never converted — a deliverable write); else the loop's. The hints are the target's.
-    const budgetMs = hints.background ? 0 : hints.softBudgetMs ?? host.softBudgetMs ?? ToolBudget.softBudgetMs();
-    const raced = await ToolBudget.race(promise, budgetMs);
-    if (raced.settled) {
-      return { kind: 'settled', result: raced.value };
-    }
-    // Handed off: the host observes the settlement (done or failed) — never an unhandled rejection here.
+    // A JOB BY KIND: the call starts and is handed to the host at once — the host observes the
+    // settlement (done or failed); never an unhandled rejection here.
+    const promise = (async () => fn.call(input, ctx))();
     promise.catch(() => undefined);
     const title = ToolBudget.title({ task, phase: this.lastPhase, detail });
     // The called function's outcome hook rides the conversion (a dispatcher's reaches its target's):
@@ -176,6 +187,7 @@ export class ToolBudget {
       toolCallId,
       name,
       args: target.args,
+      kind: job.kind,
       title,
       ...(task ? { task } : {}),
       ...(detail ? { detail } : {}),
@@ -332,38 +344,6 @@ export class ToolBudget {
     for (const listener of this.phaseListeners) {
       listener(phase);
     }
-  }
-
-  /**
-   * The race: the call's own settlement wins under N; the budget wins past it (the call keeps
-   * running — nothing is cancelled by the yield, §2.3 #1). A rejection under N propagates to the
-   * executor's failure path exactly as an unbudgeted call's would. A non-finite N is no race at
-   * all: the call is awaited (the `softBudgetMs: Infinity` tool — never a timer, which Node would
-   * clamp to 1 ms and fire at once).
-   */
-  private static race<T>(
-    promise: Promise<T>,
-    budgetMs: number
-  ): Promise<{ settled: true; value: T } | { settled: false }> {
-    if (budgetMs <= 0) {
-      return Promise.resolve({ settled: false });
-    }
-    if (!Number.isFinite(budgetMs)) {
-      return promise.then((value) => ({ settled: true, value }));
-    }
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => resolve({ settled: false }), budgetMs);
-      promise.then(
-        (value) => {
-          clearTimeout(timer);
-          resolve({ settled: true, value });
-        },
-        (error: unknown) => {
-          clearTimeout(timer);
-          reject(error);
-        }
-      );
-    });
   }
 
   private static stableJson(value: unknown): string {

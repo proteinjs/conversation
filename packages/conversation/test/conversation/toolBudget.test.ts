@@ -8,23 +8,22 @@ import { fixtureModelData } from './fixtureModelData';
 import { SkillDispatcherSkill } from '../../src/SkillDispatcherSkill';
 
 /**
- * The tool-call BUDGET (plans/FREE_AGENT.md §M.3 part 1; §6 #1 and #6): the executor races every
- * in-process tool call against N (SOFT, default 5 s — `ToolBudget.softBudgetMs()`, the one place)
- * and converts a call still running past N IN PLACE into a background job the host owns:
- *  - a 6 s tool converts at 5 s — the loop reaches its next step boundary at N, not at 6 s; the
- *    model reads the typed "started in the background — job {id}" result; the promise runs on
- *    and the host receives it (its later settlement carries the tool's own value, counter = 1);
- *  - a 2 s tool never converts (D5: under N a tool returns inline exactly as before);
- *  - `background: true` converts at t = 0 (D2's one optimization);
- *  - §2.8 dedupe: a repeat of a running call never executes — the model reads "already running
- *    as job {id}"; `dedupe: false` opts out;
- *  - phases reported before the conversion name the yield sentence; phases after it reach the host;
+ * THE ONE-RESPONSE CLASS RULE at the executor (plans/DECISIONS.md 630; plans/FREE_AGENT.md §M.23
+ * stage C): a call converts into a job ONLY when the function it reaches declares its job kind
+ * (`Function.job`), and then AT ITS START — no clock; every other call is AWAITED WHOLE, however
+ * long it runs, and the model reads the tool's own result at the boundary:
+ *  - a 1.5 s tool that declares nothing is awaited under a 1 ms N — the boundary comes after it,
+ *    the host is never asked (RED at the pre-rule executor: the race converted it at N);
+ *  - a `job: { kind }` tool converts at t = 0 — the yield is immediate, the conversion carries the
+ *    kind, the call's identity, its HARD declaration and its dedupe key; the promise runs on and
+ *    the host receives it (its later settlement carries the tool's own value);
+ *  - §2.8 dedupe: a repeat of a running kind-declared call never executes — the model reads
+ *    "already running as job {id}"; `dedupe: false` opts out;
+ *  - the phase a kind-declared call reports at its start names the yield sentence; later phases
+ *    reach the host;
  *  - the job's Stop reaches the tool through its own signal; a rejection after the hand-off is the
  *    host's to observe, never an unhandled rejection.
  * No network: a MockLanguageModelV3 scripts the loop (the injectedContext suite's idiom).
- *
- * RED at the pre-fix executor (`result = await f.call(args)`, unbounded): the boundary arrives when
- * the tool ends (6 s), the model reads the tool's own result, no host is ever called.
  */
 
 const usage = {
@@ -74,12 +73,11 @@ const skill = (fns: Function[]): ConversationSkill => ({
 });
 
 /** A host that records conversions and dedupes on the key the executor hands it (the registry's twin). */
-const recordingHost = (opts?: { softBudgetMs?: number }) => {
+const recordingHost = () => {
   const conversions: ToolBudgetConversion[] = [];
   const runningByKey = new Map<string, string>();
   const runningLookups: string[] = [];
   const host: ToolBudgetHost = {
-    ...(opts?.softBudgetMs !== undefined ? { softBudgetMs: opts.softBudgetMs } : {}),
     convert: async (call) => {
       conversions.push(call);
       const jobId = `job-${conversions.length}`;
@@ -143,7 +141,7 @@ const runLoop = async (args: {
   };
 };
 
-describe('the tool-call budget — tool → job in place at the executor (FREE_AGENT §M.3 part 1)', () => {
+describe('the one-response class rule — a call converts only by its declared kind (DECISIONS 630)', () => {
   const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
 
   beforeEach(() => {
@@ -159,22 +157,21 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     }
   });
 
-  test('N is one number: 5 s by default, env-tunable', () => {
+  test('N is one number — the round’s (§M.3 part 2b): 5 s by default, env-tunable', () => {
     expect(ToolBudget.softBudgetMs()).toBe(5_000);
     process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '250';
     expect(ToolBudget.softBudgetMs()).toBe(250);
     delete process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
   });
 
-  test('§6 #1: a 6 s tool converts at N = 5 s — the boundary fires at N, the model reads the typed hand-off, the promise runs on and the host receives it (counter = 1 later)', async () => {
+  test('THE RULE: a tool that declares nothing is AWAITED WHOLE under a 1 ms N — the boundary waits for it, the model reads the tool’s own result, the host is never asked (RED at the pre-rule executor: converted at N)', async () => {
+    process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '1';
     let counter = 0;
-    let settledAtMs = 0;
     const slow: Function = {
       definition: { name: 'slowTool', description: 'slow', parameters: { type: 'object', properties: {} } },
       call: async () => {
-        await sleep(6_000);
+        await sleep(1_500);
         counter++;
-        settledAtMs = Date.now();
         return { done: true };
       },
     };
@@ -182,15 +179,54 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     const run = await runLoop({
       fns: [slow],
       host,
-      steps: [() => toolCallStep('slowTool', ['tc-1']), () => textStep('carried on')],
+      steps: [() => toolCallStep('slowTool', ['tc-1']), () => textStep('here it is')],
     });
 
-    // The boundary (step 2's model call) arrived at N, not when the tool ended.
+    // The boundary (step 2's model call) arrived when the tool ended — 1 500× past the old N.
     expect(run.prompts).toHaveLength(2);
-    const boundaryAtMs = run.prompts[1].atMs;
-    expect(boundaryAtMs).toBeGreaterThanOrEqual(4_900);
-    expect(boundaryAtMs).toBeLessThan(5_900);
-    // The loop was free to continue: the final text landed before the tool had finished.
+    expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(1_400);
+    expect(counter).toBe(1);
+    expect(conversions).toHaveLength(0);
+    // What the model read as the tool's result: the tool's own value, never a hand-off.
+    const toolResults = toolResultTexts(run.prompts[1].prompt);
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0]).toContain('"done":true');
+    expect(toolResults[0]).not.toContain('Started in the background');
+    expect(run.toolInvocations[0].converted).toBeUndefined();
+    expect(run.toolInvocations[0].data).toEqual({ done: true });
+    expect(run.parts.find((p) => p.type === 'tool-settled')).toEqual({
+      type: 'tool-settled',
+      id: 'tc-1',
+      toolName: 'slowTool',
+      ok: true,
+    });
+    expect(run.text).toBe('here it is');
+  }, 20_000);
+
+  test('a kind-declared tool converts AT ITS START — the yield is immediate; the conversion carries the kind, the call’s identity, its HARD declaration and its dedupe key; the promise runs on and the host receives its value', async () => {
+    let counter = 0;
+    let resolveTool!: (v: unknown) => void;
+    const shell: Function = {
+      definition: { name: 'runOnTheBox', description: 'long', parameters: { type: 'object', properties: {} } },
+      job: { kind: 'shell' },
+      hardBudgetMs: 60_000,
+      call: () =>
+        new Promise((resolve) => {
+          resolveTool = (v) => {
+            counter++;
+            resolve(v);
+          };
+        }),
+    };
+    const { host, conversions } = recordingHost();
+    const run = await runLoop({
+      fns: [shell],
+      host,
+      steps: [() => toolCallStep('runOnTheBox', ['tc-1']), () => textStep('carried on')],
+    });
+    // The boundary came at once — no clock ran.
+    expect(run.prompts).toHaveLength(2);
+    expect(run.prompts[1].atMs).toBeLessThan(500);
     expect(run.text).toBe('carried on');
     expect(counter).toBe(0);
 
@@ -202,19 +238,19 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     expect(toolResults[0]).toContain('one plain line');
     expect(toolResults[0]).toContain('a question the user sent meanwhile gets its answer in this same reply');
 
-    // ONE conversion, with the call's identity, its HARD default and its dedupe key.
+    // ONE conversion, with the kind, the call's identity, its HARD declaration (D8) and its dedupe key.
     expect(conversions).toHaveLength(1);
+    expect(conversions[0].kind).toBe('shell');
     expect(conversions[0].toolCallId).toBe('tc-1');
-    expect(conversions[0].name).toBe('slowTool');
-    expect(conversions[0].hardBudgetMs).toBe(ToolBudget.hardBudgetMs());
+    expect(conversions[0].name).toBe('runOnTheBox');
+    expect(conversions[0].hardBudgetMs).toBe(60_000);
     expect(conversions[0].dedupeKey).toBe(ToolBudget.argsKey({}));
 
     // The invocation record and the settle part both carry the conversion (part 3 paints it).
     expect(run.toolInvocations).toHaveLength(1);
     expect(run.toolInvocations[0].converted).toEqual({ jobId: 'job-1', title: 'Working in the background' });
     expect(run.toolInvocations[0].ok).toBe(true);
-    const settled = run.parts.find((p) => p.type === 'tool-settled');
-    expect(settled).toMatchObject({
+    expect(run.parts.find((p) => p.type === 'tool-settled')).toMatchObject({
       type: 'tool-settled',
       id: 'tc-1',
       ok: true,
@@ -222,79 +258,22 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     });
 
     // The promise ran ON (§2.3 #1): the host's copy settles with the tool's own value, once.
+    resolveTool({ done: true });
     await expect(conversions[0].promise).resolves.toEqual({ done: true });
     expect(counter).toBe(1);
-    expect(settledAtMs - run.t0).toBeGreaterThanOrEqual(5_900);
-  }, 20_000);
-
-  test('D5: a 2 s tool never converts — the model reads its own result inline, no host call', async () => {
-    let counter = 0;
-    const quick: Function = {
-      definition: { name: 'quickTool', description: 'quick', parameters: { type: 'object', properties: {} } },
-      call: async () => {
-        await sleep(2_000);
-        counter++;
-        return { done: true };
-      },
-    };
-    const { host, conversions } = recordingHost();
-    const run = await runLoop({
-      fns: [quick],
-      host,
-      steps: [() => toolCallStep('quickTool', ['tc-1']), () => textStep('inline')],
-    });
-    expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(1_900);
-    expect(conversions).toHaveLength(0);
-    expect(counter).toBe(1);
-    expect(toolResultTexts(run.prompts[1].prompt)[0]).toContain('"done":true');
-    expect(run.toolInvocations[0].converted).toBeUndefined();
-    expect(run.parts.find((p) => p.type === 'tool-settled')).toEqual({
-      type: 'tool-settled',
-      id: 'tc-1',
-      toolName: 'quickTool',
-      ok: true,
-    });
-  }, 20_000);
-
-  test('D2: `background: true` converts at t = 0 — the yield is immediate', async () => {
-    let resolveTool!: (v: unknown) => void;
-    const always: Function = {
-      definition: { name: 'alwaysLong', description: 'long', parameters: { type: 'object', properties: {} } },
-      background: true,
-      hardBudgetMs: 60_000,
-      call: () => new Promise((resolve) => (resolveTool = resolve)),
-    };
-    const { host, conversions } = recordingHost();
-    const run = await runLoop({
-      fns: [always],
-      host,
-      steps: [() => toolCallStep('alwaysLong', ['tc-1']), () => textStep('went on')],
-    });
-    expect(run.prompts[1].atMs).toBeLessThan(500);
-    expect(conversions).toHaveLength(1);
-    // The tool's own HARD declaration rides the conversion (D8).
-    expect(conversions[0].hardBudgetMs).toBe(60_000);
-    resolveTool('late');
-    await expect(conversions[0].promise).resolves.toBe('late');
   });
 
-  test('the host may set N for its loop (a constructor/option, not a second env)', async () => {
-    const slowish: Function = {
-      definition: { name: 'slowish', description: 'slowish', parameters: { type: 'object', properties: {} } },
-      call: async () => {
-        await sleep(1_200);
-        return 'ok';
-      },
+  test('a kind-declared call with no HARD declaration converts with the HARD default', async () => {
+    const agent: Function = {
+      definition: { name: 'spawn', description: 'a', parameters: { type: 'object', properties: {} } },
+      job: { kind: 'agent' },
+      call: () => new Promise(() => undefined),
     };
-    const { host, conversions } = recordingHost({ softBudgetMs: 300 });
-    const run = await runLoop({
-      fns: [slowish],
-      host,
-      steps: [() => toolCallStep('slowish', ['tc-1']), () => textStep('x')],
-    });
-    expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(280);
-    expect(run.prompts[1].atMs).toBeLessThan(1_100);
+    const { host, conversions } = recordingHost();
+    await runLoop({ fns: [agent], host, steps: [() => toolCallStep('spawn', ['tc-1']), () => textStep('x')] });
     expect(conversions).toHaveLength(1);
+    expect(conversions[0].kind).toBe('agent');
+    expect(conversions[0].hardBudgetMs).toBe(ToolBudget.hardBudgetMs());
   });
 
   test('without a host the executor awaits the call to completion (an unbudgeted caller — unchanged behaviour)', async () => {
@@ -313,17 +292,18 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     expect(toolResultTexts(run.prompts[1].prompt)[0]).toBe('ok');
   });
 
-  test('§6 #6 dedupe: the same tool + args while the job runs → "already running as job {id}"; the side effect stays at 1; `dedupe: false` opts out', async () => {
+  test('§6 #6 dedupe: the same kind-declared tool + args while the job runs → "already running as job {id}"; the side effect stays at 1; `dedupe: false` opts out', async () => {
     let counter = 0;
     const hold = new Promise<unknown>(() => undefined); // never settles: the job keeps running
     const slow: Function = {
       definition: { name: 'slowTool', description: 'slow', parameters: { type: 'object', properties: {} } },
+      job: { kind: 'watcher' },
       call: async () => {
         counter++;
         return hold;
       },
     };
-    const { host, conversions, runningLookups } = recordingHost({ softBudgetMs: 100 });
+    const { host, conversions, runningLookups } = recordingHost();
     const run = await runLoop({
       fns: [slow],
       host,
@@ -352,13 +332,14 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     let twice = 0;
     const repeatable: Function = {
       definition: { name: 'createTask', description: 'task', parameters: { type: 'object', properties: {} } },
+      job: { kind: 'orchestration' },
       dedupe: false,
       call: async () => {
         twice++;
         return hold;
       },
     };
-    const again = recordingHost({ softBudgetMs: 100 });
+    const again = recordingHost();
     await runLoop({
       fns: [repeatable],
       host: again.host,
@@ -374,15 +355,40 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     expect(again.runningLookups).toHaveLength(0);
   });
 
+  test('an awaited call never asks the §2.8 running-job lookup — a repeat of an awaited tool simply runs again', async () => {
+    let twice = 0;
+    const read: Function = {
+      definition: { name: 'readIt', description: 'r', parameters: { type: 'object', properties: {} } },
+      call: async () => {
+        twice++;
+        return 'content';
+      },
+    };
+    const { host, conversions, runningLookups } = recordingHost();
+    await runLoop({
+      fns: [read],
+      host,
+      steps: [
+        () => toolCallStep('readIt', ['tc-1'], '{"id":"a"}'),
+        () => toolCallStep('readIt', ['tc-2'], '{"id":"a"}'),
+        () => textStep('x'),
+      ],
+    });
+    expect(twice).toBe(2);
+    expect(conversions).toHaveLength(0);
+    expect(runningLookups).toHaveLength(0);
+  });
+
   test('a declared dedupeKey is the identity, and the arguments hash is key-order independent', () => {
     expect(ToolBudget.argsKey({ a: 1, b: [1, { c: 2 }] })).toBe(ToolBudget.argsKey({ b: [1, { c: 2 }], a: 1 }));
     expect(ToolBudget.argsKey({ a: 1 })).not.toBe(ToolBudget.argsKey({ a: 2 }));
   });
 
-  test('phases: reported before the conversion they name the yield sentence; after it they reach the host', async () => {
+  test('phases: the one a kind-declared call reports at its start names the yield sentence; later ones reach the host', async () => {
     let ctxSeen: ToolCallContext | undefined;
     const phased: Function = {
       definition: { name: 'materialize', description: 'm', parameters: { type: 'object', properties: {} } },
+      job: { kind: 'shell' },
       getTimelineDetail: () => 'n3xa app',
       call: async (_args, ctx) => {
         ctxSeen = ctx;
@@ -394,7 +400,7 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
       },
     };
     const phasesAfter: ToolPhase[] = [];
-    const { host, conversions } = recordingHost({ softBudgetMs: 150 });
+    const { host, conversions } = recordingHost();
     const hostWithListener: ToolBudgetHost = {
       ...host,
       convert: async (call) => {
@@ -462,12 +468,13 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
         description: 'slow',
         parameters: { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'] },
       },
+      job: { kind: 'shell' },
       call: async (args) => {
         received = args;
         return new Promise(() => undefined);
       },
     };
-    const { host, conversions, runningLookups } = recordingHost({ softBudgetMs: 100 });
+    const { host, conversions, runningLookups } = recordingHost();
     const run = await runLoop({
       fns: [slow],
       host,
@@ -497,6 +504,29 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     expect(run.toolInvocations[1].converted).toMatchObject({ jobId: 'job-1', deduped: true });
   });
 
+  test('the `task` label is split off an AWAITED call too — the tool receives its own arguments exactly as declared', async () => {
+    let received: unknown;
+    const read: Function = {
+      definition: {
+        name: 'readIt',
+        description: 'r',
+        parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+      },
+      call: async (args) => {
+        received = args;
+        return 'content';
+      },
+    };
+    const run = await runLoop({
+      fns: [read],
+      host: recordingHost().host,
+      steps: [() => toolCallStep('readIt', ['tc-1'], '{"id":"a","task":"Reading the note"}'), () => textStep('x')],
+    });
+    expect(received).toEqual({ id: 'a' });
+    expect(run.toolInvocations[0].input).toEqual({ id: 'a' });
+    expect(run.toolInvocations[0].converted).toBeUndefined();
+  });
+
   test('a budgeted executor offers the `task` label on the schema; an unbudgeted one sends the schema untouched', () => {
     const schema = { type: 'object', properties: { repo: { type: 'string' } }, required: ['repo'] };
     const offered = ToolBudget.withTaskParameter(schema);
@@ -516,6 +546,7 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     const aborted: string[] = [];
     const stoppable: Function = {
       definition: { name: 'stoppable', description: 's', parameters: { type: 'object', properties: {} } },
+      job: { kind: 'shell' },
       call: (_args, ctx) =>
         new Promise((_resolve, reject) => {
           ctx?.signal.addEventListener('abort', () => {
@@ -528,7 +559,7 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     const onUnhandled = (reason: unknown) => unhandled.push(reason);
     process.on('unhandledRejection', onUnhandled);
     try {
-      const { host, conversions } = recordingHost({ softBudgetMs: 100 });
+      const { host, conversions } = recordingHost();
       const run = await runLoop({
         fns: [stoppable],
         host,
@@ -548,7 +579,7 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
     }
   });
 
-  test('a call that fails UNDER N follows the failure path exactly as an unbudgeted call would', async () => {
+  test('a failing AWAITED call follows the failure path exactly as an unbudgeted call would', async () => {
     const failing: Function = {
       definition: { name: 'failing', description: 'f', parameters: { type: 'object', properties: {} } },
       call: async () => {
@@ -569,21 +600,20 @@ describe('the tool-call budget — tool → job in place at the executor (FREE_A
 });
 
 /**
- * A tool's OWN soft budget (`Function.softBudgetMs`): the per-tool tune of N (D2 — hints only
- * tune the budget). A tool whose result IS the reply's substance (a document write) declares
- * `Infinity`: the executor awaits it however long it runs — the model reads the tool's own result
- * at the boundary and the host is never asked to own a job. A finite value is that call's own N.
- * `background: true` still wins (t = 0). Tools that declare nothing keep the loop's N.
+ * EVERY DELIVERABLE IS AWAITED WHOLE — the old per-tool "always awaited" declaration
+ * (`softBudgetMs: Infinity`, §M.19's allowlist) retired with the hint: a document write, a deck, a
+ * picture, a catalog check needs NO declaration to land in the reply. The set is the class, never
+ * a per-tool number.
  *
- * RED at the pre-fix executor: `softBudgetMs` is unread — every call races the loop's N, so the
- * Infinity tool converts at 250 ms like any other and the model reads the hand-off.
+ * RED at the pre-rule executor under a 250 ms N: the undeclared write converted at N and the
+ * model read the hand-off.
  */
-describe('a tool’s own SOFT budget — `softBudgetMs` per tool (deliverable writes stay inline)', () => {
+describe('every deliverable is awaited whole — no per-tool declaration (the §M.19 allowlist retired)', () => {
   const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
-  const LOOP_N_MS = 250;
+  const OLD_N_MS = 250;
 
   beforeEach(() => {
-    process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = String(LOOP_N_MS);
+    process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = String(OLD_N_MS);
   });
 
   afterAll(() => {
@@ -594,7 +624,7 @@ describe('a tool’s own SOFT budget — `softBudgetMs` per tool (deliverable wr
     }
   });
 
-  const writeTool = (opts: { ms: number; softBudgetMs?: number; background?: boolean; name?: string }) => {
+  const writeTool = (opts: { ms: number; job?: Function['job']; name?: string }) => {
     const state = { settled: 0 };
     const fn: Function = {
       definition: {
@@ -602,8 +632,7 @@ describe('a tool’s own SOFT budget — `softBudgetMs` per tool (deliverable wr
         description: 'writes the document the user asked for',
         parameters: { type: 'object', properties: {} },
       },
-      ...(opts.softBudgetMs !== undefined ? { softBudgetMs: opts.softBudgetMs } : {}),
-      ...(opts.background ? { background: true } : {}),
+      ...(opts.job ? { job: opts.job } : {}),
       call: async () => {
         await sleep(opts.ms);
         state.settled++;
@@ -613,8 +642,8 @@ describe('a tool’s own SOFT budget — `softBudgetMs` per tool (deliverable wr
     return { fn, state };
   };
 
-  test('`softBudgetMs: Infinity` — the call is AWAITED however long it runs: the boundary waits for it, the model reads the tool’s own result, the host is never called', async () => {
-    const { fn, state } = writeTool({ ms: 1_500, softBudgetMs: Number.POSITIVE_INFINITY });
+  test('a 1.5 s document write with NO declaration is AWAITED: the boundary comes after the write, the model reads the write’s own result, the host is never called', async () => {
+    const { fn, state } = writeTool({ ms: 1_500 });
     const { host, conversions } = recordingHost();
     const run = await runLoop({
       fns: [fn],
@@ -623,7 +652,7 @@ describe('a tool’s own SOFT budget — `softBudgetMs` per tool (deliverable wr
     });
 
     expect(run.prompts).toHaveLength(2);
-    // The boundary came AFTER the write (6× past the loop's N), not at N.
+    // The boundary came AFTER the write (6× past the old N), not at N.
     expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(1_400);
     expect(state.settled).toBe(1);
     expect(conversions).toHaveLength(0);
@@ -636,85 +665,49 @@ describe('a tool’s own SOFT budget — `softBudgetMs` per tool (deliverable wr
     expect(run.text).toBe('here it is');
   }, 20_000);
 
-  test('a finite `softBudgetMs` is that call’s own N — inline under it though past the loop’s N; converted past it', async () => {
-    // Under its own N (1 200 ms) though 4× past the loop's (250 ms): inline.
-    const under = writeTool({ ms: 1_000, softBudgetMs: 1_200, name: 'writeUnder' });
-    const underHost = recordingHost();
-    const underRun = await runLoop({
-      fns: [under.fn],
-      host: underHost.host,
-      steps: [() => toolCallStep('writeUnder', ['tc-1']), () => textStep('inline')],
+  test('a kind-declared call beside it converts at its start — the set is the class, never a per-tool number', async () => {
+    const routine = writeTool({ ms: 1_000, job: { kind: 'routine' }, name: 'runTheRoutine' });
+    const routineHost = recordingHost();
+    const routineRun = await runLoop({
+      fns: [routine.fn],
+      host: routineHost.host,
+      steps: [() => toolCallStep('runTheRoutine', ['tc-1']), () => textStep('started')],
     });
-    expect(underHost.conversions).toHaveLength(0);
-    expect(underRun.prompts[1].atMs).toBeGreaterThanOrEqual(900);
-    expect(toolResultTexts(underRun.prompts[1].prompt)[0]).toContain('"written":true');
-
-    // Past its own N (400 ms): converted there — its own number, not the loop's.
-    const over = writeTool({ ms: 1_500, softBudgetMs: 400, name: 'writeOver' });
-    const overHost = recordingHost();
-    const overRun = await runLoop({
-      fns: [over.fn],
-      host: overHost.host,
-      steps: [() => toolCallStep('writeOver', ['tc-2']), () => textStep('started')],
-    });
-    expect(overHost.conversions).toHaveLength(1);
-    expect(overHost.conversions[0].toolCallId).toBe('tc-2');
-    expect(overRun.prompts[1].atMs).toBeGreaterThanOrEqual(350);
-    expect(overRun.prompts[1].atMs).toBeLessThan(1_300);
-    expect(toolResultTexts(overRun.prompts[1].prompt)[0]).toContain('Started in the background');
-    await expect(overHost.conversions[0].promise).resolves.toEqual({ written: true, id: 'doc-1' });
-  }, 20_000);
-
-  test('`background: true` still wins over the tool’s own soft budget (t = 0); a tool that declares nothing keeps the loop’s N', async () => {
-    const always = writeTool({
-      ms: 1_000,
-      softBudgetMs: Number.POSITIVE_INFINITY,
-      background: true,
-      name: 'alwaysLong',
-    });
-    const alwaysHost = recordingHost();
-    const alwaysRun = await runLoop({
-      fns: [always.fn],
-      host: alwaysHost.host,
-      steps: [() => toolCallStep('alwaysLong', ['tc-1']), () => textStep('started')],
-    });
-    expect(alwaysHost.conversions).toHaveLength(1);
-    expect(alwaysRun.prompts[1].atMs).toBeLessThan(500);
-    await expect(alwaysHost.conversions[0].promise).resolves.toEqual({ written: true, id: 'doc-1' });
+    expect(routineHost.conversions).toHaveLength(1);
+    expect(routineHost.conversions[0].kind).toBe('routine');
+    expect(routineRun.prompts[1].atMs).toBeLessThan(500);
+    await expect(routineHost.conversions[0].promise).resolves.toEqual({ written: true, id: 'doc-1' });
 
     const plain = writeTool({ ms: 1_000, name: 'plainTool' });
     const plainHost = recordingHost();
     const plainRun = await runLoop({
       fns: [plain.fn],
       host: plainHost.host,
-      steps: [() => toolCallStep('plainTool', ['tc-2']), () => textStep('started')],
+      steps: [() => toolCallStep('plainTool', ['tc-2']), () => textStep('done')],
     });
-    expect(plainHost.conversions).toHaveLength(1);
-    expect(plainRun.prompts[1].atMs).toBeGreaterThanOrEqual(LOOP_N_MS - 50);
-    expect(plainRun.prompts[1].atMs).toBeLessThan(900);
-    await expect(plainHost.conversions[0].promise).resolves.toEqual({ written: true, id: 'doc-1' });
+    expect(plainHost.conversions).toHaveLength(0);
+    expect(plainRun.prompts[1].atMs).toBeGreaterThanOrEqual(900);
+    expect(plain.state.settled).toBe(1);
   }, 20_000);
 });
 
 /**
- * A call made THROUGH A DISPATCHING FUNCTION takes its TARGET's hints and identity
+ * A call made THROUGH A DISPATCHING FUNCTION takes its TARGET's declaration and identity
  * (`Function.dispatchTarget`): a lazy-loading skill catalog's `useSkill` names the tool it reaches;
- * the executor reads `softBudgetMs` / `background` / `hardBudgetMs` and the dedupe identity off
- * that tool with its own arguments, and the node settles under that tool's name with its outcome
- * intact — so a tool declared awaited behaves awaited on its first use through the catalog exactly
- * as it does once pinned and called directly.
+ * the executor reads `job` / `hardBudgetMs` and the dedupe identity off that tool with its own
+ * arguments, and the node settles under that tool's name with its outcome intact — so a tool keeps
+ * its class on its first use through the catalog exactly as it does once pinned and called
+ * directly (§M.23 stage A, carried onto the rule).
  *
- * RED at the pre-fix executor: the hints are read off the function it CALLS (`useSkill` declares
- * none), so a target declaring `Infinity` converts at the loop's N like any other call; the
- * conversion is named `useSkill` and keyed on the dispatch's whole input; the settle keeps the
- * name `useSkill` and strips the target's outcome of its name.
+ * RED at the pre-rule executor: a target with no declaration converted at the loop's N through the
+ * dispatcher, named `useSkill` and keyed on the dispatch's whole input.
  */
-describe('a dispatching function takes its TARGET’s hints and identity (`Function.dispatchTarget`)', () => {
+describe('a dispatching function takes its TARGET’s declaration and identity (`Function.dispatchTarget`)', () => {
   const savedSoft = process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS;
-  const LOOP_N_MS = 250;
+  const OLD_N_MS = 250;
 
   beforeEach(() => {
-    process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = String(LOOP_N_MS);
+    process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = String(OLD_N_MS);
   });
 
   afterAll(() => {
@@ -744,11 +737,10 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
     parameters: { type: 'object', properties },
   });
 
-  test('a target declaring `softBudgetMs: Infinity` is AWAITED through the dispatcher: the boundary waits for it, the model reads the tool’s own result, the host is never asked', async () => {
+  test('a target with no declaration is AWAITED through the dispatcher: the boundary waits for it, the model reads the tool’s own result, the host is never asked', async () => {
     const state = { settled: 0 };
     const write: Function = {
       definition: tool('writeDocument', { title: { type: 'string' } }),
-      softBudgetMs: Number.POSITIVE_INFINITY,
       call: async ({ title }: { title: string }) => {
         await sleep(1_500);
         state.settled++;
@@ -766,7 +758,7 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
     });
 
     expect(run.prompts).toHaveLength(2);
-    // The boundary came AFTER the write (6× past the loop's N), not at N.
+    // The boundary came AFTER the write (6× past the old N), not at N.
     expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(1_400);
     expect(state.settled).toBe(1);
     expect(conversions).toHaveLength(0);
@@ -778,11 +770,11 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
     expect(run.text).toBe('here it is');
   }, 20_000);
 
-  test('a `background: true` target converts at t = 0 through the dispatcher — the conversion named and keyed by the TARGET (its name, its own arguments, its HARD ceiling), and a repeat through the dispatcher is the same work', async () => {
+  test('a `job`-declared target converts at its start through the dispatcher — the conversion named and keyed by the TARGET (its name, its own arguments, its kind, its HARD ceiling), and a repeat through the dispatcher is the same work', async () => {
     let resolveTool!: (v: unknown) => void;
     const long: Function = {
       definition: tool('longSearch', { q: { type: 'string' } }),
-      background: true,
+      job: { kind: 'agent' },
       hardBudgetMs: 60_000,
       call: () => new Promise((resolve) => (resolveTool = resolve)),
     };
@@ -799,6 +791,7 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
     expect(run.prompts[1].atMs).toBeLessThan(500);
     expect(conversions).toHaveLength(1);
     expect(conversions[0].name).toBe('longSearch');
+    expect(conversions[0].kind).toBe('agent');
     expect(conversions[0].args).toEqual({ q: 'a' });
     expect(conversions[0].hardBudgetMs).toBe(60_000);
     expect(conversions[0].dedupeKey).toBe(ToolBudget.argsKey({ q: 'a' }));
@@ -875,9 +868,10 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
     });
   }, 20_000);
 
-  test('the conversion carries the call’s outcome hook bound to its arguments (a dispatcher’s reaches its target’s) for the host to settle the job’s node with; a dispatch that names no tool runs under the dispatcher’s own name and hints', async () => {
+  test('the conversion carries the call’s outcome hook bound to its arguments (a dispatcher’s reaches its target’s) for the host to settle the job’s node with; a dispatch that names no tool runs under the dispatcher’s own name and declaration', async () => {
     const slow: Function = {
       definition: tool('slowWrite'),
+      job: { kind: 'agent' },
       getTimelineOutcome: (_args: unknown, result: unknown) => ({ detail: `made ${String(result)}` }),
       call: async () => {
         await sleep(600);
@@ -891,10 +885,10 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
       host,
       steps: [() => toolCallStep('useSkill', ['tc-1'], dispatch('slowWrite', {})), () => textStep('started')],
     });
-    expect(run.prompts[1].atMs).toBeGreaterThanOrEqual(LOOP_N_MS - 50);
-    expect(run.prompts[1].atMs).toBeLessThan(550);
+    expect(run.prompts[1].atMs).toBeLessThan(500);
     expect(conversions).toHaveLength(1);
     expect(conversions[0].name).toBe('slowWrite');
+    expect(conversions[0].kind).toBe('agent');
     const result = await conversions[0].promise;
     expect(result).toBe('doc-1');
     await expect(conversions[0].outcome!(result)).resolves.toEqual({ name: 'slowWrite', detail: 'made doc-1' });
@@ -902,6 +896,7 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
     // A direct call's conversion carries its own hook; a tool without one carries none.
     const direct: Function = {
       definition: tool('directWrite'),
+      job: { kind: 'shell' },
       getTimelineOutcome: (_args: unknown, result: unknown) => ({ detail: `kept ${String(result)}` }),
       call: async () => {
         await sleep(600);
@@ -910,6 +905,7 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
     };
     const bare: Function = {
       definition: tool('bareWrite'),
+      job: { kind: 'shell' },
       call: async () => {
         await sleep(600);
         return 'b-1';
@@ -929,7 +925,7 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
     await expect(directHost.conversions[0].outcome!('k-1')).resolves.toEqual({ detail: 'kept k-1' });
     expect(directHost.conversions[1].outcome).toBeUndefined();
 
-    // No tool reached: the dispatcher's own name and the loop's N, its own message as the result, no relabel.
+    // No tool reached: the dispatcher's own name and class (awaited), its own message as the result, no relabel.
     const missing = await runLoop({
       fns,
       host: recordingHost().host,

@@ -207,14 +207,13 @@ export type GenerateStreamParams = {
   onTransportRetry?: (activity: LlmTransportRetryActivity) => void;
   abortSignal?: AbortSignal;
   /**
-   * The tool-call BUDGET (plans/FREE_AGENT.md §M.3 part 1; see {@link ToolBudget}): with a host
-   * here, every in-process tool call this loop executes is raced against N (SOFT, default 5 s,
-   * `ToolBudget.softBudgetMs()`); a call still running past N is converted IN PLACE into a
-   * background job the host owns (`convert`), and the model reads the typed "started in the
-   * background — job {id}" result at the step boundary — the round continues, so a mid-turn
-   * input reaches the mind within the bar instead of behind an unbounded tool. The call's
-   * promise runs on. Without a host the executor awaits every call to completion (a caller with
-   * no job machinery — the flow runner's own loop).
+   * The JOB host (plans/DECISIONS.md 630 — the one-response class rule; see {@link ToolBudget}):
+   * with a host here, a tool call whose function declares its job kind (`Function.job` — a
+   * spawned agent, a shell, a watcher, an orchestration, a routine) is converted IN PLACE at its
+   * start into a job of that kind the host owns (`convert`), and the model reads the typed
+   * "started in the background — job {id}" result at the step boundary; every other call is
+   * awaited whole, its result the reply's substance. Without a host every call is awaited (a
+   * caller with no job machinery — the flow runner's own loop).
    */
   toolBudget?: ToolBudgetHost;
   maxToolCalls?: number;
@@ -1232,11 +1231,11 @@ export class Conversation {
       // The refusal ladder's record for this call (params.refusalLadder): every model that
       // refused a step, in the order tried — the requested model first. Never re-sent to.
       const refusalDeclined: string[] = [];
-      // The step budget's clocks (plans/FREE_AGENT.md §M.2, §M.3 part 2b, §M.16): N is the tool
-      // budget's one number; a note that lands while text streams gets N for the generation to
-      // finish on its own, then the cut at the next paragraph break; past N + the grace (the
-      // deadline) at the next boundary of any kind; past the window at the next word boundary —
-      // never mid-word, never inside a code fence (CutBoundary).
+      // The step budget's clocks (plans/FREE_AGENT.md §M.2, §M.3 part 2b, §M.16): N is the round's
+      // one number (no longer a clock on any tool call — DECISIONS 630); a note that lands while
+      // text streams gets N for the generation to finish on its own, then the cut at the next
+      // paragraph break; past N + the grace (the deadline) at the next boundary of any kind; past
+      // the window at the next word boundary — never mid-word, never inside a code fence (CutBoundary).
       const softBudgetMs = ToolBudget.softBudgetMs();
       const utterOptions = {
         model,
@@ -2619,8 +2618,8 @@ export class Conversation {
       const parameters = this.normalizeToolParameters(def.parameters);
       tools[def.name] = {
         description: def.description,
-        // A budgeted executor offers the model the `task` label on every tool (the job's plain-
-        // English name should the call convert); an unbudgeted one sends the schema untouched.
+        // A budgeted executor offers the model the `task` label on every tool (the work's plain-
+        // English name — the job's, should the call be one); an unbudgeted one sends the schema untouched.
         inputSchema: jsonSchema(toolBudget ? ToolBudget.withTaskParameter(parameters) : parameters),
         // Optional properties stay optional: OpenAI reads a tool that states nothing as strict and
         // force-fills every optional property (see ToolStrictness).
@@ -2642,11 +2641,11 @@ export class Conversation {
           let result: unknown;
           try {
             if (toolBudget) {
-              // The budget (plans/FREE_AGENT.md §M.3 part 1): the call runs under N; past it the
-              // host owns it as a job and the model reads the typed hand-off as this call's
-              // result, so the loop reaches its next step boundary — where the next input
-              // drains — instead of waiting behind the tool. The promise is never cancelled by
-              // the yield (§2.3 #1).
+              // The class rule (plans/DECISIONS.md 630): a kind-declared call is handed to the
+              // host as a job at its start and the model reads the typed hand-off as this call's
+              // result, so the loop reaches its next step boundary — where the next input drains
+              // — while the job runs on (never cancelled by the yield, §2.3 #1); every other call
+              // is awaited whole and its own result is what the model reads.
               const outcome = await new ToolBudget({
                 host: toolBudget,
                 fn: f,
@@ -4874,7 +4873,7 @@ export class Conversation {
               //      freshness/lock fence renders as deferred, not done) — only for tools
               //      implementing the hook and returning a name/detail.
               const fn = functions.find((f) => f.definition.name === part.toolName);
-              // A call the budget converted settled here as its HAND-OFF: this part's output is the
+              // A call the host converted settled here as its HAND-OFF: this part's output is the
               // harness's sentence, so the tool's outcome is not read from it — it rides the
               // conversion (`ToolBudgetConversion.outcome`, the hook bound to the call's arguments)
               // for the host to settle the job's node with when the tool's own result arrives.
