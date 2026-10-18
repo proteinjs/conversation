@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.19.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.19.0...@proteinjs/conversation@6.19.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* a dispatched call settles with the dispatched tool's subject — the outcome's detail, else the tool's own subject line, else none (the empty detail); the generic "Skill → tool" line the node ran under is the dispatcher's and never the settled node's ([2ff7429](https://github.com/proteinjs/conversation/commit/2ff742945a8628241522f90a0b158931634615a8))
+
+
+
+
+
 # [6.19.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.18.0...@proteinjs/conversation@6.19.0) (2026-10-17)
 
 
