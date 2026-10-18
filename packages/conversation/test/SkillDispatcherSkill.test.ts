@@ -734,13 +734,15 @@ describe('SkillDispatcherSkill', () => {
       );
       // The tool's own relabel (`tool:variant`) wins; its refusal and detail ride through.
       expect(outcome).toEqual({ ok: false, name: 'save:refused', detail: 'not saved' });
-      // No relabel from the tool: the node still settles under the tool's name.
+      // No relabel from the tool: the node still settles under the tool's name — with no subject (the empty
+      // detail), as a direct call of a tool that names none settles.
       expect(
         await useSkillTool(dispatcher).getTimelineOutcome!({ skill: 'j', tool: 'save', args: {} }, 'saved')
-      ).toEqual({ name: 'save' });
+      ).toEqual({ name: 'save', detail: '' });
       const plain = new SkillDispatcherSkill([makeSkill({ id: 'j', functions: [makeFn('x', 'x', async () => 'ok')] })]);
       expect(await useSkillTool(plain).getTimelineOutcome!({ skill: 'j', tool: 'x', args: {} }, 'ok')).toEqual({
         name: 'x',
+        detail: '',
       });
       // An unknown skill or tool: the dispatch answered with its own message — the node is its own.
       expect(
@@ -749,6 +751,59 @@ describe('SkillDispatcherSkill', () => {
       expect(
         await useSkillTool(plain).getTimelineOutcome!({ skill: 'zz', tool: 'x', args: {} }, 'err')
       ).toBeUndefined();
+    });
+
+    it("the settled subject is the dispatched tool's: its own subject line when it declares one, the outcome's detail over that, and NONE (the empty detail) when it has neither — the running node's 'Skill → tool' line is never the settled node's", async () => {
+      // A read that names no subject: the node ran under "Journal → listEntries" and settles under `listEntries`
+      // with no subject at all, as a direct call would. RED at 6.19.0: `{ name: 'listEntries' }` — no `detail`,
+      // so a consumer kept the dispatcher's line beneath the tool's own label.
+      const list = makeFn('listEntries', 'l', async () => 'a, b');
+      const dispatcher = new SkillDispatcherSkill([makeSkill({ id: 'j', name: 'Journal', functions: [list] })]);
+      expect(await useSkillTool(dispatcher).getTimelineDetail!({ skill: 'j', tool: 'listEntries', args: {} })).toBe(
+        'Journal → listEntries'
+      );
+      expect(
+        await useSkillTool(dispatcher).getTimelineOutcome!({ skill: 'j', tool: 'listEntries', args: {} }, 'a, b')
+      ).toEqual({ name: 'listEntries', detail: '' });
+
+      // A tool with a subject of its own keeps it at the settle (its call-time subject was the same words).
+      const read: ConvFunction = {
+        ...makeFn('readEntry', 'r', async () => 'the entry'),
+        getTimelineDetail: (args: { title?: string }) => args.title ?? '',
+      };
+      const withSubject = new SkillDispatcherSkill([makeSkill({ id: 'j', name: 'Journal', functions: [read] })]);
+      expect(
+        await useSkillTool(withSubject).getTimelineOutcome!(
+          { skill: 'j', tool: 'readEntry', args: { title: 'Monday morning' } },
+          'the entry'
+        )
+      ).toEqual({ name: 'readEntry', detail: 'Monday morning' });
+      // A subject that throws or says nothing is no subject.
+      const blank: ConvFunction = {
+        ...makeFn('blank', 'b', async () => 'ok'),
+        getTimelineDetail: () => {
+          throw new Error('no subject today');
+        },
+      };
+      const throwing = new SkillDispatcherSkill([makeSkill({ id: 'j', name: 'Journal', functions: [blank] })]);
+      expect(await useSkillTool(throwing).getTimelineOutcome!({ skill: 'j', tool: 'blank', args: {} }, 'ok')).toEqual({
+        name: 'blank',
+        detail: '',
+      });
+
+      // The outcome's detail wins over the tool's own subject (a write settling to the thing it made).
+      const write: ConvFunction = {
+        ...makeFn('write', 'w', async () => 'Created "Monday morning"'),
+        getTimelineDetail: (args: { title?: string }) => `Writing ${args.title ?? ''}`,
+        getTimelineOutcome: () => ({ detail: { text: 'Monday morning', href: 'journal://entry/1' } }),
+      };
+      const writer = new SkillDispatcherSkill([makeSkill({ id: 'j', name: 'Journal', functions: [write] })]);
+      expect(
+        await useSkillTool(writer).getTimelineOutcome!(
+          { skill: 'j', tool: 'write', args: { title: 'Monday morning' } },
+          'Created "Monday morning"'
+        )
+      ).toEqual({ name: 'write', detail: { text: 'Monday morning', href: 'journal://entry/1' } });
     });
   });
 

@@ -4894,12 +4894,15 @@ export class Conversation {
                 ok: outcome?.ok !== false,
                 ...(converted ? { converted } : {}),
               };
-              if (outcome && (outcome.name || outcome.detail)) {
+              // An EMPTY detail rides as given: it says "no subject" to the timeline (a dispatcher
+              // settling a call under its target's name clears its own call-time line with it) —
+              // only an undefined detail is left off, which keeps the call-time one.
+              if (outcome && (outcome.name || outcome.detail !== undefined)) {
                 yield {
                   type: 'tool-outcome' as const,
                   toolName: part.toolName,
                   ...(outcome.name ? { name: outcome.name } : {}),
-                  ...(outcome.detail ? { detail: outcome.detail } : {}),
+                  ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
                 };
               }
               // 3. an OpenAI web search that settled brings the pages it returned: they are the

@@ -845,7 +845,8 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
       detail: { text: 'Monday', href: 'app://notes/1' },
     });
 
-    // The target's own relabel wins over its name; its refusal settles the node errored.
+    // The target's own relabel wins over its name; its refusal settles the node errored; an outcome without a detail
+    // settles with the target's OWN subject (its `getTimelineDetail` — the words a direct call shows).
     const refused = await runLoop({
       fns,
       host: recordingHost().host,
@@ -856,9 +857,11 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
       type: 'tool-outcome',
       toolName: 'useSkill',
       name: 'saveNote:refused',
+      detail: 'Nope',
     });
 
-    // A target with no outcome hook still settles under its own name, its call-time detail kept.
+    // A target with no outcome hook and no subject of its own still settles under its own name — with NO subject
+    // (the empty detail): the call-time line was the dispatcher's ("Skill → plainTool"), never the target's.
     const named = await runLoop({
       fns,
       host: recordingHost().host,
@@ -868,6 +871,7 @@ describe('a dispatching function takes its TARGET’s hints and identity (`Funct
       type: 'tool-outcome',
       toolName: 'useSkill',
       name: 'plainTool',
+      detail: '',
     });
   }, 20_000);
 

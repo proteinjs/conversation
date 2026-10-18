@@ -1,0 +1,9 @@
+{
+  "branch": "fix/deck-timeline-faces",
+  "packages": ["conversation"],
+  "suites": [
+    "packages/conversation/test/SkillDispatcherSkill.test.ts",
+    "packages/conversation/test/conversation/toolBudget.test.ts"
+  ],
+  "removes": []
+}

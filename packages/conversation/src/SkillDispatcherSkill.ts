@@ -210,17 +210,8 @@ export class SkillDispatcherSkill implements ConversationSkill {
       getTimelineDetail: async (input: { skill?: string; tool?: string; args?: unknown }) => {
         const skill = input.skill ? this.skills.get(input.skill) : undefined;
         const fn = skill && input.tool ? this.findTool(skill, input.tool) : undefined;
-        if (fn?.getTimelineDetail) {
-          try {
-            const detail = await fn.getTimelineDetail(input.args ?? {});
-            if (typeof detail === 'string' ? detail.trim() : detail?.text?.trim()) {
-              return detail;
-            }
-          } catch {
-            // best-effort — fall through to the generic subject
-          }
-        }
-        return [skill?.getName() ?? input.skill, input.tool].filter(Boolean).join(' → ');
+        const own = fn ? await this.ownSubject(fn, input.args ?? {}) : undefined;
+        return own ?? [skill?.getName() ?? input.skill, input.tool].filter(Boolean).join(' → ');
       },
       // The dispatched tool IS the call's target (`Function.dispatchTarget`): the executor reads the
       // budget hints — `background`, `softBudgetMs`, `hardBudgetMs`, the dedupe identity — off it,
@@ -236,13 +227,23 @@ export class SkillDispatcherSkill implements ConversationSkill {
       // vocabulary, summary and acts for that tool apply whichever road the call took. A tool that
       // reports a refusal by returning an error message (`ok: false`) settles the node errored, and
       // a relabeled detail rides through. A dispatch that reached no tool keeps its own name.
+      //
+      // THE SETTLED SUBJECT IS THE DISPATCHED TOOL'S, TOO: the outcome's detail when the tool gave
+      // one; else the tool's own subject line (`ownSubject` — the one it shows when called directly);
+      // else NONE, sent as the empty detail. The generic "Skill → tool" line this node ran under
+      // (`getTimelineDetail` above) is the dispatcher's: left on the settled node it printed the
+      // skill and the raw tool name beneath the tool's own label on every dispatched read whose
+      // tool names no subject ("Read a note · Journal → readNote"), where a direct call of that
+      // tool carries no subject at all. A timeline consumer keeps the call-time detail only when
+      // the outcome leaves `detail` off — so the dispatcher never leaves it off.
       getTimelineOutcome: async (input: { skill?: string; tool?: string; args?: unknown }, result: unknown) => {
         const fn = this.resolve(input);
         if (!fn) {
           return undefined;
         }
         const outcome = fn.getTimelineOutcome ? await fn.getTimelineOutcome(input.args ?? {}, result) : undefined;
-        return { ...(outcome ?? {}), name: outcome?.name ?? fn.definition.name };
+        const detail = outcome?.detail !== undefined ? outcome.detail : await this.ownSubject(fn, input.args ?? {});
+        return { ...(outcome ?? {}), name: outcome?.name ?? fn.definition.name, detail: detail ?? '' };
       },
       call: async ({ skill, tool, args }: { skill?: string; tool?: string; args?: unknown }, ctx?: ToolCallContext) =>
         this.dispatch(skill, tool, args, ctx),
@@ -251,6 +252,25 @@ export class SkillDispatcherSkill implements ConversationSkill {
 
   private findTool(skill: ConversationSkill, tool: string): ConvFunction | undefined {
     return skill.getFunctions().find((f) => f.definition.name === tool);
+  }
+
+  /**
+   * The tool's own subject line for a call (its `getTimelineDetail`) when it declares one and it says something;
+   * undefined otherwise. Best-effort: a subject that throws is no subject — it never breaks a call.
+   */
+  private async ownSubject(
+    fn: ConvFunction,
+    args: unknown
+  ): Promise<Awaited<ReturnType<NonNullable<ConvFunction['getTimelineDetail']>>> | undefined> {
+    if (!fn.getTimelineDetail) {
+      return undefined;
+    }
+    try {
+      const detail = await fn.getTimelineDetail(args);
+      return (typeof detail === 'string' ? detail.trim() : detail?.text?.trim()) ? detail : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /** The tool a `useSkill` call names, when the skill is registered here and exposes it. */
