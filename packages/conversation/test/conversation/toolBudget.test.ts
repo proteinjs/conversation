@@ -936,3 +936,157 @@ describe('a dispatching function takes its TARGET’s declaration and identity (
     expect(missing.toolInvocations[0].converted).toBeUndefined();
   }, 20_000);
 });
+
+/**
+ * THE SECOND HALF OF THE CLASS RULE (plans/DECISIONS.md 630 — "the reply stays open with the job's progress
+ * and its stop handle until the deliverable lands"; row 2301): an AWAITED call's progress words and its own
+ * Stop. The host observes every call the executor runs through its call hooks (`ToolBudgetHost.started` /
+ * `phase` / `settled`):
+ *  - an awaited tool's phases reach the host's `phase` hook in order, under the call's id — the node's words;
+ *  - a converted call's phases keep flowing to the JOB (the conversion's `onPhase`) unchanged — the host's
+ *    hook sees only what the tool said before the conversion (the hand-off's own `phase`);
+ *  - a phase reported after the call settled reaches no one — nothing is written after the settle;
+ *  - `started` hands the host an awaited call's abort at its start: firing it fires the call's own
+ *    `ToolCallContext.signal`, the tool that honors it rejects, the call settles as a failure the model reads
+ *    (the executor's failure path), and `settled` releases the handle;
+ *  - a kind-declared call never reaches `started` / `settled`: its abort rides the conversion (D9).
+ * RED at the pre-build executor: no hook exists — the host's records stay empty.
+ */
+describe('the awaited call’s progress words and its own Stop (DECISIONS 630, the second half)', () => {
+  type CallRef = { toolCallId: string; name: string };
+  type StartedCall = CallRef & { abort: () => void; signal: AbortSignal };
+  /** The recording host with the call hooks — what thought-server's turn supplies. */
+  const observingHost = () => {
+    const base = recordingHost();
+    const started: StartedCall[] = [];
+    const phases: Array<{ call: CallRef; phase: ToolPhase }> = [];
+    const settled: CallRef[] = [];
+    const host = {
+      ...base.host,
+      started: (call: StartedCall) => started.push(call),
+      phase: (call: CallRef, phase: ToolPhase) => phases.push({ call, phase }),
+      settled: (call: CallRef) => settled.push(call),
+    } as ToolBudgetHost;
+    return { ...base, host, started, phases, settled };
+  };
+
+  test('an AWAITED tool reporting two phases reaches the host’s `phase` hook in order, under the call’s id; the host never converts; the model reads the tool’s own result', async () => {
+    const deck: Function = {
+      definition: { name: 'makeDeck', description: 'd', parameters: { type: 'object', properties: {} } },
+      call: async (_args, ctx) => {
+        ctx?.onPhase({ on: 'Laying out the slides', detail: '1 of 8' });
+        await sleep(40);
+        ctx?.onPhase({ on: 'Laying out the slides', detail: '3 of 8' });
+        return { deckId: 'deck-1' };
+      },
+    };
+    const { host, conversions, phases, started, settled } = observingHost();
+    const run = await runLoop({
+      fns: [deck],
+      host,
+      steps: [() => toolCallStep('makeDeck', ['tc-1']), () => textStep('here is the deck')],
+    });
+    expect(phases).toEqual([
+      { call: { toolCallId: 'tc-1', name: 'makeDeck' }, phase: { on: 'Laying out the slides', detail: '1 of 8' } },
+      { call: { toolCallId: 'tc-1', name: 'makeDeck' }, phase: { on: 'Laying out the slides', detail: '3 of 8' } },
+    ]);
+    expect(conversions).toHaveLength(0);
+    expect(started.map((c) => ({ toolCallId: c.toolCallId, name: c.name }))).toEqual([
+      { toolCallId: 'tc-1', name: 'makeDeck' },
+    ]);
+    expect(settled).toEqual([{ toolCallId: 'tc-1', name: 'makeDeck' }]);
+    expect(toolResultTexts(run.prompts[1].prompt)[0]).toContain('"deckId":"deck-1"');
+    expect(run.text).toBe('here is the deck');
+  });
+
+  test('a converted call’s phases keep flowing to the JOB unchanged — the host’s `phase` hook sees only the phase said before the conversion', async () => {
+    const phased: Function = {
+      definition: { name: 'materialize', description: 'm', parameters: { type: 'object', properties: {} } },
+      job: { kind: 'shell' },
+      call: async (_args, ctx) => {
+        ctx?.onPhase({ on: 'Setting up the workspace', detail: 'getting a machine to work on' });
+        await sleep(300);
+        ctx?.onPhase({ on: 'Setting up the workspace', detail: 'getting the code (n3xa app)' });
+        await sleep(100);
+        return { path: '/repo' };
+      },
+    };
+    const phasesAfter: ToolPhase[] = [];
+    const observed = observingHost();
+    const host = {
+      ...observed.host,
+      convert: async (call: ToolBudgetConversion) => {
+        call.onPhase((phase) => phasesAfter.push(phase));
+        return observed.host.convert(call);
+      },
+    } as ToolBudgetHost;
+    await runLoop({ fns: [phased], host, steps: [() => toolCallStep('materialize', ['tc-1']), () => textStep('x')] });
+    await sleep(500);
+    expect(observed.conversions[0].phase).toEqual({
+      on: 'Setting up the workspace',
+      detail: 'getting a machine to work on',
+    });
+    expect(phasesAfter).toEqual([{ on: 'Setting up the workspace', detail: 'getting the code (n3xa app)' }]);
+    expect(observed.phases).toEqual([
+      {
+        call: { toolCallId: 'tc-1', name: 'materialize' },
+        phase: { on: 'Setting up the workspace', detail: 'getting a machine to work on' },
+      },
+    ]);
+    // A job by kind: its abort rides the conversion — the awaited-call hooks never fire for it.
+    expect(observed.started).toEqual([]);
+    expect(observed.settled).toEqual([]);
+  });
+
+  test('a phase reported after the call settled reaches no one — nothing is written after the settle', async () => {
+    let late: (() => void) | undefined;
+    const sloppy: Function = {
+      definition: { name: 'sloppy', description: 's', parameters: { type: 'object', properties: {} } },
+      call: async (_args, ctx) => {
+        ctx?.onPhase({ on: 'Checking the catalog' });
+        late = () => ctx?.onPhase({ on: 'Still checking', detail: 'after the fact' });
+        return 'checked';
+      },
+    };
+    const { host, phases, settled } = observingHost();
+    await runLoop({ fns: [sloppy], host, steps: [() => toolCallStep('sloppy', ['tc-1']), () => textStep('x')] });
+    expect(settled).toHaveLength(1);
+    late!();
+    expect(phases.map((p) => p.phase)).toEqual([{ on: 'Checking the catalog' }]);
+  });
+
+  test('the per-node Stop: the host’s `started` abort fires the call’s own signal; the tool that honors it rejects; the call settles as a failure the model reads; `settled` releases the handle', async () => {
+    const seen: string[] = [];
+    const deck: Function = {
+      definition: { name: 'makeDeck', description: 'd', parameters: { type: 'object', properties: {} } },
+      call: (_args, ctx) =>
+        new Promise((_resolve, reject) => {
+          ctx?.signal.addEventListener('abort', () => {
+            seen.push('signal');
+            reject(new Error('Stopped laying out the slides'));
+          });
+        }),
+    };
+    const { host, conversions, started, settled } = observingHost();
+    const loop = runLoop({
+      fns: [deck],
+      host,
+      steps: [() => toolCallStep('makeDeck', ['tc-1']), () => textStep('all right, no deck')],
+    });
+    await sleep(100);
+    expect(started).toHaveLength(1);
+    expect(started[0].signal.aborted).toBe(false);
+    expect(settled).toEqual([]);
+    started[0].abort();
+    const run = await loop;
+    expect(started[0].signal.aborted).toBe(true);
+    expect(seen).toEqual(['signal']);
+    expect(settled).toEqual([{ toolCallId: 'tc-1', name: 'makeDeck' }]);
+    expect(conversions).toHaveLength(0);
+    expect(run.parts.find((p) => p.type === 'tool-settled')).toMatchObject({ id: 'tc-1', ok: false });
+    expect(run.toolInvocations[0].ok).toBe(false);
+    expect(run.toolInvocations[0].error?.message).toBe('Stopped laying out the slides');
+    expect(toolResultTexts(run.prompts[1].prompt)[0]).toContain('Stopped laying out the slides');
+    expect(run.text).toBe('all right, no deck');
+  });
+});

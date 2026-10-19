@@ -61,9 +61,24 @@ export type ToolBudgetConversion = {
 };
 
 /**
+ * A call as the host's call hooks name it: the tool-call id (the timeline node's id — the handle a
+ * per-node Stop names beside the response message) and the name the call's `tool-call` part carries
+ * (the called function's — a dispatcher's own, never its target's).
+ */
+export type ToolBudgetCall = { toolCallId: string; name: string };
+
+/**
  * The host side of the job conversion (`GenerateStreamParams.toolBudget`) — implemented by the
  * chat turn (thought-server wires it to `ChatJobRegistry`); the conversation package cannot know
  * what a job is, only that one exists once `convert` returns.
+ *
+ * THE CALL HOOKS (`started` / `phase` / `settled` — plans/DECISIONS.md 630's second half: "the reply
+ * stays open with the job's progress and its stop handle until the deliverable lands"): the host
+ * observes every call the executor runs under it, so an AWAITED call — a deck, a document, a catalog
+ * check landing in this reply — has its progress words on its running node and a Stop of its own,
+ * the way a converted call has them through its job. One owner per concept: an awaited call's abort
+ * is handed at `started` and released at `settled`; a converted call's abort rides the conversion
+ * (D9) and its phases after the conversion reach the job's `onPhase` alone.
  */
 export type ToolBudgetHost = {
   /** Convert a kind-declared call IN PLACE into a job of its kind; the id names it to the model. */
@@ -73,6 +88,24 @@ export type ToolBudgetHost = {
    * "already running as job {id}" to the model and never executes a second time.
    */
   running?(call: { name: string; args: unknown; dedupeKey: string }): Promise<{ jobId: string } | undefined>;
+  /**
+   * An AWAITED call started: the host learns its abort at its start — the per-node Stop's handle.
+   * `abort` fires the call's own `ToolCallContext.signal`; a tool that honors it settles the call as
+   * a failure the model reads through the executor's failure path (the tool's own rejection, as any
+   * failed call's). Released at `settled`. Never fires for a kind-declared call: its abort rides the
+   * conversion.
+   */
+  started?(call: ToolBudgetCall & { abort: () => void; signal: AbortSignal }): void;
+  /**
+   * A phase the tool reported while the call is NOT a job — every phase of an awaited call, and a
+   * declared call's phases before its conversion (the hand-off carries the last of those as `phase`):
+   * the running node's words, in the tool's own present-progressive voice. After the conversion the
+   * phases reach the job through the conversion's `onPhase` alone. Nothing fires after the call
+   * settled.
+   */
+  phase?(call: ToolBudgetCall, phase: ToolPhase): void;
+  /** An AWAITED call settled — its result or its failure is the model's: the host releases what `started` gave it. */
+  settled?(call: ToolBudgetCall): void;
 };
 
 /** What a call came to: the tool's own result, or its conversion (the text the model reads). */
@@ -109,6 +142,10 @@ export class ToolBudget {
 
   private lastPhase: ToolPhase | undefined;
   private readonly phaseListeners: Array<(phase: ToolPhase) => void> = [];
+  /** The call's road once decided: a job's phases reach its listeners; before that, and for an awaited call, the host's `phase` hook. */
+  private converted = false;
+  /** An awaited call that resolved or rejected: a phase reported after it reaches no one. */
+  private settled = false;
 
   constructor(
     private readonly call: {
@@ -155,8 +192,15 @@ export class ToolBudget {
     const job = target.fn.job;
     if (!job) {
       // AWAITED WHOLE: the deliverable lands in this reply; a rejection propagates to the
-      // executor's failure path exactly as it always has.
-      return { kind: 'settled', result: await fn.call(input, ctx) };
+      // executor's failure path exactly as it always has. The host holds the call's abort for its
+      // life (the Stop on its node — DECISIONS 630's second half) and is told when it settled.
+      host.started?.({ ...this.ref(), abort: () => controller.abort(), signal: controller.signal });
+      try {
+        return { kind: 'settled', result: await fn.call(input, ctx) };
+      } finally {
+        this.settled = true;
+        host.settled?.(this.ref());
+      }
     }
     const name = target.fn.definition.name;
     const hints = target.fn;
@@ -179,6 +223,9 @@ export class ToolBudget {
     // settlement (done or failed); never an unhandled rejection here.
     const promise = (async () => fn.call(input, ctx))();
     promise.catch(() => undefined);
+    // A JOB BY KIND from here: what the tool said at its start reached the host's `phase` hook and
+    // rides the hand-off below; every later phase is the job's (the listeners the conversion registers).
+    this.converted = true;
     const title = ToolBudget.title({ task, phase: this.lastPhase, detail });
     // The called function's outcome hook rides the conversion (a dispatcher's reaches its target's):
     // the host settles the job's node with what the call made, read from the tool's own result.
@@ -339,11 +386,28 @@ export class ToolBudget {
     }
   }
 
+  /**
+   * A phase the tool reported: a job's (after its conversion) reaches the listeners the conversion
+   * registered; an awaited call's — and a declared call's before its conversion — reaches the host's
+   * `phase` hook under the call's id. After an awaited call settled, nothing: the node is settled.
+   */
   private reportPhase(phase: ToolPhase): void {
+    if (this.settled) {
+      return;
+    }
     this.lastPhase = phase;
+    if (!this.converted) {
+      this.call.host.phase?.(this.ref(), phase);
+      return;
+    }
     for (const listener of this.phaseListeners) {
       listener(phase);
     }
+  }
+
+  /** The call as the host's hooks name it. */
+  private ref(): ToolBudgetCall {
+    return { toolCallId: this.call.toolCallId, name: this.call.fn.definition.name };
   }
 
   private static stableJson(value: unknown): string {

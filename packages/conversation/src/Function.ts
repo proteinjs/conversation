@@ -64,8 +64,9 @@ export type ToolCallContext = {
   /**
    * The call's OWN abort signal: for a kind-declared call, fired by the job's Stop (D9) or its
    * HARD budget — never by the turn's yield. An awaited call's signal is minted the same way and
-   * nothing fires it yet (the per-call Stop on an awaited call's node is the next build; the
-   * turn's own Stop is the person's handle meanwhile). A tool that can stop honors it.
+   * fired by the Stop on its own node (the host's `ToolBudgetHost.started` hook holds the abort for
+   * the call's life; the turn's own Stop stays the person's handle for the whole reply). A tool
+   * that can stop honors it.
    */
   signal: AbortSignal;
   /** Report a phase (see {@link ToolPhase}). Cheap; safe to call before or after a conversion. */
