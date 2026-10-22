@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [6.20.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.19.1...@proteinjs/conversation@6.20.0) (2026-10-22)
+
+
+### Features
+
+* **budget:** the host's call hooks — an awaited call's progress words and its own Stop (DECISIONS 630's second half) ([95f6b46](https://github.com/proteinjs/conversation/commit/95f6b46723a4f310fe4c546ab8ae5e14f3d92c8c))
+* **budget:** the one-response class rule — a call converts into a job only by its declared kind, at its start; every other call is awaited whole ([4146c38](https://github.com/proteinjs/conversation/commit/4146c38ac502f9ef63ceb2223f6b66024238f4e0))
+
+
+
+
+
 ## [6.19.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.19.0...@proteinjs/conversation@6.19.1) (2026-10-18)
 
 
