@@ -3604,11 +3604,14 @@ export class Conversation {
       // events back; without it the model computes reasoning internally but
       // doesn't surface any text. Equivalent to Anthropic's
       // `display: 'summarized'` and OpenAI's `reasoningSummary: 'auto'`.
-      // Always-on, except when effort is explicitly 'none'.
-      if (effort === 'auto') {
-        // Auto: enable thinking with summaries; let Gemini choose the level.
+      // Always-on, except when effort is explicitly 'none' — the one off switch.
+      if (effort === undefined || effort === 'auto') {
+        // Auto, or no level named at all (a caller whose catalog row lists no auto thinking
+        // level — the provider's default stands, never a level of ours): summaries on, no level
+        // sent. Gemini thinks at its own default and surfaces its thought summaries; without this
+        // the whole thinkingConfig went with the level and the timeline showed nothing.
         googleOpts.thinkingConfig = { includeThoughts: true };
-      } else if (effort && effort !== 'none') {
+      } else if (effort !== 'none') {
         // Google accepts thinkingLevel: minimal | low | medium | high
         // Our 'max'/'xhigh' have no Google equivalent → map to 'high'
         const levelMap: Record<string, string> = {

@@ -188,6 +188,19 @@ describe('Conversation.buildProviderOptions (google)', () => {
     }
   );
 
+  // A caller that names NO level (a chat at auto over a catalog row that lists no auto thinking
+  // level: the provider's default stands, never a level of ours) is the auto shape on the wire:
+  // summaries on, no level sent. Before the fix the whole thinkingConfig went with the level, so
+  // Google was never asked for thought summaries and a model that thinks at its default showed
+  // nothing on the timeline.
+  test.each([['gemini-3.1-pro-preview'], ['gemini-3.5-flash']])(
+    'an undefined effort is the auto shape: includeThoughts: true and no thinkingLevel (model=%s)',
+    (model) => {
+      const google = buildGoogle(undefined, model);
+      expect(google.thinkingConfig).toEqual({ includeThoughts: true });
+    }
+  );
+
   test.each([
     ['low', 'low'],
     ['medium', 'medium'],
