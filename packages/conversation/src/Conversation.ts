@@ -636,6 +636,17 @@ type UsageStep = {
   content?: Array<{ type?: string; toolCallId?: string; error?: unknown }>;
 };
 
+/**
+ * A round as the turn's accounting reads it (`generateStream`'s `roundResults`, summed by
+ * `finalizeAcrossRounds`): the round's usage and its steps as {@link UsageStep}s. A `streamText`
+ * result is one; the bounded utterance hands in its own — its steps carrying no tool call, since
+ * nothing runs on that call ({@link Conversation.utter}).
+ */
+type AccountedRound = {
+  totalUsage: PromiseLike<LanguageModelUsage>;
+  steps: PromiseLike<UsageStep[]>;
+};
+
 // ────────────────────────────────────────────────────────────────
 // Default constants
 // ────────────────────────────────────────────────────────────────
@@ -1053,9 +1064,10 @@ export class Conversation {
     // Every round gets its own controller so the thinking-phase restart (peekInjectedContext)
     // can abort ONE round without ending the turn.
     let roundController = new AbortController();
-    // Every round's result, in order — usage and tool invocations are summed over ALL of them as
-    // ONE logical response (see finalizeAcrossRounds); the bounded utterance's calls ride here too.
-    const roundResults: Array<ReturnType<typeof startCall>> = [];
+    // Every round's accounting, in order — usage and tool invocations are summed over ALL of them
+    // as ONE logical response (see finalizeAcrossRounds); the bounded utterance's calls ride here
+    // too, for their usage alone (no tool call on those — nothing runs on an utterance call).
+    const roundResults: AccountedRound[] = [];
     let liveResult: ReturnType<typeof startCall> | undefined;
     // The side utterance said over a transcript (plans/FREE_AGENT.md §M.3 part 5): one call over the
     // step's roster (nothing runnable on it) with the input's own ask; the line lands as ONE
@@ -4455,7 +4467,13 @@ export class Conversation {
    * write price and the step wrote it again. The words the model reads are unchanged: the roster
    * is the step's own; the ask is for the line. No tool is runnable on this call (`execute`
    * stripped — {@link Conversation.unexecutableTools}): a tool-call answer is a missing line,
-   * logged, never a run.
+   * logged, never a run — and never a call of the turn's: the round rides the turn's accounting
+   * for its usage alone (`onResult` — no `callsPerTool` count, no step tool row, no invocation
+   * for a call that never ran). The request does not say `toolChoice: 'none'` (it should — the
+   * choice is no part of the cache key): the Anthropic adapter at the lock (@ai-sdk/anthropic
+   * 3.0.107, `prepareTools`) answers `none` by dropping the roster from the request, the very
+   * cache miss this envelope exists to prevent; the line waits for an adapter that sends the
+   * choice with the roster.
    */
   private async *utter(args: {
     model: LanguageModel;
@@ -4468,7 +4486,8 @@ export class Conversation {
     abortSignal: AbortSignal;
     /** The effort the line is asked at ({@link GenerateStreamParams.utteranceEffort}); `none` when absent. */
     utteranceEffort?: ReasoningEffort;
-    onResult: (result: ReturnType<typeof streamText>) => void;
+    /** The call for the turn's accounting: its usage, its steps with no tool call on them. */
+    onResult: (round: AccountedRound) => void;
   }): AsyncGenerator<any, string | undefined> {
     const request = Utterance.request(args.transcript, args.inputs);
     const tools = Conversation.unexecutableTools(args.tools);
@@ -4516,7 +4535,16 @@ export class Conversation {
           args.modelString
         ),
       });
-      args.onResult(result);
+      // The call rides the turn's accounting for its usage ALONE: nothing runs here, so a tool
+      // call the model drew anyway is no call of the turn's — its steps are handed in without
+      // one. Both promises are read at the turn's end, or never (a failed or aborted call
+      // rejects them — the SDK's NoOutputGeneratedError), so each carries a handler from here,
+      // as a round's do (startRound): no rejection goes unhandled in between.
+      const totalUsage = result.totalUsage;
+      Promise.resolve(totalUsage).catch(() => {});
+      const steps = Promise.resolve(result.steps).then((all) => all.map((step) => ({ usage: step.usage })));
+      steps.catch(() => {});
+      args.onResult({ totalUsage, steps });
       Promise.resolve(result.response).catch(() => {});
       Promise.resolve(result.finishReason).catch(() => {});
       // A manual iterator: leaving the loop at the paragraph break must NOT close the stream (a

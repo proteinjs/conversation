@@ -1,0 +1,9 @@
+{
+  "branch": "fix/utterance-no-phantom-tool-call",
+  "packages": ["conversation"],
+  "suites": [
+    "packages/conversation/test/conversation/utterance.test.ts",
+    "packages/conversation/test/conversation/utteranceCachePrefix.test.ts"
+  ],
+  "removes": []
+}
