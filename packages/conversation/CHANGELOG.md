@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.1...@proteinjs/conversation@6.20.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **conversation:** the Google branch treats an undefined effort like auto — thought summaries on, no level sent; none the only off switch ([40d70f8](https://github.com/proteinjs/conversation/commit/40d70f8829675eae705b6c950537bbc22b2c6820))
+
+
+
+
+
 ## [6.20.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.0...@proteinjs/conversation@6.20.1) (2026-10-26)
 
 
