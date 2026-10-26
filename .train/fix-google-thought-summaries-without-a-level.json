@@ -1,0 +1,6 @@
+{
+  "branch": "fix/google-thought-summaries-without-a-level",
+  "packages": ["conversation"],
+  "suites": ["packages/conversation/test/conversation/conversation.buildProviderOptions.test.ts"],
+  "removes": []
+}
