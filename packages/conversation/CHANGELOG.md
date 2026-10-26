@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.1](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.0...@proteinjs/conversation@6.20.1) (2026-10-26)
+
+
+### Bug Fixes
+
+* **conversation:** the bounded utterance's tool-call answer is no call of the turn's — the round rides the accounting for its usage alone ([5f489b5](https://github.com/proteinjs/conversation/commit/5f489b5cf7e8d73dc2fa1efdb4c718a0f6ea55fb))
+
+
+
+
+
 # [6.20.0](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.19.1...@proteinjs/conversation@6.20.0) (2026-10-22)
 
 
