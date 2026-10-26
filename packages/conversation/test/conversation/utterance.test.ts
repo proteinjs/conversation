@@ -275,6 +275,62 @@ describe('the bounded utterance — one line before every step that takes an inp
   );
 
   test(
+    'A TOOL CALL DRAWN ON THE UTTERANCE ASK IS NO CALL OF THE TURN’S: nothing runs and the line is missing, as before — and the turn’s accounting counts the step’s executed call ONCE (callsPerTool, totalToolCalls, the step rows, the invocations) while the utterance call’s own usage still rides',
+    async () => {
+      let ran = 0;
+      toolHooks.onCall = () => {
+        ran++;
+      };
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            // The model answers the ask for a line with a tool call — handed back as a part, never run.
+            return { stream: toolCallStep('tc-utterance', 'doWork') };
+          }
+          mainStep++;
+          if (mainStep === 1) {
+            return { stream: toolCallStep('tc-1', 'doWork') };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      const result = await conversation('utterance-phantom-call', true).generateStream({
+        messages: ['do the work'],
+        model: model as never,
+        ...new Inbox().params(),
+      });
+      const { parts, text } = await collect(result.fullStream);
+      toolHooks.onCall = undefined;
+
+      // utterance (the tool-call answer — no line) · step 1 (the call, run) · step 2
+      expect(calls).toHaveLength(3);
+      expect(ran).toBe(1);
+      expect(parts.some((part) => part.utterance)).toBe(false);
+      expect(text).toBe('THE ANSWER');
+      // Step 1 ran without a line: no framing on its tail — the prompt ends on the user's own message.
+      expect(messageText(calls[1].prompt[calls[1].prompt.length - 1] as never)).toContain('do the work');
+
+      const usageData = await result.usage;
+      // ONE call of doWork — the step's. The utterance call's answer is not a call of the turn's.
+      expect(usageData.callsPerTool).toEqual({ doWork: 1 });
+      expect(usageData.totalToolCalls).toBe(1);
+      // All three requests still ride the turn's usage.
+      expect(usageData.totalRequestsToAssistant).toBe(3);
+      expect(usageData.totalTokenUsage.inputTokens).toBe(3);
+      // The step rows: the utterance step carries no tool row; step 1 carries its one call.
+      expect((usageData.steps ?? []).map((step) => step.toolCalls)).toEqual([0, 1, 0]);
+      expect((usageData.steps ?? []).map((step) => step.tools.length)).toEqual([0, 1, 0]);
+      // The invocations: the one that ran.
+      const invocations = await result.toolInvocations;
+      expect(invocations.map((invocation) => invocation.id)).toEqual(['tc-1']);
+    },
+    TIMEOUT
+  );
+
+  test(
     'STEP BOUNDARY: a note drained at prepareStep is uttered there — the line reaches the stream after the finished step and before the next step, and the next step runs under the framing',
     async () => {
       const NOTE = 'Also check the costs.';
