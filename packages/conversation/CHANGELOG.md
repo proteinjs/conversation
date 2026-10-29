@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.2...@proteinjs/conversation@6.20.3) (2026-10-29)
+
+
+### Bug Fixes
+
+* **conversation:** a skill's provider-defined tools are asked for with the model the call rides — the hook is told the catalog's model id beside the provider ([b11c5ac](https://github.com/proteinjs/conversation/commit/b11c5ace9fd8eda5d7753d87c090d62b853e3517))
+
+
+
+
+
 ## [6.20.2](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.1...@proteinjs/conversation@6.20.2) (2026-10-26)
 
 
