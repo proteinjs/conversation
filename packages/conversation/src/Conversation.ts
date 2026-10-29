@@ -806,7 +806,7 @@ export class Conversation {
     // text_editor / bash). Injected directly here — like webSearchTools —
     // rather than through buildAiSdkTools, since they are AI SDK provider
     // tools, not our `Function` shape.
-    const skillProviderTools = this.getSkillProviderDefinedTools(provider);
+    const skillProviderTools = this.getSkillProviderDefinedTools(provider, modelString);
 
     const unboundTools = { ...tools, ...webSearchTools, ...skillProviderTools };
     // Every in-process tool's output bounded at the one place the tool set is final — function
@@ -3507,6 +3507,12 @@ export class Conversation {
    * with `type: "object"`. Handles missing, null, or invalid schemas
    * (e.g. `type: "None"` which some functions produce).
    */
+  /** The catalog's model id out of a model string — after any `provider:` prefix (`anthropic:claude-sonnet-5-5`). */
+  private static bareModelId(modelString: string): string {
+    const colonIdx = modelString.indexOf(':');
+    return colonIdx > 0 ? modelString.slice(colonIdx + 1) : modelString;
+  }
+
   private normalizeToolParameters(parameters: any): Record<string, any> {
     const emptySchema = { type: 'object', properties: {} };
 
@@ -3735,19 +3741,24 @@ export class Conversation {
    * `bash`) and are merged straight into the tool set passed to `streamText`.
    * A skill returns only the tools the active `provider` natively supports.
    */
-  private getSkillProviderDefinedTools(provider: string): ToolSet {
+  private getSkillProviderDefinedTools(provider: string, modelString: string): ToolSet {
     const skills = this.params.skills;
     if (!skills || skills.length === 0) {
       return {};
     }
 
+    // The hook is told the MODEL the call rides beside the provider: a provider's built-in tool types
+    // are accepted per model (ConversationSkill.getProviderDefinedTools), so the skill that names a
+    // tool version decides by the model — and the library never sends a tool the provider will refuse
+    // on every call of the turn.
+    const modelId = Conversation.bareModelId(modelString);
     const result: ToolSet = {};
     for (const skill of skills) {
       if (typeof skill.getProviderDefinedTools !== 'function') {
         continue;
       }
       try {
-        Object.assign(result, skill.getProviderDefinedTools(provider));
+        Object.assign(result, skill.getProviderDefinedTools(provider, modelId));
       } catch (error) {
         this.logger.error({
           message: `Error collecting provider-defined tools from skill: ${skill.getName()}`,
@@ -3914,8 +3925,7 @@ export class Conversation {
   private assertInputWithinModelCap(messages: ModelMessage[], modelString: string): void {
     // Match on the model id — after any `provider:` prefix, tolerating dated suffixes
     // (`claude-haiku-4-5-20251001`).
-    const colonIdx = modelString.indexOf(':');
-    const modelId = colonIdx > 0 ? modelString.slice(colonIdx + 1) : modelString;
+    const modelId = Conversation.bareModelId(modelString);
     const capEntry = Object.entries(Conversation.HARD_INPUT_TOKEN_CAPS).find(([prefix]) => modelId.startsWith(prefix));
     if (!capEntry) {
       return;

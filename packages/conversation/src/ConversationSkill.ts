@@ -81,8 +81,16 @@ export interface ConversationSkill {
    * for a native tool on the other providers). Those are told what every other
    * function tool is told about strict mode (see `ToolStrictness`): non-strict
    * unless the tool itself sets `strict`.
+   *
+   * `modelId` is the model the call rides — the catalog's id, after any
+   * `provider:` prefix (`claude-sonnet-5-5`). A provider accepts its built-in
+   * tool TYPES per model (Anthropic refused `computer_20251124` on
+   * claude-sonnet-5-5 with HTTP 400 `invalid_request_error` — "'claude-sonnet-5-5'
+   * does not support tool types: computer_20251124" — on every call of the turn,
+   * prod 2026-10-28), so a skill hands a tool only on a model the provider takes
+   * it on, and an empty set otherwise.
    */
-  getProviderDefinedTools?(provider: string): ToolSet;
+  getProviderDefinedTools?(provider: string, modelId?: string): ToolSet;
 }
 
 export interface ConversationSkillFactory {
