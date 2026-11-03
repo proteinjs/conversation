@@ -4675,6 +4675,13 @@ export class Conversation {
    * logger, the error marked first (ProviderFailureLine). The failure still reaches the caller as
    * the stream's `error` part; a round that must also keep it (the buffered read throws the
    * error the round ended on) hands in `onFailure`.
+   *
+   * THE MESSAGE NAMES THE CAUSE (n3xa row 3119, 2026-11-03): Error Reporting groups entries by
+   * the message's text, and "The round ended on an error" alone filed a Sonnet 400, a Gemini 400
+   * and a dev reproduction under one record with one stale triage. The line carries the cause the
+   * marked error already knows — `ProviderFailureLine.causeWords`: the provider family, the model,
+   * the HTTP status, the vendor's code — so each cause is its own group. Identifiers only; the
+   * provider's clause never rides the message.
    */
   private streamErrorLine(
     call: { modelId?: string; provider?: string },
@@ -4682,8 +4689,9 @@ export class Conversation {
   ): (event: { error: unknown }) => void {
     return ({ error }) => {
       onFailure?.(error);
+      const cause = ProviderFailureLine.causeWords(error, call);
       this.logger.error({
-        message: 'The round ended on an error',
+        message: `The round ended on an error${cause ? `: ${cause}` : ''}`,
         obj: { model: call.modelId, error: ProviderFailureLine.mark(error, call) },
       });
     };

@@ -117,6 +117,28 @@ export class ProviderFailureLine {
     return error;
   }
 
+  /**
+   * THE CAUSE IN A FEW IDENTIFIERS — what a line's MESSAGE may name so a log-based grouping (Google
+   * Error Reporting groups entries by the message's text) tells one cause from another: the
+   * provider family, the model, `HTTP <status>`, the vendor's first code (or the error's name when
+   * the failure carries neither a status nor a code); a plain error nobody worded answers its name.
+   * Never a sentence, never the provider's clause (n3xa row 3119: one generic line, three causes,
+   * one record). Undefined when nothing identifies the failure.
+   */
+  static causeWords(error: unknown, call: ProviderFailureCall = {}): string | undefined {
+    const source = call.wordedFrom ?? ProviderFailureLine.wrappedBy(error) ?? error;
+    const statusCode = ProviderFailureLine.statusOf(error) ?? ProviderFailureLine.statusOf(source);
+    const code = ObjectGenerationError.isInstance(error) ? error.name : ProviderFailureLine.codesOf(source)[0];
+    const name = ProviderFailureLine.stringOf(error, 'name') ?? ProviderFailureLine.stringOf(source, 'name');
+    const words = [
+      ProviderFailureLine.familyOf(call.provider),
+      call.modelId ?? ProviderFailureLine.stringOf(error, 'modelId'),
+      statusCode !== undefined ? `HTTP ${statusCode}` : undefined,
+      code ?? (statusCode === undefined ? name : undefined),
+    ].filter((word): word is string => !!word);
+    return words.length ? words.join(' ') : undefined;
+  }
+
   private static isProviderWorded(error: unknown): boolean {
     if (typeof error !== 'object' || error === null) {
       return false;

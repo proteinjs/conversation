@@ -1,0 +1,12 @@
+{
+  "branch": "fix/round-error-line-names-the-cause",
+  "packages": [
+    "conversation"
+  ],
+  "suites": [
+    "packages/conversation/test/conversation/conversation.roundErrorLineCause.test.ts",
+    "packages/conversation/test/conversation/conversation.providerErrorClause.test.ts",
+    "packages/conversation/test/conversation/conversation.providerErrorLogLines.test.ts"
+  ],
+  "removes": []
+}
