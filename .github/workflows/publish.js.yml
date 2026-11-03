@@ -17,16 +17,55 @@ concurrency:
   group: publish-${{ github.ref }}
   cancel-in-progress: false
 
+# THE RUN'S SHAPE: build -> test -> finalize with the built tree as one artifact. The build + test
+# half lives in the reusable _test.yml both this file and verify-train.yml call, so the tip of the
+# `train` branch is verified on CI by the release's own jobs. After a CI-verified departure (the
+# train tip swept by verify-train, the departure commit on top of it changing only .train/)
+# build's VerifiedTree.js finds that run and the test job is SKIPPED: the run is build + finalize.
+# Nothing on the release path is reimplemented: lerna is chained, the guard's logic is unchanged,
+# and the lock edits finalize commits are the build job's own — they ride in the artifact.
+env:
+  # --no-audit --no-fund for lerna's version-phase lock re-stamp in finalize; _test.yml carries
+  # the same pair for its own installs — npm reads npm_config_<key> from the environment.
+  npm_config_audit: 'false'
+  npm_config_fund: 'false'
+
 jobs:
-  publish:
+  verify:
+    # The build + test half: _test.yml (the same call verify-train.yml makes for the train tip).
+    # skip-verified: the test job is skipped when build's VerifiedTree.js finds a green verify-train
+    # run of this tree; the permissions are what its jobs need.
+    uses: ./.github/workflows/_test.yml
+    with:
+      skip-verified: true
+    secrets: inherit
+    permissions:
+      contents: read
+      actions: read
+  finalize:
+    name: finalize (guard, lock commit, lerna publish)
+    # The test job green (or skipped on a verified tree), or nothing here runs: a red sweep leaves
+    # main unpublished, exactly as it did in the single-job shape.
+    needs: verify
     runs-on: ubuntu-latest
+    # Guard + lock commit + lerna publish: well under a minute on ordinary runs (the whole single
+    # job, install and sweep included, ran under two minutes); 30 turns a silent hang — a registry
+    # that never answers lerna — into a bounded, visible failure.
+    timeout-minutes: 30
     permissions:
       contents: write
       packages: write
+    env:
+      # The built workspace, restored: the names are the call's OUTPUTS — never retyped here, so a
+      # rename in _test.yml cannot desync the download.
+      WORKSPACE_ARTIFACT: ${{ needs.verify.outputs.artifact }}
+      WORKSPACE_TARBALL: ${{ needs.verify.outputs.tarball }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
+          # lerna versions from the tags visible at checkout, and the guard compares against
+          # origin/main.
           fetch-depth: "0"
 
       - name: Configure git user
@@ -35,10 +74,11 @@ jobs:
           git config user.email github-actions@github.com
 
       - name: Setup Node.js
+        # No npm cache: nothing installs here — lerna comes with the artifact.
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-  
+
       - name: Setup NPM authentication
         run: |
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
@@ -52,24 +92,22 @@ jobs:
             echo "$npm_output"
             exit 1
           fi
-      
-      - name: Install root package
-        run: |
-          npm i
-      
-      - name: Build packages
-        run: |
-          npm run build-workspace
 
-      - name: Test packages
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          npm run test-workspace
+      - name: Download the built workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: ${{ runner.temp }}/artifact
 
-      # The stale-checkout guard (see race note at top). Runs AFTER the long install/build/test
-      # steps so the unguarded window shrinks from ~30 minutes to the seconds between this check
-      # and lerna's push.
+      - name: Unpack the built workspace over the checkout
+        # After this the tree is the build job's: its dist (what lerna packs), its root
+        # node_modules (lerna itself), and its edits to tracked files — the re-stamped
+        # package-locks — which the lock commit below stages.
+        run: zstd -d -q -c "$RUNNER_TEMP/artifact/$WORKSPACE_TARBALL" | tar -xf - -C "$GITHUB_WORKSPACE"
+
+      # The stale-checkout guard (see race note at top). Runs AFTER the build and the sweep so
+      # the unguarded window shrinks from minutes to the seconds between this check and lerna's
+      # push.
       - name: Abort if main advanced (stale-checkout guard)
         id: tip
         run: |

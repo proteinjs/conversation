@@ -1,0 +1,47 @@
+name: Verify Conversation Train
+# The run is NAMED for the sha it verifies: a release tool departing the train and
+# publish.js.yml's VerifiedTree.js both match runs by this name (a dispatch checks out its sha
+# input, never the ref tip it was dispatched on — the name is the truth of what ran).
+# VerifiedTree.runName.
+run-name: verify-train ${{ inputs.sha || github.sha }}
+
+# CI VERIFICATION OF THE TRAIN TIP: every push to `train` (the integration branch work lands on
+# before a departure fast-forwards main) runs the publish workflow's build + test jobs — the SAME
+# reusable _test.yml publish.js.yml calls, so the two cannot drift — on the train tip; a dispatch
+# with a `sha` verifies that commit (what a departure does when no run exists for the tip — a
+# workflow is dispatchable once this file is on main). Nothing here releases anything:
+# publish.js.yml's finalize is the only release. A green run for the tip lets the departure push
+# at once, and lets publish skip its test job (VerifiedTree.js in build: HEAD^ green + a
+# .train/-only HEAD).
+on:
+  push:
+    branches:
+      - train
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: the commit to verify (default the tip of the ref dispatched on)
+        required: false
+        type: string
+
+# ITS OWN concurrency group — never publish.js.yml's (the release's group is the release's alone).
+# GitHub keeps ONE pending run per group and cancels the OLDER pending run when a newer one
+# arrives; sharing a group would let a train push cancel a queued release. Here a newer train push
+# can only ever cancel an older PENDING verify run: the newest tip wins, and a departure
+# re-dispatches for the sha it needs. This repository's jobs run on hosted runners and the test
+# job needs no service container, so a verify run and a publish run may overlap freely. Never
+# cancel-in-progress: a departure may be waiting on exactly the run in flight.
+concurrency:
+  group: verify-train
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/_test.yml
+    with:
+      ref: ${{ inputs.sha }}
+      skip-verified: false
+    secrets: inherit
+    permissions:
+      contents: read
+      actions: read

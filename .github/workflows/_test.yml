@@ -1,0 +1,194 @@
+name: Test Conversation Packages
+
+# THE REUSABLE HALF: the build job and the test job of the publish workflow, in ONE file BOTH
+# callers use —
+#   publish.js.yml    (a push to main)  ── uses: _test.yml (skip-verified: true) ──► finalize (the release)
+#   verify-train.yml  (a push to train / a dispatch with a sha) ── uses: _test.yml (skip-verified: false)
+# so the tip of the `train` branch is verified on CI by exactly the jobs the release runs, and the
+# two cannot drift. Nothing here releases anything; finalize stays in publish.js.yml. The steps are
+# the former single publish job's, split: build installs and builds the workspace once and ships the
+# built tree as ONE artifact; the test job restores it and runs `test-workspace` exactly as the
+# single job did, under the same environment (OPENAI_API_KEY from the repository's secrets, which
+# `secrets: inherit` on both callers carries in — the live-provider suites run with it and skip
+# without it). This repository is one package with no database legs, so the test job runs no
+# service container; finalize restores the artifact and releases.
+#
+# skip-verified (publish passes true): the build job runs .github/scripts/VerifiedTree.js — a green
+# verify-train run NAMED for HEAD (`run-name: verify-train <sha>`), or for HEAD^ while HEAD changes
+# only .train/ (the departure commit pushed on top of a verified tip), sets `verified=true` and the
+# test job is SKIPPED: the tree was already verified by this same job graph. Anything else (no run,
+# red, in flight, a dispatch named for another sha, a change outside .train/, the API unreadable)
+# tests as before — the guard errs toward testing.
+# ref (verify-train passes its sha input): what every job checks out; empty = the event's own sha.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: the commit every job checks out (a dispatch's sha input; empty = the event's sha)
+        type: string
+        required: false
+        default: ''
+      skip-verified:
+        description: skip the test job when a green verify-train run already verified this tree (publish only)
+        type: boolean
+        required: false
+        default: false
+    outputs:
+      artifact:
+        description: the built-workspace artifact name finalize downloads
+        value: ${{ jobs.build.outputs.artifact }}
+      tarball:
+        description: the tarball file name inside it
+        value: ${{ jobs.build.outputs.tarball }}
+      verified:
+        description: "'true' when the test job was skipped on a verified tree"
+        value: ${{ jobs.build.outputs.verified }}
+      verify_run:
+        description: the verify-train run that verified the tree (when skipped)
+        value: ${{ jobs.build.outputs.verify_run }}
+
+env:
+  # --no-audit --no-fund for EVERY npm invocation in every job: the root `npm i` in build and the
+  # per-package installs build-workspace runs (which a flag on one command line cannot reach) —
+  # npm reads npm_config_<key> from the environment. The audit report is a registry round-trip
+  # per install that gates nothing here.
+  npm_config_audit: 'false'
+  npm_config_fund: 'false'
+  # The built workspace travels build -> test -> finalize as ONE artifact: a zstd tarball of the
+  # whole tree minus .git — every package's node_modules (the workspace symlinks and the .bin exec
+  # bits included: upload-artifact keeps neither symlinks nor modes, tar does), dist/, generated/,
+  # the root node_modules (lerna for finalize) and the per-package package-locks `npm i`
+  # re-stamped. Unpacked OVER a fresh checkout of the same SHA, each consumer job has
+  # byte-for-byte the build job's tree. One name here; the upload and every download read it from
+  # env (finalize through the call's outputs), so a rename cannot desync the jobs. zstd is on every
+  # hosted Ubuntu image.
+  WORKSPACE_ARTIFACT: built-workspace
+  WORKSPACE_TARBALL: built-workspace.tar.zst
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    # Install + build + pack: the single publish job ran install, build, test AND publish in under
+    # two minutes on every recent run (39124142805 … 40821366480), so this is about a minute; 30
+    # turns a silent hang in any step into a bounded, visible failure.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # VerifiedTree.js reads this repository's verify-train runs (skip-verified only).
+      actions: read
+    outputs:
+      # The artifact by name for the callers' finalize (one name here; never retyped in publish.js.yml).
+      artifact: ${{ env.WORKSPACE_ARTIFACT }}
+      tarball: ${{ env.WORKSPACE_TARBALL }}
+      # 'true' when VerifiedTree.js found a green verify-train run for this tree (skip-verified only):
+      # the test job is skipped.
+      verified: ${{ steps.verified.outputs.verified }}
+      verify_run: ${{ steps.verified.outputs.verify_run }}
+    steps:
+      - name: Checkout Repository
+        # Depth 2, not full: nothing here needs history or tags (lerna runs in finalize, which
+        # fetches everything); VerifiedTree.js reads HEAD^ and the HEAD^..HEAD paths. `ref` is the
+        # caller's (a dispatch's sha input; empty = the event's own sha).
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 2
+
+      - name: Look for a green verify-train run of this tree (the publish-skip condition)
+        # publish.js.yml only (skip-verified). VerifiedTree.js: a green verify-train run named for
+        # HEAD, or for HEAD^ when HEAD changes only .train/ (the departure commit), writes
+        # verified=true; anything else writes false and the test job runs. Never fails the job: a
+        # broken guard tests.
+        id: verified
+        if: inputs.skip-verified
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERIFY_WORKFLOW: verify-train.yml
+        run: node .github/scripts/VerifiedTree.js
+
+      - name: Setup Node.js
+        # No npm cache, as the single job had none: the root install is seconds, and the release's
+        # lock re-stamp would move a lockfile-keyed cache on every publish.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: CI glue self-test (VerifiedTree.js, LockFloors.js, MintServed.js)
+        # node:test, needs no install; fails the job before any minute is spent on install/build.
+        run: node --test .github/scripts/VerifiedTree.test.js .github/scripts/LockFloors.test.js .github/scripts/MintServed.test.js
+
+      - name: Install root package
+        # Every dependency resolves on registry.npmjs.org and every package here is public, so the
+        # install needs no token; the npm token is written and checked in finalize, where lerna
+        # publishes through it.
+        run: |
+          npm i
+
+      - name: Build packages
+        run: |
+          npm run build-workspace
+
+      - name: Pack the built workspace
+        # The whole tree minus .git (each consumer checks out the same SHA and unpacks over it).
+        # zstd -T0: every core.
+        run: tar --exclude=./.git -cf - . | zstd -T0 -3 -q -o "$RUNNER_TEMP/$WORKSPACE_TARBALL"
+
+      - name: Upload the built workspace
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: ${{ runner.temp }}/${{ env.WORKSPACE_TARBALL }}
+          # Already zstd-compressed; the artifact zip only stores it.
+          compression-level: 0
+          # Consumed by this run's test job and finalize within the hour; a re-run of failed jobs
+          # (same run, next attempt) still finds it for a day, a re-run of ALL jobs rebuilds it.
+          retention-days: 1
+          if-no-files-found: error
+          # A re-run of all jobs is a new attempt of the SAME run; without this the second upload
+          # of the name fails.
+          overwrite: true
+
+  test:
+    name: test
+    needs: build
+    # A verified tree (publish.js.yml after a CI-verified departure: VerifiedTree.js in build found
+    # the green verify-train run of this same job graph) needs no second sweep; every other call
+    # sweeps. A skipped job is a green job for the callers' `needs`.
+    if: needs.build.outputs.verified != 'true'
+    runs-on: ubuntu-latest
+    # The sweep was unbounded in the single-job shape (the 6h Actions default); it is seconds to a
+    # minute healthy (the whole single job, publish included, ran under two minutes), and 30 turns
+    # a silent hang — a live-provider suite waiting on a stream — into a bounded, visible failure.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download the built workspace
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.WORKSPACE_ARTIFACT }}
+          path: ${{ runner.temp }}/artifact
+
+      - name: Unpack the built workspace over the checkout
+        run: zstd -d -q -c "$RUNNER_TEMP/artifact/$WORKSPACE_TARBALL" | tar -xf - -C "$GITHUB_WORKSPACE"
+
+      - name: Test packages
+        # The single job's environment, verbatim: the one secret NAME the live-provider suites read
+        # (they skip without it); both callers pass `secrets: inherit`, so a verify run and a publish
+        # run sweep under the same key.
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          npm run test-workspace
