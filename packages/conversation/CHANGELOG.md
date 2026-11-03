@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.4](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.3...@proteinjs/conversation@6.20.4) (2026-11-03)
+
+
+### Bug Fixes
+
+* **conversation:** the Google adapter's floor admits only the fixed nullable-schema converter — @ai-sdk/google ^3.0.138, the wire shape pinned ([b0b743d](https://github.com/proteinjs/conversation/commit/b0b743dfc00191dc3c813ecbbfa62414d0df55fd)), closes [#23868](https://github.com/proteinjs/conversation/issues/23868)
+
+
+
+
+
 ## [6.20.3](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.2...@proteinjs/conversation@6.20.3) (2026-10-29)
 
 
