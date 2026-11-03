@@ -328,7 +328,7 @@ export type GenerateStreamParams = {
    * The bounded UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c; see {@link Utterance}): before the
    * mind takes an input into a step — at turn start, and at every drain that hands inputs to
    * the model (a step boundary, a thinking-phase restart, a mid-text cut, the exit absorption) —
-   * the loop asks it for ONE LINE in a separate no-thinking call over the same transcript and the
+   * the loop asks it for ONE LINE in a separate least-thinking call over the same transcript and the
    * same tool roster (the step's cache prefix, so the call's cache write serves the step; no tool
    * runs on it), streams that line as its own step (a `step-finish` part flagged `utterance`, the
    * acknowledgment the consumer commits to the response), then runs the step with the inputs
@@ -338,11 +338,18 @@ export type GenerateStreamParams = {
    */
   utterance?: boolean;
   /**
-   * The reasoning effort the bounded utterance (and the side utterance) is asked at — `none`
-   * when absent, as it always was: the line is a no-thinking completion. A caller that keeps a
-   * catalog of what each model accepts passes the least thinking the model in hand accepts
-   * (`none` where the model lists it, else its lowest listed level), so the utterance never asks
-   * for a value the provider refuses and `RequestedEffort` never has to hear a refusal for it.
+   * The reasoning effort the bounded utterance (and the side utterance) is asked at. This library
+   * keeps no catalog and applies NO default: the caller names the least thinking the model in hand
+   * OFFERS — `none` only where it is a real off switch (a level the model lists: OpenAI, xAI; or a
+   * provider whose request without a thinking block does not think: Anthropic), else the model's
+   * lowest listed level. Gemini 3 and later have no off switch — `low` is their least, and `none`
+   * on Google is refused by `buildProviderOptions` (the call has no line; the step runs without
+   * it). Absent, no level is named and the provider's default shape rides, exactly as on a step
+   * with no level — never a no-thinking completion by default: that premise sent Gemini a request
+   * with no thinking config at all, which is the model's own dynamic default, the opposite of
+   * least (DECISIONS 1019). The one owner of the answer is the caller's catalog (chat-common
+   * `ModelCatalogEntryValidity.leastThinking`); `RequestedEffort` still hears a provider's refusal
+   * of a listed value once and re-issues without it.
    */
   utteranceEffort?: ReasoningEffort;
   /**
@@ -3610,14 +3617,26 @@ export class Conversation {
       // events back; without it the model computes reasoning internally but
       // doesn't surface any text. Equivalent to Anthropic's
       // `display: 'summarized'` and OpenAI's `reasoningSummary: 'auto'`.
-      // Always-on, except when effort is explicitly 'none' — the one off switch.
+      // Always on. Gemini 3 and later have NO off switch (Google's thinking page lists no Off
+      // for any of them): a request without thinkingConfig is the model's own dynamic default —
+      // the opposite of 'none' — so 'none' here is a caller's error and is refused by name. The
+      // least a caller can ask for is the model's lowest listed level, and the owner of that
+      // answer is the caller's catalog (chat-common ModelCatalogEntryValidity.leastThinking —
+      // 'low' on every Gemini row). Before this the branch read 'none' as "the one off switch"
+      // and sent nothing: the acknowledgment on Gemini 4 Argon ran at the model's default
+      // (DECISIONS 1019, row 3082).
+      if (effort === 'none') {
+        throw new Error(
+          `'none' is not a thinking level Google offers${modelString ? ` on ${modelString}` : ''}: Gemini 3 and later have no off switch — ask for the model's lowest listed level ('low'), never 'none'`
+        );
+      }
       if (effort === undefined || effort === 'auto') {
         // Auto, or no level named at all (a caller whose catalog row lists no auto thinking
         // level — the provider's default stands, never a level of ours): summaries on, no level
         // sent. Gemini thinks at its own default and surfaces its thought summaries; without this
         // the whole thinkingConfig went with the level and the timeline showed nothing.
         googleOpts.thinkingConfig = { includeThoughts: true };
-      } else if (effort !== 'none') {
+      } else {
         // Google accepts thinkingLevel: minimal | low | medium | high
         // Our 'max'/'xhigh' have no Google equivalent → map to 'high'
         const levelMap: Record<string, string> = {
@@ -4464,8 +4483,9 @@ export class Conversation {
   }
 
   /**
-   * The bounded utterance (plans/FREE_AGENT.md §M.3 part 2c; {@link Utterance}): one no-thinking
-   * call over `transcript` + `inputs` + the instruction, its line yielded as ONE text-delta part
+   * The bounded utterance (plans/FREE_AGENT.md §M.3 part 2c; {@link Utterance}): one least-thinking
+   * call (the effort the caller named — {@link GenerateStreamParams.utteranceEffort}) over
+   * `transcript` + `inputs` + the instruction, its line yielded as ONE text-delta part
    * and closed by a step-finish flagged `utterance`. Returns the line, or nothing when the call
    * produced no line — no text, a failure, or the provider's output limit reached before the
    * line's end (logged — the step then runs without its line, and the consumer's acknowledgment
@@ -4497,7 +4517,7 @@ export class Conversation {
     provider: string;
     modelString: string;
     abortSignal: AbortSignal;
-    /** The effort the line is asked at ({@link GenerateStreamParams.utteranceEffort}); `none` when absent. */
+    /** The effort the line is asked at ({@link GenerateStreamParams.utteranceEffort}); absent = no level named. */
     utteranceEffort?: ReasoningEffort;
     /** The call for the turn's accounting: its usage, its steps with no tool call on them. */
     onResult: (round: AccountedRound) => void;
@@ -4517,13 +4537,16 @@ export class Conversation {
     // has NO line: nothing reaches the consumer, no utterance step, no framing, not even the whole
     // sentences before the cut. Retries stay off (maxRetries 0): a retry would hold the main step
     // at the boundary for the backoff on top of the failed attempt, while the degradation is free
-    // — the step runs and its own first text is the acknowledgment. The call asks for NO thinking
-    // (`reasoningEffort: 'none'`) unless the caller named the least thinking the model in hand
-    // accepts (`utteranceEffort` — a caller with a catalog of what each model lists passes `none`
-    // where listed, else the model's lowest level); a model whose provider refuses the value asked
-    // (GPT-6 Astra lists no `none`) is not this call's to know — `RequestedEffort` (under the
+    // — the step runs and its own first text is the acknowledgment. The call asks for the LEAST
+    // thinking the model in hand offers, as the caller's catalog names it (`utteranceEffort`:
+    // `none` only where that is a real off switch — a listed level, or Anthropic's no-thinking-block
+    // road — else the model's lowest listed level; Gemini has no off switch, so `low`). No default
+    // of this library's rides in its place: with no effort named, no level is sent and the provider's
+    // default shape stands, as on a step with no level. A model whose provider refuses the value
+    // asked (GPT-6 Astra lists no `none`) is not this call's to know — `RequestedEffort` (under the
     // transport layer) hears the refusal once, re-issues with the effort omitted and remembers it,
-    // so the line arrives and no later turn pays the refused request.
+    // so the line arrives and no later turn pays the refused request; a value this library itself
+    // refuses (`none` on Google) fails the call before it is made — no line, the step runs.
     let text = '';
     let lineEnded = false;
     let failure: unknown;
@@ -4544,7 +4567,7 @@ export class Conversation {
         abortSignal: args.abortSignal,
         providerOptions: this.buildProviderOptions(
           args.provider,
-          { reasoningEffort: args.utteranceEffort ?? 'none' },
+          { reasoningEffort: args.utteranceEffort },
           args.modelString
         ),
       });

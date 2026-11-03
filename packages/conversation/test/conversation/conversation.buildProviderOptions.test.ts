@@ -216,10 +216,18 @@ describe('Conversation.buildProviderOptions (google)', () => {
     }
   );
 
-  test('omits thinkingConfig entirely when effort is "none"', () => {
-    const google = buildGoogle('none', 'gemini-3.5-flash');
-    expect(google.thinkingConfig).toBeUndefined();
-  });
+  // Gemini 3 and later have NO off switch (Google's thinking page lists no Off for any of them): a request
+  // without thinkingConfig is the model's own dynamic default, the opposite of 'none'. 'none' is a caller's
+  // error, refused by name — the least a caller can ask for is the model's lowest listed level, and the
+  // owner of that answer is the caller's catalog. RED at d2fa1b4: 'none' omitted thinkingConfig entirely
+  // ("the one off switch"), and the acknowledgment on Gemini 4 Argon ran at the model's default.
+  test.each([['gemini-4-argon'], ['gemini-3.1-pro-preview'], ['gemini-3.5-flash']])(
+    'refuses "none" by name — no off switch on Gemini (model=%s)',
+    (model) => {
+      expect(() => buildGoogle('none', model)).toThrow(/no off switch/);
+      expect(() => buildGoogle('none', model)).toThrow(model);
+    }
+  );
 });
 
 type XaiProviderOptions = {

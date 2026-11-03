@@ -507,7 +507,7 @@ describe('the bounded utterance — one line before every step that takes an inp
     TIMEOUT
   );
 
-  test('the utterance call runs with thinking OFF on every provider that has it, while the main step keeps its effort', () => {
+  test("'none' is thinking OFF only where the provider has an off switch (Anthropic's no thinking block, OpenAI's value); Google has none and refuses it", () => {
     type Internals = {
       buildProviderOptions(
         provider: string,
@@ -522,9 +522,88 @@ describe('the bounded utterance — one line before every step that takes an inp
     expect(
       internals.buildProviderOptions('anthropic', { reasoningEffort: 'auto' }, 'claude-opus-4-6').anthropic.thinking
     ).toBeDefined();
-    expect(internals.buildProviderOptions('google', { reasoningEffort: 'none' }).google.thinkingConfig).toBeUndefined();
+    expect(() => internals.buildProviderOptions('google', { reasoningEffort: 'none' })).toThrow(/no off switch/);
     expect(internals.buildProviderOptions('openai', { reasoningEffort: 'none' }).openai.reasoningEffort).toBe('none');
   });
+
+  // THE UTTERANCE'S EFFORT IS THE CALLER'S WORD, NEVER A DEFAULT OF THIS LIBRARY'S (DECISIONS 1019, row 3082): the
+  // library kept `'none'` as the utterance's default and the Google branch read it as an off switch — a request with
+  // no thinking config, which on Gemini is the model's own dynamic default. The acknowledgment on Gemini 4 Argon ran
+  // that way and wrote 3,486 characters. Now: the caller's catalog names the least thinking the model offers; with
+  // no word, no level is named and the provider's default shape rides, the same as a step with no level.
+  const googleModel = (calls: CallOptions[]) =>
+    new MockLanguageModelV3({
+      provider: 'google.generative-ai',
+      modelId: 'gemini-4-argon',
+      doStream: async (options: CallOptions) => {
+        calls.push(options);
+        if (Utterance.isRequest(options.prompt)) {
+          return { stream: textStep('On it.') };
+        }
+        return { stream: textStep('THE ANSWER') };
+      },
+    });
+
+  test(
+    "GOOGLE, no effort named: the utterance call carries the provider's default shape (summaries on, no level) — never 'none', never no thinking config (RED at d2fa1b4)",
+    async () => {
+      const calls: CallOptions[] = [];
+      const result = await conversation('utterance-google-no-word').generateStream({
+        messages: ['what is the capital of peru'],
+        model: googleModel(calls) as never,
+        reasoningEffort: 'auto',
+        ...new Inbox().params(),
+      });
+      const { parts } = await collect(result.fullStream);
+      expect(calls).toHaveLength(2);
+      expect(Utterance.isRequest(calls[0].prompt)).toBe(true);
+      expect(calls[0].providerOptions?.google).toEqual({ thinkingConfig: { includeThoughts: true } });
+      expect(parts.some((part) => part.type === 'step-finish' && part.utterance)).toBe(true);
+    },
+    TIMEOUT
+  );
+
+  test(
+    "GOOGLE, the caller names the model's lowest listed level ('low'): the utterance call sends it as a thinkingLevel",
+    async () => {
+      const calls: CallOptions[] = [];
+      const result = await conversation('utterance-google-low').generateStream({
+        messages: ['what is the capital of peru'],
+        model: googleModel(calls) as never,
+        reasoningEffort: 'auto',
+        utteranceEffort: 'low',
+        ...new Inbox().params(),
+      });
+      await collect(result.fullStream);
+      expect(calls).toHaveLength(2);
+      expect(calls[0].providerOptions?.google).toEqual({
+        thinkingConfig: { includeThoughts: true, thinkingLevel: 'low' },
+      });
+      // The main step keeps its own effort — the auto shape.
+      expect(calls[1].providerOptions?.google).toEqual({ thinkingConfig: { includeThoughts: true } });
+    },
+    TIMEOUT
+  );
+
+  test(
+    "GOOGLE, a caller that still says 'none': the call is refused before it is made — no line, no utterance step, and the main step runs with the answer",
+    async () => {
+      const calls: CallOptions[] = [];
+      const result = await conversation('utterance-google-none').generateStream({
+        messages: ['what is the capital of peru'],
+        model: googleModel(calls) as never,
+        reasoningEffort: 'auto',
+        utteranceEffort: 'none',
+        ...new Inbox().params(),
+      });
+      const { text, parts } = await collect(result.fullStream);
+      expect(calls).toHaveLength(1);
+      expect(Utterance.isRequest(calls[0].prompt)).toBe(false);
+      expect(parts.some((part) => part.type === 'step-finish' && part.utterance)).toBe(false);
+      expect(text).toBe('THE ANSWER');
+    },
+    TIMEOUT
+  );
 
   test(
     "SIDE UTTERANCE (part 5 — the nudge): the host asks mid-round while the model is silent; the line lands as ONE side-utterance part before the provider's first part, the round is not restarted, and the next step runs under its framing",
