@@ -132,13 +132,17 @@ const astra = () =>
 /** The bounded utterance's door (the idle path): one no-input inbox, `utterance` on. */
 const utteranceParams = (): Pick<
   GenerateStreamParams,
-  'drainInjectedContext' | 'peekInjectedContext' | 'inputArrived' | 'absorbExitNotes' | 'utterance'
+  'drainInjectedContext' | 'peekInjectedContext' | 'inputArrived' | 'absorbExitNotes' | 'utterance' | 'utteranceEffort'
 > => ({
   drainInjectedContext: () => [],
   peekInjectedContext: () => false,
   inputArrived: () => new Promise<void>(() => undefined),
   absorbExitNotes: true,
   utterance: true,
+  // THE CALLER'S WORD (DECISIONS 1019, row 3082): the library applies no default of its own any more — the caller's
+  // catalog names the least thinking the model offers. 'none' is that answer on an OpenAI row that lists it (Sol) and
+  // on Anthropic (no thinking block); a Google caller says 'low' (no off switch on Gemini — see the Google case below).
+  utteranceEffort: 'none',
 });
 
 const newConversation = (name: string) =>
@@ -224,7 +228,7 @@ const dump = (name: string, json: string): void => {
 
 beforeEach(() => RequestedEffort.forgetAll());
 
-describe('the requested effort follows the model (the bounded utterance asks for none; a model without none runs with the effort omitted)', () => {
+describe('the requested effort follows the model (the bounded utterance asks for the least thinking the caller names — none here; a model without none runs with the effort omitted)', () => {
   test(
     'the provider refuses `none` — the utterance is re-issued with the effort OMITTED (the provider’s default), the acknowledgment line arrives, and the omission rides the stream as a step-start warning',
     async () => {
@@ -301,23 +305,24 @@ describe('the requested effort follows the model (the bounded utterance asks for
   );
 
   test(
-    'Anthropic and Google requests are byte-identical before and after — no effort field to hear, nothing substituted',
+    'Anthropic and Google requests hear no refusal, nothing substituted — the utterance at the least each provider offers: Anthropic at none (no thinking block, no effort field), Google at low (no off switch on Gemini: a thinkingLevel, never no config)',
     async () => {
-      // Where each provider carries the effort — the utterance's `none` sends NO field to these
-      // two, and the step's `high` is sent as asked (the dumps are md5-compared across the fix).
+      // Where each provider carries the effort — the utterance's level is the caller's word (the owner's answer per
+      // provider: 'none' on Anthropic sends NO field; 'low' on Google sends thinkingLevel 'low'), and the step's `high`
+      // is sent as asked (the dumps are md5-compared across the fix).
       const effortField = {
         anthropic: (call: Call) => call.providerOptions?.anthropic?.effort,
         google: (call: Call) =>
           (call.providerOptions?.google?.thinkingConfig as { thinkingLevel?: unknown } | undefined)?.thinkingLevel,
       };
-      for (const [provider, modelId, name] of [
-        ['anthropic.messages', 'claude-opus-5-5', 'anthropic'],
-        ['google.generative-ai', 'gemini-3-pro', 'google'],
+      for (const [provider, modelId, name, least, utteranceField] of [
+        ['anthropic.messages', 'claude-opus-5-5', 'anthropic', 'none', undefined],
+        ['google.generative-ai', 'gemini-3-pro', 'google', 'low', 'low'],
       ] as const) {
         const model = scriptedModel({ provider, modelId });
-        const { parts, warnings } = await turn(`effort-${name}`, model);
+        const { parts, warnings } = await turn(`effort-${name}`, model, 'high', { utteranceEffort: least });
         expect(utteredLine(parts)).toBe(LINE);
-        expect(model.doStreamCalls.map((call) => effortField[name](call as never))).toEqual([undefined, 'high']);
+        expect(model.doStreamCalls.map((call) => effortField[name](call as never))).toEqual([utteranceField, 'high']);
         expect(warnings).toHaveLength(0);
         dump(name, requestsJson(model));
       }
