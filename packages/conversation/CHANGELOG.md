@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.6](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.5...@proteinjs/conversation@6.20.6) (2026-11-04)
+
+
+### Bug Fixes
+
+* **conversation:** the utterance's effort is the caller's word, never 'none' by default; Google refuses 'none' — no off switch on Gemini ([3f07ab5](https://github.com/proteinjs/conversation/commit/3f07ab510d4e7a8ea872951610688be8b043508b))
+
+
+
+
+
 ## [6.20.5](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.4...@proteinjs/conversation@6.20.5) (2026-11-04)
 
 
