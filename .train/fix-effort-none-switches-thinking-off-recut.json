@@ -1,8 +1,6 @@
 {
-  "branch": "fix/effort-none-switches-thinking-off",
-  "packages": [
-    "conversation"
-  ],
+  "branch": "fix/effort-none-switches-thinking-off-recut",
+  "packages": ["conversation"],
   "suites": [
     "packages/conversation/test/conversation/anthropicModelRules.test.ts",
     "packages/conversation/test/conversation/conversation.anthropicPromptCaching.test.ts",
@@ -14,6 +12,7 @@
     "packages/conversation/test/conversation/conversation.getWebSearchTools.test.ts",
     "packages/conversation/test/conversation/conversation.heartbeatsOnEveryStream.test.ts",
     "packages/conversation/test/conversation/conversation.injectedContext.test.ts",
+    "packages/conversation/test/conversation/conversation.inputCapGuard.test.ts",
     "packages/conversation/test/conversation/conversation.objectFailures.test.ts",
     "packages/conversation/test/conversation/conversation.objectFailuresClassification.test.ts",
     "packages/conversation/test/conversation/conversation.partialUsage.test.ts",
@@ -42,7 +41,35 @@
     "packages/conversation/test/conversation/roundBudget.test.ts",
     "packages/conversation/test/conversation/stableFirstLayout.test.ts",
     "packages/conversation/test/conversation/utterance.test.ts",
-    "packages/conversation/test/conversation/utteranceCachePrefix.test.ts"
+    "packages/conversation/test/conversation/utteranceCachePrefix.test.ts",
+    "packages/conversation/test/conversation/conversation.beforeRequest.test.ts",
+    "packages/conversation/test/conversation/conversation.describeComputerAction.test.ts",
+    "packages/conversation/test/conversation/conversation.generateObject.test.ts",
+    "packages/conversation/test/conversation/conversation.generateResponse.test.ts",
+    "packages/conversation/test/conversation/conversation.generateStream.test.ts",
+    "packages/conversation/test/conversation/conversation.googleNullableSchemas.test.ts",
+    "packages/conversation/test/conversation/conversation.googleThoughtSignatures.test.ts",
+    "packages/conversation/test/conversation/conversation.maxTotalTokens.test.ts",
+    "packages/conversation/test/conversation/conversation.oneGenerationPath.test.ts",
+    "packages/conversation/test/conversation/conversation.openaiStateless.test.ts",
+    "packages/conversation/test/conversation/conversation.perStepUsage.test.ts",
+    "packages/conversation/test/conversation/conversation.providerErrorClause.test.ts",
+    "packages/conversation/test/conversation/conversation.pruneToolImages.test.ts",
+    "packages/conversation/test/conversation/conversation.pruneToolResults.test.ts",
+    "packages/conversation/test/conversation/conversation.reasoning.google.test.ts",
+    "packages/conversation/test/conversation/conversation.reasoning.openai.test.ts",
+    "packages/conversation/test/conversation/conversation.stepStartWarnings.test.ts",
+    "packages/conversation/test/conversation/conversation.stepToolUsage.test.ts",
+    "packages/conversation/test/conversation/conversation.streamLiveness.test.ts",
+    "packages/conversation/test/conversation/conversation.thinkingRestart.test.ts",
+    "packages/conversation/test/conversation/conversation.toolResultCeiling.test.ts",
+    "packages/conversation/test/conversation/conversation.toolTimelineGlyph.test.ts",
+    "packages/conversation/test/conversation/openAiModelRules.test.ts",
+    "packages/conversation/test/conversation/toolBudget.test.ts",
+    "packages/conversation/test/openai/openAiResponses.citationMarkers.test.ts",
+    "packages/conversation/test/openai/openAiResponses.stateless.test.ts",
+    "packages/conversation/test/openai/openai.toolStrictness.live.test.ts",
+    "packages/conversation/test/repo/repo.test.ts"
   ],
   "removes": []
 }

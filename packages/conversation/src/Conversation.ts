@@ -31,6 +31,7 @@ import { resolveModel, routedProvider } from './resolveModel';
 import { EmptyDeltaMetadata } from './EmptyDeltaMetadata';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import { ForcedToolChoice } from './ForcedToolChoice';
+import { getModelCapabilities } from '@ai-sdk/anthropic/internal';
 import { RequestedEffort } from './RequestedEffort';
 import { OpenAiModelRules, type OpenAiReasoningEffort } from './OpenAiModelRules';
 import { AnthropicModelRules } from './AnthropicModelRules';
@@ -3613,8 +3614,8 @@ export class Conversation {
     }
     try {
       // Models that don't support programmatic tool calling can't use web search tools.
-      // Haiku and nano-class models are excluded.
-      if (/nano/i.test(modelString) || /haiku/i.test(modelString)) {
+      // Haiku (the family, AnthropicModelRules — one owner) and nano-class models are excluded.
+      if (/nano/i.test(modelString) || AnthropicModelRules.tier(modelString) === 'haiku') {
         return {};
       }
 
@@ -3726,12 +3727,13 @@ export class Conversation {
    * - Toggle off, or tool unavailable (e.g. Haiku/nano excluded models, or the
    *   conversation's veto — `webSearch: 'off'` attached nothing): return
    *   `undefined` so the SDK falls back to its default (auto).
-   * - A model whose provider REFUSES forcing (Claude Fable 5.1, Claude Opus 5.5: the API 400s
-   *   `tool_choice: type "tool" and "any" are not supported for this model`) is not this
-   *   helper's to know — the forcing is asked for here like any other model's, and
-   *   `ForcedToolChoice` (under the transport layer) hears the provider's refusal, re-issues
-   *   the request with auto and remembers the model: the tool stays attached and the toggle
-   *   softens to "search strongly available". No list of ids to keep.
+   * - A model whose provider REFUSES forcing (Claude Fable 5.1, Claude Opus 5.5, Claude Sonnet 5.5:
+   *   the API 400s `tool_choice: type "tool" and "any" are not supported for this model`) is not
+   *   this helper's to know — the forcing is asked for here like any other model's, and
+   *   `ForcedToolChoice` (under the transport layer) softens it to auto with the WHOLE roster: before
+   *   the request leaves when the vendor's own table marks the id, or on the provider's refusal for
+   *   an id the table does not know yet (heard once, remembered). The tools stay attached — the cache
+   *   prefix with them — and the toggle softens to "search strongly available". No list of ids to keep.
    */
   private getWebSearchToolChoice(
     provider: string,
@@ -3767,9 +3769,10 @@ export class Conversation {
     // request run through the wrapped model, so transient provider failures retry invisibly here.
     // `onRetryActivity` (when the caller passed one) observes those retries without owning them.
     // Under the retry layer, the request follows the provider's verdict for the model: a forced
-    // tool choice it refuses is re-issued softened (ForcedToolChoice), a reasoning effort it
-    // refuses is re-issued at the nearest level it accepts (RequestedEffort) — each heard once,
-    // each remembered for the process, no list of ids.
+    // tool choice it refuses is softened with the whole roster — before it leaves when the vendor's
+    // own table marks the id, else on the refusal heard once (ForcedToolChoice); a reasoning effort
+    // it refuses is re-issued at the nearest level it accepts (RequestedEffort) — each remembered
+    // for the process, no house list of ids.
     // Innermost, on the provider's own stream: the metadata of an empty text delta (a streamed
     // thought signature) rides to the block's end before the core discards the delta (EmptyDeltaMetadata).
     return this.transportRetry.wrap(
@@ -4265,44 +4268,23 @@ export class Conversation {
   /** `AbortSignal.any` exists at runtime (node ≥ 20.3) but not in this TS lib target. */
   /**
    * The output ceiling to request when the caller didn't set one — ALWAYS the model's real
-   * maximum, never an artificial cap. This exists because Anthropic's SDK adapter silently
-   * defaults max_tokens to 4096 when unset, and extended THINKING shares that budget — a long
-   * adaptive think left almost nothing for the answer and finished 'length' mid-sentence
-   * (2026-07-29: a 1m+ think truncated a 4.8k-char answer; the truncation then persisted as an
-   * empty body). Requesting the max costs nothing — billing is for generated tokens, the limit
-   * is just a ceiling — while requesting ABOVE a model's max is a hard API error, hence the
-   * per-model map. OpenAI and Google default to the model max when unset, so they stay unset.
-   * Bump entries as Anthropic raises model maxima (verify in their model docs first — an
-   * over-ask 400s every turn).
+   * maximum, never an artificial cap: extended THINKING shares `max_tokens`, so a ceiling under
+   * the maximum leaves a long adaptive think almost nothing for the answer (2026-07-29: a 1m+
+   * think truncated a 4.8k-char answer at a 4096 default; the truncation then persisted as an
+   * empty body). Requesting the max costs nothing — billing is for generated tokens, the limit is
+   * just a ceiling — while requesting ABOVE a model's max is a hard API error. So the number is
+   * THE VENDOR'S: the per-model maximum `@ai-sdk/anthropic` keeps in its own table
+   * (`getModelCapabilities` — the table the adapter defaults `max_tokens` to at ^3.0.138, and the
+   * one `ForcedToolChoice` reads), never a house map of ids: the map this replaced (2026-11-04)
+   * held Haiku 5.5 at 64k, half its maximum, and asked the third generation for 64k it never
+   * had. The same number is the cap `ObjectGenerationError` names on a length failure. OpenAI
+   * and Google default to the model max when unset, so they stay unset.
    */
   private static defaultMaxOutputTokens(provider: string, modelString?: string): number | undefined {
     if (provider !== 'anthropic') {
       return undefined;
     }
-    // Verified against platform.claude.com/docs/en/about-claude/models/overview (2026-07-29).
-    // The Models API also exposes `max_tokens` per model programmatically — if this map ever
-    // chafes, replace it with a cached Models API lookup rather than growing it heuristically.
-    const model = (modelString ?? '').toLowerCase();
-    if (/fable|mythos/.test(model)) {
-      return 128_000;
-    }
-    if (/opus-5|opus-4-8|opus-4-7|opus-4-6/.test(model)) {
-      return 128_000;
-    }
-    if (/sonnet-5|sonnet-4-6/.test(model)) {
-      return 128_000;
-    }
-    if (/opus-4-5|sonnet/.test(model)) {
-      return 64_000; // Opus 4.5, Sonnet 4.5 and earlier Sonnet 4.x
-    }
-    if (/haiku-3/.test(model)) {
-      return 8_192;
-    }
-    if (/haiku/.test(model)) {
-      return 64_000; // Haiku 4.5
-    }
-    // Unknown/legacy (e.g. Opus 4.1 at 32k): the safe floor — over-asking is a hard API error.
-    return 32_000;
+    return getModelCapabilities(Conversation.bareModelId((modelString ?? '').toLowerCase())).maxOutputTokens;
   }
 
   /**

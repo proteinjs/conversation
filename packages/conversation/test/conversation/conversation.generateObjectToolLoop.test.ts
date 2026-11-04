@@ -130,6 +130,34 @@ function runLoop(model: MockLanguageModelV3) {
   });
 }
 
+/**
+ * THE OUTPUT CEILING IS THE VENDOR'S. When the caller sets no `maxTokens`, each step of the loop asks for the
+ * model's real maximum — the per-model number `@ai-sdk/anthropic` keeps in its own table (`getModelCapabilities`),
+ * never a house map of ids: the map this replaced (2026-11-04) held Haiku 5.5 at 64k, half its maximum, and asked
+ * the third generation for 64k it never had (an over-ask is a hard 400). The same number names the cap on a
+ * length failure (`ObjectGenerationError`).
+ */
+describe("Conversation.generateObject tool loop — the output ceiling is the vendor's per-model maximum", () => {
+  test.each([
+    ['claude-haiku-5-5', 128_000],
+    ['claude-sonnet-5-5', 128_000],
+    ['claude-opus-4-5', 64_000],
+    ['claude-haiku-4-5-20251001', 64_000],
+    ['claude-3-haiku-20240307', 4_096],
+  ] as Array<[string, number]>)(
+    '%s: every step asks for %s output tokens',
+    async (modelId, ceiling) => {
+      const { model } = buildScriptedModel(modelId);
+      const result = await runLoop(model);
+
+      expect(result.object).toEqual({ answer: '42' });
+      expect(model.doStreamCalls).toHaveLength(2);
+      expect(model.doStreamCalls.map((call) => call.maxOutputTokens)).toEqual([ceiling, ceiling]);
+    },
+    TIMEOUT
+  );
+});
+
 describe('Conversation.generateObject tool loop — request shape', () => {
   test(
     'dispatches every step through the streaming path, never doGenerate',

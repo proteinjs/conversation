@@ -48,6 +48,11 @@ export type AnthropicTier = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'mythos';
  * and the utterance effort it hands the conversation for an Anthropic row are {@link leastEffort},
  * the off switch it expects is {@link thinkingOff} — one owner, never a premise of the consumer's,
  * so a new family changes the answer here once.
+ *
+ * BROWSER-SAFE BY CONTRACT: this file imports nothing — no node module, no adapter — and a consumer
+ * that rides in a browser bundle imports it by its dist path,
+ * `@proteinjs/conversation/dist/src/AnthropicModelRules` (the package index requires fs). That path
+ * is stable across releases (`rootDir` is the package root); keep this file pure.
  */
 export class AnthropicModelRules {
   /** `claude-<tier>-<major>[-<minor>][-<date>]` — the grammar from the fourth generation on. */

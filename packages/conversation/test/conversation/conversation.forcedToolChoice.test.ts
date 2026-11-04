@@ -16,6 +16,12 @@ import { PromptCacheScriptedTransport, type WireBody } from './PromptCacheScript
  * answered with HTTP 400 and the body below — the same clause Claude Fable 5.1 has answered with
  * since 2026-09-01. Before this rule the library kept a list of ids that refuse forcing and
  * missed every new one: the web-search toggle killed the whole turn on Opus 5.5.
+ *
+ * TWO WORDS SOFTEN A FORCED CHOICE, one owner: the vendor's own table (`@ai-sdk/anthropic`'s
+ * `getModelCapabilities` marks Sonnet 5.5, Opus 5.5 and Fable 5.1 at ^3.0.138) before any request,
+ * and the provider's refusal — heard once, remembered — for an id the table does not know yet. The
+ * refusal road here runs on ids the table does not know (`claude-opus-6`, `claude-fable-6`: models
+ * newer than the adapter), which is exactly the case that road exists for.
  */
 
 const TIMEOUT = 30_000;
@@ -89,6 +95,16 @@ const clientToolCall = (id: string) =>
     { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool_use' }, usage },
   ]);
 
+/** A client tool beside the search tool — the roster a softened request must keep whole. */
+const echo = {
+  definition: {
+    name: 'echo',
+    description: 'Echoes the value.',
+    parameters: { type: 'object', properties: { value: { type: 'string' } } },
+  },
+  call: async (input: { value?: string }) => `echo:${input.value ?? ''}`,
+};
+
 const newConversation = () =>
   new Conversation({
     modelData: fixtureModelData,
@@ -114,16 +130,17 @@ const toolNames = (call: { tools?: Array<{ name: string }> }) => (call.tools ?? 
 
 beforeEach(() => ForcedToolChoice.forgetAll());
 
-describe('ForcedToolChoice via Conversation', () => {
+describe('ForcedToolChoice via Conversation — the refusal road, for an id the vendor’s table does not know', () => {
   test(
     'the provider refuses the forced search — the request is re-issued with auto, the tool still attached, and the answer flows',
     async () => {
-      const model = refusingModel('claude-opus-5-5');
+      const model = refusingModel('claude-opus-6');
 
       const result = await newConversation().generateResponse({
         messages: ['What is a news headline from today? Include the source URL.'],
         model: model as never,
         webSearch: true,
+        tools: [echo],
       });
 
       expect(result.text).toBe('Today: the headline.');
@@ -133,8 +150,9 @@ describe('ForcedToolChoice via Conversation', () => {
       expect(model.doStreamCalls[1].toolChoice).toEqual({ type: 'auto' });
       // The softened request carries the same tools — only the forcing is dropped.
       expect(toolNames(model.doStreamCalls[1])).toEqual(toolNames(model.doStreamCalls[0]));
-      expect(toolNames(model.doStreamCalls[1])).toContain('web_search');
-      expect(ForcedToolChoice.refusesForcing('claude-opus-5-5')).toBe(true);
+      expect(toolNames(model.doStreamCalls[1])).toEqual(['echo', 'web_search']);
+      expect(ForcedToolChoice.heardRefusal('claude-opus-6')).toBe(true);
+      expect(ForcedToolChoice.refusesForcing('claude-opus-6')).toBe(true);
     },
     TIMEOUT
   );
@@ -142,11 +160,11 @@ describe('ForcedToolChoice via Conversation', () => {
   test(
     'the refusal is remembered for the process — the next conversation on that model sends auto from its first request',
     async () => {
-      const first = refusingModel('claude-fable-5-1');
+      const first = refusingModel('claude-fable-6');
       await newConversation().generateResponse({ messages: ['news?'], model: first as never, webSearch: true });
       expect(first.doStreamCalls).toHaveLength(2);
 
-      const second = refusingModel('claude-fable-5-1');
+      const second = refusingModel('claude-fable-6');
       const result = await newConversation().generateResponse({
         messages: ['news?'],
         model: second as never,
@@ -185,11 +203,11 @@ describe('ForcedToolChoice via Conversation', () => {
   );
 
   test(
-    'any other 400 surfaces untouched — never softened, never remembered',
+    'any other 400 surfaces untouched — never softened by it, never remembered',
     async () => {
       const model = new MockLanguageModelV3({
         provider: 'anthropic.messages',
-        modelId: 'claude-opus-5-5',
+        modelId: 'claude-opus-6',
         doStream: async () => {
           throw otherBadRequest();
         },
@@ -199,7 +217,8 @@ describe('ForcedToolChoice via Conversation', () => {
         newConversation().generateResponse({ messages: ['news?'], model: model as never, webSearch: true })
       ).rejects.toThrow('text content blocks must be non-empty');
       expect(model.doStreamCalls).toHaveLength(1);
-      expect(ForcedToolChoice.refusesForcing('claude-opus-5-5')).toBe(false);
+      expect(model.doStreamCalls[0].toolChoice).toEqual({ type: 'tool', toolName: 'web_search' });
+      expect(ForcedToolChoice.heardRefusal('claude-opus-6')).toBe(false);
     },
     TIMEOUT
   );
@@ -213,14 +232,6 @@ describe('ForcedToolChoice via Conversation', () => {
         modelId: 'claude-sonnet-5',
         doStream: async () => ({ stream: calls++ === 0 ? clientToolCall('tc-1') : plainAnswer('Done: x') }),
       });
-      const echo = {
-        definition: {
-          name: 'echo',
-          description: 'Echoes the value.',
-          parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
-        },
-        call: async (input: { value: string }) => `echo:${input.value}`,
-      };
 
       const result = await newConversation().generateResponse({
         messages: ['echo x'],
@@ -239,25 +250,86 @@ describe('ForcedToolChoice via Conversation', () => {
 });
 
 /**
- * THE ADAPTER'S OWN FALLBACK, AT THE FLOOR (@ai-sdk/anthropic ^3.0.138, read 2026-11-04). For the ids its
- * table knows reject forcing (Sonnet 5.5, Opus 5.5, Fable 5.1 — `getModelCapabilities`), the adapter softens a
- * forced choice BEFORE any request: `required` becomes `auto`; a NAMED choice becomes `auto` with that tool
- * ALONE on the request (`prepareTools`: "Named tool choices send only the selected tool"), one warning on the
- * stream. So on those ids the 400 this middleware hears never comes — the softening is the vendor's, and the
- * roster it sends is narrower than this middleware's (which keeps every tool). The old lock (3.0.107) forwarded
- * the forced choice with the whole roster and the API refused it. Pinned on the request the real provider sends
- * over a scripted transport; an id the adapter does not know still takes the road above (the mocks).
+ * THE VENDOR'S OWN VERDICT, BEFORE ANY REQUEST. `@ai-sdk/anthropic` (^3.0.138) keeps a per-model table —
+ * `getModelCapabilities`, exported from `@ai-sdk/anthropic/internal` — that marks the ids rejecting forced
+ * tool use (Sonnet 5.5, Opus 5.5, Fable 5.1), and its own `prepareTools` would soften such a request itself,
+ * narrower: a named choice becomes `auto` with THAT TOOL ALONE on the request (every client tool dropped, and
+ * with the first tool the house's cache breakpoint on the roster), one warning on the stream. The house asks
+ * the table first and softens with the WHOLE roster before the adapter sees the request — nothing narrowed,
+ * nothing warned, nothing heard — and the same word covers budget thinking, under which the vendor refuses
+ * forcing on any model (the adapter narrows there too, 3.0.131).
  */
-describe('the adapter at the floor softens the ids it knows before any request', () => {
-  type ToolBody = WireBody & { tool_choice?: Record<string, unknown> };
-  const echo = {
-    definition: {
-      name: 'echo',
-      description: 'Echoes the value.',
-      parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+describe('ForcedToolChoice — the vendor’s table softens before any request, with the whole roster', () => {
+  test.each(['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1'])(
+    '%s: the forced search leaves as auto with every tool on the first request — no refusal to hear',
+    async (modelId) => {
+      const model = refusingModel(modelId);
+
+      const result = await newConversation().generateResponse({
+        messages: ['news?'],
+        model: model as never,
+        webSearch: true,
+        tools: [echo],
+      });
+
+      expect(result.text).toBe('Today: the headline.');
+      expect(model.doStreamCalls).toHaveLength(1);
+      expect(model.doStreamCalls[0].toolChoice).toEqual({ type: 'auto' });
+      expect(toolNames(model.doStreamCalls[0])).toEqual(['echo', 'web_search']);
+      expect(ForcedToolChoice.refusesForcing(modelId)).toBe(true);
+      expect(ForcedToolChoice.heardRefusal(modelId)).toBe(false);
     },
-    call: async (input: { value: string }) => `echo:${input.value}`,
+    TIMEOUT
+  );
+
+  /** The middleware alone on a mock, with the thinking shape the house would have built. */
+  const forcedUnder = async (modelId: string, thinking: Record<string, string | number>) => {
+    const inner = new MockLanguageModelV3({
+      provider: 'anthropic.messages',
+      modelId,
+      doStream: async () => ({ stream: plainAnswer('ok') }),
+    });
+    await ForcedToolChoice.follow(inner).doStream({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'news?' }] }],
+      tools: [
+        { type: 'function', name: 'echo', inputSchema: { type: 'object', properties: {} } },
+        { type: 'function', name: 'web_search', inputSchema: { type: 'object', properties: {} } },
+      ],
+      toolChoice: { type: 'tool', toolName: 'web_search' },
+      providerOptions: { anthropic: { thinking } },
+    });
+    expect(inner.doStreamCalls).toHaveLength(1);
+    return inner.doStreamCalls[0];
   };
+
+  test(
+    'budget thinking refuses forcing on any model that takes a budget — softened whole; adaptive thinking, or a model that swaps the budget for adaptive, forces as sent',
+    async () => {
+      const budgeted = await forcedUnder('claude-sonnet-4-5', { type: 'enabled', budgetTokens: 5000 });
+      expect(budgeted.toolChoice).toEqual({ type: 'auto' });
+      expect(toolNames(budgeted)).toEqual(['echo', 'web_search']);
+
+      const adaptive = await forcedUnder('claude-sonnet-4-5', { type: 'adaptive', display: 'summarized' });
+      expect(adaptive.toolChoice).toEqual({ type: 'tool', toolName: 'web_search' });
+
+      // Haiku 5.5 rejects a budget: the adapter sends adaptive thinking in its place, under which forcing holds.
+      const swapped = await forcedUnder('claude-haiku-5-5', { type: 'enabled', budgetTokens: 5000 });
+      expect(swapped.toolChoice).toEqual({ type: 'tool', toolName: 'web_search' });
+      expect(ForcedToolChoice.heardRefusal('claude-sonnet-4-5')).toBe(false);
+    },
+    TIMEOUT
+  );
+});
+
+/**
+ * ON THE WIRE, THROUGH THE REAL ADAPTER over a scripted transport that bills as the provider's prompt cache
+ * does. Pinned on the request the provider would receive: the roster whole and the choice auto on an id the
+ * table marks, with zero warnings; a named choice with the roster on an id that accepts forcing; and the
+ * billing a two-step turn draws — the second step READS the prefix the first wrote, because both carry the
+ * same roster (the narrowing this replaced left step 1 with the search tool alone: step 2 read nothing).
+ */
+describe('ForcedToolChoice on the wire at the floor', () => {
+  type ToolBody = WireBody & { tool_choice?: Record<string, unknown> };
 
   /** A search-toggled turn with one client tool, through the real adapter: the body sent, the step's warnings. */
   async function wire(modelId: string): Promise<{ body: ToolBody; warnings: Array<Record<string, unknown>> }> {
@@ -284,14 +356,14 @@ describe('the adapter at the floor softens the ids it knows before any request',
   }
 
   test(
-    'Sonnet 5.5: the forced search leaves as auto with the search tool alone and one warning — no 400, nothing for this middleware to hear',
+    'Sonnet 5.5: the forced search leaves as auto with the whole roster and no warning — the adapter’s narrowing is never reached',
     async () => {
       const { body, warnings } = await wire('claude-sonnet-5-5');
       expect(body.tool_choice).toEqual({ type: 'auto' });
-      expect((body.tools ?? []).map((tool) => tool.name)).toEqual(['web_search']);
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toMatchObject({ type: 'unsupported', feature: 'toolChoice' });
-      expect(ForcedToolChoice.refusesForcing('claude-sonnet-5-5')).toBe(false);
+      // The whole roster — the client tool first, then the search tool, as the conversation lays them out.
+      expect((body.tools ?? []).map((tool) => tool.name)).toEqual(['echo', 'web_search']);
+      expect(warnings).toEqual([]);
+      expect(ForcedToolChoice.heardRefusal('claude-sonnet-5-5')).toBe(false);
     },
     TIMEOUT
   );
@@ -301,9 +373,40 @@ describe('the adapter at the floor softens the ids it knows before any request',
     async () => {
       const { body, warnings } = await wire('claude-sonnet-5');
       expect(body.tool_choice).toEqual({ type: 'tool', name: 'web_search' });
-      // The whole roster — the client tool first, then the search tool, as the conversation lays them out.
       expect((body.tools ?? []).map((tool) => tool.name)).toEqual(['echo', 'web_search']);
       expect(warnings).toEqual([]);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'Sonnet 5.5, a two-step turn: both steps carry the same roster, and the second reads the prompt cache the first wrote',
+    async () => {
+      const transport = new PromptCacheScriptedTransport();
+      transport.editTool = 'echo';
+      const model = createAnthropic({ apiKey: 'scripted', fetch: transport.fetch })('claude-sonnet-5-5');
+
+      const result = await newConversation().generateResponse({
+        messages: ['[edit] echo it'],
+        model: model as never,
+        webSearch: true,
+        tools: [echo],
+      });
+
+      expect(result.text).toBe('Done.');
+      expect(transport.requests).toHaveLength(2);
+      // THE BILLING: step 2 reads the prefix step 1 wrote (the narrowing this replaced read 0 here).
+      expect(transport.billings[1].read).toBeGreaterThan(0);
+      // Because both steps carry the same roster, the client tool's breakpoint first.
+      const rosters = transport.requests.map((request) => (request.tools ?? []).map((tool) => tool.name));
+      expect(rosters).toEqual([
+        ['echo', 'web_search'],
+        ['echo', 'web_search'],
+      ]);
+      expect(transport.requests.map((request) => (request as ToolBody).tool_choice)).toEqual([
+        { type: 'auto' },
+        { type: 'auto' },
+      ]);
     },
     TIMEOUT
   );
