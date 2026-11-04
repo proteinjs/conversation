@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.5](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.4...@proteinjs/conversation@6.20.5) (2026-11-04)
+
+
+### Bug Fixes
+
+* the round-ended line names its cause (provider, model, HTTP status, vendor code) so Error Reporting groups by it ([83b07be](https://github.com/proteinjs/conversation/commit/83b07bed731d34a07810deffbfcfb74778b0cbfd))
+
+
+
+
+
 ## [6.20.4](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.3...@proteinjs/conversation@6.20.4) (2026-11-03)
 
 
