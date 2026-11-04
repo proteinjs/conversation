@@ -22,7 +22,11 @@ import { fixtureModelData } from './fixtureModelData';
  */
 
 type AnthropicProviderOptions = {
-  thinking?: { type: 'adaptive' | 'enabled' | 'disabled'; display?: 'summarized' | 'omitted'; budgetTokens?: number };
+  thinking?: {
+    type: 'adaptive' | 'enabled' | 'disabled' | 'between_tools';
+    display?: 'summarized' | 'omitted';
+    budgetTokens?: number;
+  };
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 };
 
@@ -81,11 +85,34 @@ describe('Conversation.buildProviderOptions (anthropic)', () => {
       }
     );
 
-    test('omits thinking entirely when effort is "none"', () => {
-      const anthropic = buildAnthropic('none', 'claude-opus-4-8');
-      expect(anthropic.thinking).toBeUndefined();
+    // 'none' is the EXPLICIT off, in the vendor's word for the family (AnthropicModelRules.thinkingOff).
+    // RED at 6.20.6: nothing was set for 'none' — on the fifth generation a request with no thinking
+    // block runs ADAPTIVE thinking (Sonnet 5 reasoned on 19 of 50 short questions sent that way,
+    // 80–427 reasoning tokens a row, 2026-11-04), so the branch sent the opposite of off.
+    test.each([['claude-sonnet-5'], ['claude-opus-5'], ['claude-opus-4-8'], ['claude-sonnet-4-6']])(
+      'effort "none" sends thinking: { type: disabled } and no effort on %s',
+      (model) => {
+        const anthropic = buildAnthropic('none', model);
+        expect(anthropic.thinking).toEqual({ type: 'disabled' });
+        expect(anthropic.effort).toBeUndefined();
+      }
+    );
+
+    test('effort "none" on Sonnet 5.5 is between_tools — the family\'s lowest thinking setting (disabled is refused)', () => {
+      const anthropic = buildAnthropic('none', 'claude-sonnet-5-5');
+      expect(anthropic.thinking).toEqual({ type: 'between_tools' });
       expect(anthropic.effort).toBeUndefined();
     });
+
+    // Thinking is always on there — no off switch (disabled and between_tools alike are refused, HTTP
+    // 400): 'none' is not a level those models offer, refused by name as on Gemini; the least is 'low'.
+    test.each([['claude-opus-5-5'], ['claude-fable-5-1'], ['claude-mythos-5-1']])(
+      'refuses "none" by name on %s — thinking is always on there, no off switch',
+      (model) => {
+        expect(() => buildAnthropic('none', model)).toThrow(/no off switch/);
+        expect(() => buildAnthropic('none', model)).toThrow(model);
+      }
+    );
   });
 
   describe('extended thinking (Haiku)', () => {
@@ -105,10 +132,15 @@ describe('Conversation.buildProviderOptions (anthropic)', () => {
       expect(anthropic.effort).toBeUndefined();
     });
 
-    test('omits thinking entirely when effort is "none"', () => {
-      const anthropic = buildAnthropic('none', 'claude-haiku-4-5');
-      expect(anthropic.thinking).toBeUndefined();
-    });
+    // Haiku takes `disabled` in every generation (5.5: at effort high or below — none is sent here).
+    test.each([['claude-haiku-4-5'], ['claude-haiku-5-5']])(
+      'effort "none" sends thinking: { type: disabled } and no effort on %s',
+      (model) => {
+        const anthropic = buildAnthropic('none', model);
+        expect(anthropic.thinking).toEqual({ type: 'disabled' });
+        expect(anthropic.effort).toBeUndefined();
+      }
+    );
   });
 });
 

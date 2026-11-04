@@ -152,8 +152,9 @@ const streamWarnings = (parts: Part[]): Array<Record<string, unknown>> =>
 /**
  * A streaming turn through the real wiring, the step asked at `reasoningEffort` — THE CALLER'S WORD (DECISIONS 1019,
  * row 3082): the library applies no default of its own; 'none' is the least an OpenAI row that lists it (Sol) and
- * Anthropic (no thinking block) offer; a Google caller says 'low' (no off switch on Gemini — see the Google case
- * below). The SDK's warning log is captured.
+ * an Anthropic family with an off switch (its explicit off — Sonnet 5) offer; a Google caller, and an Anthropic family
+ * with no off switch (Opus 5.5), says 'low' (see the Anthropic and Google case below). The SDK's warning log is
+ * captured.
  */
 const turn = async (
   name: string,
@@ -275,26 +276,31 @@ describe('the requested effort follows the model (a step asked at a level the pr
   );
 
   test(
-    'Anthropic and Google requests hear no refusal, nothing substituted — the step at the least each provider offers: Anthropic at none (no thinking block, no effort field), Google at low (no off switch on Gemini: a thinkingLevel, never no config)',
+    'Anthropic and Google requests hear no refusal, nothing substituted — the step at the least each provider offers: Sonnet 5 at none (the explicit off, thinking disabled, no effort field), Opus 5.5 at low (no off switch: adaptive at low), Google at low (no off switch on Gemini: a thinkingLevel, never no config)',
     async () => {
       // Where each provider carries the effort — the level is the caller's word (the owner's answer per provider:
-      // 'none' on Anthropic sends NO field; 'low' on Google sends thinkingLevel 'low'), sent as asked (the dumps are
-      // md5-compared across the fix).
+      // 'none' on Anthropic sends the family's explicit off, thinking disabled, and NO effort field — a request with no
+      // thinking block THINKS on Sonnet 5 (AnthropicModelRules); 'low' on Google sends thinkingLevel 'low'), sent as
+      // asked (the dumps are md5-compared across the fix). A family with no off switch (Opus 5.5) is asked at its
+      // least, 'low': adaptive thinking at effort low, nothing refused.
       const effortField = {
         anthropic: (call: Call) => call.providerOptions?.anthropic?.effort,
         google: (call: Call) =>
           (call.providerOptions?.google?.thinkingConfig as { thinkingLevel?: unknown } | undefined)?.thinkingLevel,
       };
-      for (const [provider, modelId, name, least, field] of [
-        ['anthropic.messages', 'claude-opus-5-5', 'anthropic', 'none', undefined],
-        ['google.generative-ai', 'gemini-3-pro', 'google', 'low', 'low'],
+      const adaptive = { type: 'adaptive', display: 'summarized' };
+      for (const [provider, modelId, name, least, field, thinking] of [
+        ['anthropic.messages', 'claude-sonnet-5', 'anthropic', 'none', undefined, { type: 'disabled' }],
+        ['anthropic.messages', 'claude-opus-5-5', 'anthropic', 'low', 'low', adaptive],
+        ['google.generative-ai', 'gemini-3-pro', 'google', 'low', 'low', undefined],
       ] as const) {
         const model = scriptedModel({ provider, modelId });
-        const { text, warnings } = await turn(`effort-${name}`, model, least);
+        const { text, warnings } = await turn(`effort-${name}-${modelId}`, model, least);
         expect(text).toContain('THE ANSWER');
         expect(model.doStreamCalls.map((call) => effortField[name](call as never))).toEqual([field]);
+        expect(model.doStreamCalls.map((call) => call.providerOptions?.anthropic?.thinking)).toEqual([thinking]);
         expect(warnings).toHaveLength(0);
-        dump(name, requestsJson(model));
+        dump(`${name}-${modelId}`, requestsJson(model));
       }
     },
     TIMEOUT

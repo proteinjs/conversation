@@ -33,6 +33,7 @@ import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTranspor
 import { ForcedToolChoice } from './ForcedToolChoice';
 import { RequestedEffort } from './RequestedEffort';
 import { OpenAiModelRules, type OpenAiReasoningEffort } from './OpenAiModelRules';
+import { AnthropicModelRules } from './AnthropicModelRules';
 import { OpenAiResponseRetention } from './OpenAiResponseRetention';
 import { ToolStrictness } from './ToolStrictness';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
@@ -326,11 +327,13 @@ export type GenerateStreamParams = {
   /**
    * The reasoning effort the side utterance ({@link GenerateStreamParams.sideUtterance}) is asked
    * at. This library keeps no catalog and applies NO default: the caller names the least thinking the model in hand
-   * OFFERS — `none` only where it is a real off switch (a level the model lists: OpenAI, xAI; or a
-   * provider whose request without a thinking block does not think: Anthropic), else the model's
-   * lowest listed level. Gemini 3 and later have no off switch — `low` is their least, and `none`
-   * on Google is refused by `buildProviderOptions` (the call has no line; the step runs without
-   * it). Absent, no level is named and the provider's default shape rides, exactly as on a step
+   * OFFERS — `none` only where it is a real off switch (a level the model lists: OpenAI, xAI; on
+   * Anthropic the explicit off the model's family takes, `AnthropicModelRules.thinkingOff` — a
+   * request without a thinking block is the model's adaptive default from the fifth generation
+   * on, never off), else the model's lowest listed level. Gemini 3 and later have no off switch —
+   * `low` is their least — and neither do Fable, Mythos or Opus from 5.5 on: `none` on any of them
+   * is refused by `buildProviderOptions` (the call has no line; the step runs without it). Absent,
+   * no level is named and the provider's default shape rides, exactly as on a step
    * with no level — never a no-thinking completion by default: that premise sent Gemini a request
    * with no thinking config at all, which is the model's own dynamic default, the opposite of
    * least (DECISIONS 1019). The one owner of the answer is the caller's catalog (chat-common
@@ -3519,6 +3522,26 @@ export class Conversation {
           anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
           anthropicOpts.effort = effort;
         }
+      } else if (effort === 'none') {
+        // 'none' is the EXPLICIT off, in the vendor's word for this model's family
+        // (AnthropicModelRules.thinkingOff). A request with no thinking block is NOT off from the
+        // fifth generation on — Sonnet 5, Opus 5 and every 5.5 run adaptive thinking by default, and
+        // do think (Sonnet 5 reasoned on 19 of 50 short questions sent "at none" with nothing in the
+        // block, 80–427 reasoning tokens a row, measured 2026-11-04) — so this branch, which set
+        // nothing for 'none' ("the one off switch" was a fourth-generation reading), sent the
+        // opposite of off there. A family with no off switch at all (Fable, Mythos, Opus from 5.5
+        // on: `disabled` and `between_tools` alike are refused, HTTP 400) makes 'none' a caller's
+        // error, refused by name exactly as on Gemini: the least those models offer is effort
+        // 'low', and the caller's catalog names it. Sonnet 5.5's off is `between_tools`, a shape
+        // @ai-sdk/anthropic carries from 3.0.138 — the lock, 3.0.107, refuses the literal before any
+        // request (its options schema), the SDK's own refusal; a lock move lets it ride.
+        const off = AnthropicModelRules.thinkingOff(modelString ?? '');
+        if (!off) {
+          throw new Error(
+            `'none' is not a thinking level Anthropic offers on ${modelString}: thinking is always on there — no off switch — ask for the model's lowest listed level ('low'), never 'none'`
+          );
+        }
+        anthropicOpts.thinking = off;
       }
       options.anthropic = anthropicOpts;
     }
@@ -4440,13 +4463,15 @@ export class Conversation {
     // whole sentences before the cut. Retries stay off (maxRetries 0): the degradation is free —
     // the round runs on. The call asks for the LEAST thinking the model in hand offers, as the
     // caller's catalog names it (`utteranceEffort`: `none` only where that is a real off switch — a
-    // listed level, or Anthropic's no-thinking-block road — else the model's lowest listed level;
-    // Gemini has no off switch, so `low`). No default of this library's rides in its place: with no
-    // effort named, no level is sent and the provider's default shape stands, as on a step with no
-    // level. A model whose provider refuses the value asked (GPT-6 Astra lists no `none`) is not
-    // this call's to know — `RequestedEffort` (under the transport layer) hears the refusal once,
-    // re-issues with the effort omitted and remembers it; a value this library itself refuses
-    // (`none` on Google) fails the call before it is made — no line.
+    // listed level, or the explicit off an Anthropic family takes (`AnthropicModelRules.thinkingOff`;
+    // a request with no thinking block THINKS from the fifth generation on) — else the model's
+    // lowest listed level; Gemini, Fable, Mythos and Opus from 5.5 on have no off switch, so `low`).
+    // No default of this library's rides in its place: with no effort named, no level is sent and
+    // the provider's default shape stands, as on a step with no level. A model whose provider
+    // refuses the value asked (GPT-6 Astra lists no `none`) is not this call's to know —
+    // `RequestedEffort` (under the transport layer) hears the refusal once, re-issues with the
+    // effort omitted and remembers it; a value this library itself refuses (`none` on Google, on
+    // Fable, on Opus 5.5) fails the call before it is made — no line.
     let text = '';
     let lineEnded = false;
     let failure: unknown;

@@ -103,3 +103,52 @@ describe('Conversation.generateStream — reasoning text streams for every shipp
     );
   }
 });
+
+// THE EXPLICIT OFF ON THE WIRE. From the fifth generation on, a request with no thinking block runs
+// adaptive thinking — the model decides, and on short questions it does think (a consumer measured
+// Sonnet 5 at 'none' reasoning on 19 of 50 rows, 80–427 reasoning tokens each, 2026-11-04). So 'none'
+// sends the family's explicit off (AnthropicModelRules.thinkingOff) and a row carries NO reasoning:
+// three short questions, each its own row — reasoningTokens 0 and no reasoning text on every one.
+describe("Conversation.generateStream — effort 'none' is thinking OFF on the wire (Sonnet 5)", () => {
+  const testIfKey = process.env.ANTHROPIC_API_KEY ? test : test.skip;
+  const QUESTIONS = [
+    THINKY_PROMPT,
+    'A train leaves at 9:40 and the ride takes 85 minutes. When does it arrive? Give the time in one sentence.',
+    'Three spiders and two ducks: how many legs altogether? Give the number in one sentence.',
+  ];
+
+  testIfKey(
+    'anthropic/claude-sonnet-5 at none: reasoningTokens 0 and no reasoning text on every row',
+    async () => {
+      for (let index = 0; index < QUESTIONS.length; index += 1) {
+        const question = QUESTIONS[index];
+        const conversation = new Conversation({ modelData: fixtureModelData, name: `test-none-${index}` });
+        const startedAt = Date.now();
+        const result = await conversation.generateStream({
+          messages: [question],
+          model: 'claude-sonnet-5',
+          reasoningEffort: 'none',
+        });
+        let reasoningTextDeltas = 0;
+        for await (const part of result.fullStream as AsyncIterable<StreamPart>) {
+          if (part.type === 'reasoning-delta' && part.textDelta) {
+            reasoningTextDeltas += 1;
+          }
+        }
+        const [usage, reasoning, text] = await Promise.all([result.usage, result.reasoning, result.text]);
+        // Diagnostic — one line per row when run.
+        // eslint-disable-next-line no-console
+        console.log(
+          `[none] anthropic/claude-sonnet-5 q${index + 1}: reasoningTokens=${usage.totalTokenUsage.reasoningTokens} ` +
+            `outputTokens=${usage.totalTokenUsage.outputTokens} reasoningTextDeltas=${reasoningTextDeltas} ` +
+            `textLen=${text.length} ms=${Date.now() - startedAt}`
+        );
+        expect(usage.totalTokenUsage.reasoningTokens).toBe(0);
+        expect(reasoningTextDeltas).toBe(0);
+        expect(reasoning).toBe('');
+        expect(text.length).toBeGreaterThan(0);
+      }
+    },
+    TIMEOUT * 3
+  );
+});

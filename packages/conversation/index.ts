@@ -29,6 +29,7 @@ export * from './src/ForcedToolChoice';
 export * from './src/RequestedEffort';
 export * from './src/EmptyDeltaMetadata';
 export * from './src/OpenAiModelRules';
+export * from './src/AnthropicModelRules';
 export * from './src/OpenAiResponseRetention';
 export * from './src/TransientProviderError';
 export * from './src/ProviderBillingError';
