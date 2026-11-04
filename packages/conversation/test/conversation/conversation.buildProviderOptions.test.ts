@@ -1,5 +1,7 @@
+import { createAnthropic } from '@ai-sdk/anthropic';
 import { Conversation, ReasoningEffort } from '../../src/Conversation';
 import { fixtureModelData } from './fixtureModelData';
+import { PromptCacheScriptedTransport, type WireBody } from './PromptCacheScriptedTransport';
 
 /**
  * Unit tests for the provider-options builder.
@@ -115,7 +117,8 @@ describe('Conversation.buildProviderOptions (anthropic)', () => {
     );
   });
 
-  describe('extended thinking (Haiku)', () => {
+  // Haiku through the fourth generation takes budget thinking only — no adaptive (AnthropicModelRules.budgetThinkingOnly).
+  describe('extended thinking (Haiku through 4.x)', () => {
     test('auto effort → enabled with default budget, no display field', () => {
       const anthropic = buildAnthropic('auto', 'claude-haiku-4-5');
       expect(anthropic.thinking).toEqual({ type: 'enabled', budgetTokens: 10000 });
@@ -132,6 +135,24 @@ describe('Conversation.buildProviderOptions (anthropic)', () => {
       expect(anthropic.effort).toBeUndefined();
     });
 
+    // Haiku from the fifth generation on is adaptive like Opus and Sonnet — 5.5 REFUSES a budget (the vendor's
+    // table; the adapter would swap a budget for bare adaptive with a warning and drop the display). RED at
+    // 9afaf30c: `/haiku/` sent every Haiku a budget — one owner of the family now (AnthropicModelRules).
+    test('Haiku 5.5 at auto is adaptive with the reasoning text shown — never a budget', () => {
+      const anthropic = buildAnthropic('auto', 'claude-haiku-5-5');
+      expect(anthropic.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+      expect(anthropic.effort).toBeUndefined();
+    });
+
+    test.each([['low'], ['high']] as Array<[ReasoningEffort]>)(
+      'Haiku 5.5 at %s is adaptive with the level as effort — never a budget',
+      (effort) => {
+        const anthropic = buildAnthropic(effort, 'claude-haiku-5-5');
+        expect(anthropic.thinking).toEqual({ type: 'adaptive', display: 'summarized' });
+        expect(anthropic.effort).toBe(effort);
+      }
+    );
+
     // Haiku takes `disabled` in every generation (5.5: at effort high or below — none is sent here).
     test.each([['claude-haiku-4-5'], ['claude-haiku-5-5']])(
       'effort "none" sends thinking: { type: disabled } and no effort on %s',
@@ -142,6 +163,83 @@ describe('Conversation.buildProviderOptions (anthropic)', () => {
       }
     );
   });
+});
+
+/**
+ * THE ADAPTER AT THE FLOOR, ON THE WIRE. The built options are only the request when the installed
+ * `@ai-sdk/anthropic` carries them unchanged: its options schema refuses a literal it does not know
+ * before any request (`between_tools` arrived in 3.0.125 — the old lock, 3.0.107, threw
+ * AI_InvalidArgumentError and sent nothing), and its per-model substitutions rewrite a shape a model
+ * rejects with a warning (a budget on Haiku 5.5 becomes bare adaptive, the display dropped; `disabled`
+ * on Sonnet 5.5 becomes `between_tools`). So every family's shape is read on the request body the
+ * real provider sends over a scripted transport, with the stream's warnings — ZERO: the house sends
+ * each model what it takes, and nothing is rewritten on the way out. No network, no key.
+ */
+type ThinkingWire = WireBody & {
+  thinking?: Record<string, unknown>;
+  output_config?: { effort?: string };
+};
+
+/** One request through the real adapter: the body it sent, and every warning the step's start carried (the SDK's own log of the same warnings is captured off the console). */
+async function wireRequest(
+  modelId: string,
+  reasoningEffort: ReasoningEffort
+): Promise<{ body: ThinkingWire; warnings: unknown[] }> {
+  const g = globalThis as { AI_SDK_LOG_WARNINGS?: unknown };
+  const prior = g.AI_SDK_LOG_WARNINGS;
+  g.AI_SDK_LOG_WARNINGS = () => undefined;
+  try {
+    const transport = new PromptCacheScriptedTransport();
+    const conversation = new Conversation({
+      modelData: fixtureModelData,
+      name: `wire-${modelId}-${reasoningEffort}`,
+      logLevel: 'error',
+      limits: { enforceLimits: false },
+    });
+    const model = createAnthropic({ apiKey: 'scripted', fetch: transport.fetch })(modelId);
+    const result = await conversation.generateStream({ messages: ['hi'], model: model as never, reasoningEffort });
+    const stepWarnings: unknown[] = [];
+    for await (const part of result.fullStream as AsyncIterable<{ type: string; warnings?: unknown[] }>) {
+      if (part.type === 'step-start') {
+        stepWarnings.push(...(part.warnings ?? []));
+      }
+    }
+    await result.usage;
+    expect(transport.requests).toHaveLength(1);
+    return { body: transport.requests[0] as ThinkingWire, warnings: stepWarnings };
+  } finally {
+    if (prior === undefined) {
+      delete g.AI_SDK_LOG_WARNINGS;
+    } else {
+      g.AI_SDK_LOG_WARNINGS = prior;
+    }
+  }
+}
+
+describe('the Anthropic adapter at the floor carries the built options to the wire — nothing refused, nothing rewritten', () => {
+  const adaptiveSummarized = { type: 'adaptive', display: 'summarized' };
+  test.each([
+    // effort 'none' — the family's explicit off, as sent
+    ['claude-sonnet-5', 'none', { type: 'disabled' }, undefined],
+    ['claude-opus-4-8', 'none', { type: 'disabled' }, undefined],
+    ['claude-haiku-5-5', 'none', { type: 'disabled' }, undefined],
+    ['claude-sonnet-5-5', 'none', { type: 'between_tools' }, undefined],
+    // 'auto' and the levels — adaptive with the text shown, the level under output_config; a budget on Haiku 4.x
+    ['claude-haiku-5-5', 'low', adaptiveSummarized, 'low'],
+    ['claude-haiku-4-5', 'low', { type: 'enabled', budget_tokens: 5000 }, undefined],
+    ['claude-opus-5-5', 'low', adaptiveSummarized, 'low'],
+    ['claude-sonnet-5-5', 'auto', adaptiveSummarized, undefined],
+  ] as Array<[string, ReasoningEffort, Record<string, unknown>, string | undefined]>)(
+    '%s at %s: the request carries thinking %j, effort %s, and the adapter warns of nothing',
+    async (modelId, effort, thinking, outputEffort) => {
+      const { body, warnings } = await wireRequest(modelId, effort);
+      expect(body.model).toBe(modelId);
+      expect(body.thinking).toEqual(thinking);
+      expect(body.output_config?.effort).toBe(outputEffort);
+      expect(warnings).toEqual([]);
+    },
+    30_000
+  );
 });
 
 describe('Conversation.buildProviderOptions (openai)', () => {

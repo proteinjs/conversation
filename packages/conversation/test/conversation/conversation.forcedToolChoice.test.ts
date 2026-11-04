@@ -1,8 +1,10 @@
+import { createAnthropic } from '@ai-sdk/anthropic';
 import { APICallError } from 'ai';
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation } from '../../src/Conversation';
 import { ForcedToolChoice } from '../../src/ForcedToolChoice';
 import { fixtureModelData } from './fixtureModelData';
+import { PromptCacheScriptedTransport, type WireBody } from './PromptCacheScriptedTransport';
 
 /**
  * FORCED TOOL CHOICE FOLLOWS THE MODEL — no network, no keys. A MockLanguageModelV3 stands in as
@@ -231,6 +233,77 @@ describe('ForcedToolChoice via Conversation', () => {
       expect(model.doStreamCalls).toHaveLength(2);
       expect(model.doStreamCalls[0].toolChoice).toEqual({ type: 'tool', toolName: 'web_search' });
       expect(model.doStreamCalls[1].toolChoice).toEqual({ type: 'auto' });
+    },
+    TIMEOUT
+  );
+});
+
+/**
+ * THE ADAPTER'S OWN FALLBACK, AT THE FLOOR (@ai-sdk/anthropic ^3.0.138, read 2026-11-04). For the ids its
+ * table knows reject forcing (Sonnet 5.5, Opus 5.5, Fable 5.1 — `getModelCapabilities`), the adapter softens a
+ * forced choice BEFORE any request: `required` becomes `auto`; a NAMED choice becomes `auto` with that tool
+ * ALONE on the request (`prepareTools`: "Named tool choices send only the selected tool"), one warning on the
+ * stream. So on those ids the 400 this middleware hears never comes — the softening is the vendor's, and the
+ * roster it sends is narrower than this middleware's (which keeps every tool). The old lock (3.0.107) forwarded
+ * the forced choice with the whole roster and the API refused it. Pinned on the request the real provider sends
+ * over a scripted transport; an id the adapter does not know still takes the road above (the mocks).
+ */
+describe('the adapter at the floor softens the ids it knows before any request', () => {
+  type ToolBody = WireBody & { tool_choice?: Record<string, unknown> };
+  const echo = {
+    definition: {
+      name: 'echo',
+      description: 'Echoes the value.',
+      parameters: { type: 'object', properties: { value: { type: 'string' } }, required: ['value'] },
+    },
+    call: async (input: { value: string }) => `echo:${input.value}`,
+  };
+
+  /** A search-toggled turn with one client tool, through the real adapter: the body sent, the step's warnings. */
+  async function wire(modelId: string): Promise<{ body: ToolBody; warnings: Array<Record<string, unknown>> }> {
+    const transport = new PromptCacheScriptedTransport();
+    const model = createAnthropic({ apiKey: 'scripted', fetch: transport.fetch })(modelId);
+    const result = await newConversation().generateStream({
+      messages: ['news?'],
+      model: model as never,
+      webSearch: true,
+      tools: [echo],
+    });
+    const warnings: Array<Record<string, unknown>> = [];
+    for await (const part of result.fullStream as AsyncIterable<{
+      type: string;
+      warnings?: Array<Record<string, unknown>>;
+    }>) {
+      if (part.type === 'step-start') {
+        warnings.push(...(part.warnings ?? []));
+      }
+    }
+    await result.usage;
+    expect(transport.requests).toHaveLength(1);
+    return { body: transport.requests[0] as ToolBody, warnings };
+  }
+
+  test(
+    'Sonnet 5.5: the forced search leaves as auto with the search tool alone and one warning — no 400, nothing for this middleware to hear',
+    async () => {
+      const { body, warnings } = await wire('claude-sonnet-5-5');
+      expect(body.tool_choice).toEqual({ type: 'auto' });
+      expect((body.tools ?? []).map((tool) => tool.name)).toEqual(['web_search']);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({ type: 'unsupported', feature: 'toolChoice' });
+      expect(ForcedToolChoice.refusesForcing('claude-sonnet-5-5')).toBe(false);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'Sonnet 5: the forced search leaves as sent — the named choice with the whole roster, no warning',
+    async () => {
+      const { body, warnings } = await wire('claude-sonnet-5');
+      expect(body.tool_choice).toEqual({ type: 'tool', name: 'web_search' });
+      // The whole roster — the client tool first, then the search tool, as the conversation lays them out.
+      expect((body.tools ?? []).map((tool) => tool.name)).toEqual(['echo', 'web_search']);
+      expect(warnings).toEqual([]);
     },
     TIMEOUT
   );

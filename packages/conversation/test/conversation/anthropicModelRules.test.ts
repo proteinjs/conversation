@@ -60,4 +60,61 @@ describe('AnthropicModelRules', () => {
   ] as Array<[string, { type: string } | undefined]>)('thinkingOff(%s) → %s', (id, expected) => {
     expect(AnthropicModelRules.thinkingOff(id)).toEqual(expected);
   });
+
+  // THE FAMILY DECIDES 'auto' AND THE LEVELS TOO (one owner; the builder reads it for every branch): adaptive
+  // thinking with the reasoning text shown, the level as `effort`, on every family — except Haiku through the
+  // fourth generation, which takes budget thinking only (no adaptive: 'auto' a 10k budget, a level its budget).
+  // Haiku from the fifth generation on is adaptive like the rest (5.5 refuses a budget — the vendor's table).
+  test.each([
+    ['claude-haiku-4-5', 'auto', true],
+    ['claude-haiku-4-5-20251001', 'low', true],
+    ['claude-3-5-haiku-20241022', 'high', true],
+    ['claude-haiku-5-5', 'auto', false],
+    ['claude-haiku-5', 'low', false],
+    ['claude-sonnet-4-6', 'auto', false],
+    ['claude-opus-5-5', 'max', false],
+  ] as Array<[string, string, boolean]>)('budgetThinkingOnly(%s) at %s → %s', (id, _effort, expected) => {
+    expect(AnthropicModelRules.budgetThinkingOnly(id)).toBe(expected);
+  });
+
+  const adaptive = { type: 'adaptive', display: 'summarized' };
+  test.each([
+    ['claude-haiku-4-5', 'auto', { thinking: { type: 'enabled', budgetTokens: 10000 } }],
+    ['claude-haiku-4-5', 'low', { thinking: { type: 'enabled', budgetTokens: 5000 } }],
+    ['claude-haiku-4-5', 'medium', { thinking: { type: 'enabled', budgetTokens: 10000 } }],
+    ['claude-3-5-haiku-20241022', 'high', { thinking: { type: 'enabled', budgetTokens: 50000 } }],
+    ['claude-haiku-4-5', 'max', { thinking: { type: 'enabled', budgetTokens: 10000 } }],
+    ['claude-haiku-5-5', 'auto', { thinking: adaptive }],
+    ['claude-haiku-5-5', 'low', { thinking: adaptive, effort: 'low' }],
+    ['claude-haiku-5-5', 'high', { thinking: adaptive, effort: 'high' }],
+    ['claude-sonnet-5-5', 'auto', { thinking: adaptive }],
+    ['claude-sonnet-5-5', 'max', { thinking: adaptive, effort: 'max' }],
+    ['claude-opus-4-8', 'medium', { thinking: adaptive, effort: 'medium' }],
+    ['claude-opus-5-5', 'low', { thinking: adaptive, effort: 'low' }],
+    ['claude-fable-5-1', 'xhigh', { thinking: adaptive, effort: 'xhigh' }],
+    ['anthropic:claude-haiku-4-5', 'low', { thinking: { type: 'enabled', budgetTokens: 5000 } }],
+  ] as Array<[string, 'auto' | 'low' | 'medium' | 'high' | 'xhigh' | 'max', Record<string, unknown>]>)(
+    'thinkingOn(%s, %s) → %j',
+    (id, effort, expected) => {
+      expect(AnthropicModelRules.thinkingOn(id, effort)).toEqual(expected);
+    }
+  );
+
+  // THE LEAST A CALLER MAY NAME — the fact a consumer's catalog reads from this one owner (its least-thinking level
+  // and utterance effort for an Anthropic row): 'none' where the family has an off switch, 'low' where thinking is
+  // always on.
+  test.each([
+    ['claude-sonnet-5', 'none'],
+    ['claude-sonnet-5-5', 'none'],
+    ['claude-haiku-5-5', 'none'],
+    ['claude-haiku-4-5', 'none'],
+    ['claude-opus-4-8', 'none'],
+    ['claude-opus-5', 'none'],
+    ['claude-opus-5-5', 'low'],
+    ['claude-fable-5-1', 'low'],
+    ['claude-mythos-5-1', 'low'],
+    ['anthropic:claude-opus-5-5', 'low'],
+  ] as Array<[string, 'none' | 'low']>)('leastEffort(%s) → %s', (id, expected) => {
+    expect(AnthropicModelRules.leastEffort(id)).toBe(expected);
+  });
 });

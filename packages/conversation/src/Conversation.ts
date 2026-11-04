@@ -330,7 +330,8 @@ export type GenerateStreamParams = {
    * OFFERS — `none` only where it is a real off switch (a level the model lists: OpenAI, xAI; on
    * Anthropic the explicit off the model's family takes, `AnthropicModelRules.thinkingOff` — a
    * request without a thinking block is the model's adaptive default from the fifth generation
-   * on, never off), else the model's lowest listed level. Gemini 3 and later have no off switch —
+   * on, never off; `AnthropicModelRules.leastEffort` names the least per model), else the model's
+   * lowest listed level. Gemini 3 and later have no off switch —
    * `low` is their least — and neither do Fable, Mythos or Opus from 5.5 on: `none` on any of them
    * is refused by `buildProviderOptions` (the call has no line; the step runs without it). Absent,
    * no level is named and the provider's default shape rides, exactly as on a step
@@ -3497,31 +3498,15 @@ export class Conversation {
 
     if (provider === 'anthropic') {
       const anthropicOpts: Record<string, any> = {};
-      const isHaiku = modelString ? /haiku/i.test(modelString) : false;
-      if (effort === 'auto') {
-        if (isHaiku) {
-          // Haiku supports extended thinking (budget-based) but NOT adaptive.
-          // Auto → enable with a moderate budget and let the model decide how much to use.
-          anthropicOpts.thinking = { type: 'enabled', budgetTokens: 10000 };
-        } else {
-          // Opus + Sonnet support adaptive thinking — the model decides effort.
-          // display: 'summarized' is required to stream reasoning text (the API
-          // defaults to 'omitted'); passing it makes the behavior explicit.
-          anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
-        }
-      } else if (effort && effort !== 'none') {
-        if (isHaiku) {
-          // Haiku supports extended thinking (budget-based) but NOT adaptive.
-          // Map effort levels to budget_tokens: low → 5k, medium → 10k, high → 50k
-          const budgetMap: Record<string, number> = { low: 5000, medium: 10000, high: 50000 };
-          anthropicOpts.thinking = { type: 'enabled', budgetTokens: budgetMap[effort] ?? 10000 };
-        } else {
-          // Opus + Sonnet support adaptive thinking with explicit effort.
-          // Anthropic accepts effort: low | medium | high | xhigh | max
-          // ('xhigh' sits between high and max.)
-          anthropicOpts.thinking = { type: 'adaptive', display: 'summarized' };
-          anthropicOpts.effort = effort;
-        }
+      if (effort && effort !== 'none') {
+        // THE FAMILY DECIDES THE SHAPE (AnthropicModelRules.thinkingOn — one owner for every branch):
+        // adaptive thinking with the reasoning text shown (display 'summarized'; the API's default,
+        // 'omitted', streams none) and the level as `effort` (low | medium | high | xhigh | max;
+        // 'auto' names none — the model decides) on Opus, Sonnet, Fable and Haiku from the fifth
+        // generation on; budget thinking on Haiku through 4.x, which has no adaptive. Before this
+        // a `/haiku/` test here sent EVERY Haiku a budget, which Haiku 5.5 refuses (the adapter
+        // swaps it for bare adaptive with a warning, the display dropped).
+        Object.assign(anthropicOpts, AnthropicModelRules.thinkingOn(modelString ?? '', effort));
       } else if (effort === 'none') {
         // 'none' is the EXPLICIT off, in the vendor's word for this model's family
         // (AnthropicModelRules.thinkingOff). A request with no thinking block is NOT off from the
@@ -3532,9 +3517,9 @@ export class Conversation {
         // opposite of off there. A family with no off switch at all (Fable, Mythos, Opus from 5.5
         // on: `disabled` and `between_tools` alike are refused, HTTP 400) makes 'none' a caller's
         // error, refused by name exactly as on Gemini: the least those models offer is effort
-        // 'low', and the caller's catalog names it. Sonnet 5.5's off is `between_tools`, a shape
-        // @ai-sdk/anthropic carries from 3.0.138 — the lock, 3.0.107, refuses the literal before any
-        // request (its options schema), the SDK's own refusal; a lock move lets it ride.
+        // 'low', and the caller's catalog names it (AnthropicModelRules.leastEffort). Sonnet 5.5's
+        // off is `between_tools`, a shape @ai-sdk/anthropic carries from 3.0.125 — the floor here
+        // (^3.0.138) admits it; 3.0.107 refused the literal in its options schema before any request.
         const off = AnthropicModelRules.thinkingOff(modelString ?? '');
         if (!off) {
           throw new Error(
@@ -4430,10 +4415,11 @@ export class Conversation {
    * a run — and never a call of the turn's: the round rides the turn's accounting for its usage
    * alone (`onResult` — no `callsPerTool` count, no step tool row, no invocation for a call that
    * never ran). The request does not say `toolChoice: 'none'` (it should — the choice is no part
-   * of the cache key): the Anthropic adapter at the lock (@ai-sdk/anthropic 3.0.107,
-   * `prepareTools`) answers `none` by dropping the roster from the request, the very cache miss
-   * this envelope exists to prevent; the line waits for an adapter that sends the choice with the
-   * roster.
+   * of the cache key): through @ai-sdk/anthropic 3.0.128 the adapter answered `none` by dropping
+   * the roster from the request (`prepareTools`), the very cache miss this envelope exists to
+   * prevent; from 3.0.129 it sends `tool_choice: none` WITH the roster, and the floor here
+   * (^3.0.138) admits it — the line may say it now, as a change of its own with the cache-prefix
+   * suite re-pinned, and does not yet.
    */
   private async utter(args: {
     model: LanguageModel;

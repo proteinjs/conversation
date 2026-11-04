@@ -27,6 +27,15 @@ import { Logger } from '@proteinjs/logger';
  *
  * Only that refusal is heard: any other 4xx surfaces untouched (the transport-retry layer's
  * semantic-error bar), and a model that accepts forcing is never softened.
+ *
+ * AT THE FLOOR (@ai-sdk/anthropic ^3.0.138) the adapter itself softens the ids its own table knows
+ * reject forcing (Sonnet 5.5, Opus 5.5, Fable 5.1 — `getModelCapabilities`) BEFORE any request:
+ * `required` becomes `auto`; a named choice becomes `auto` with that tool ALONE on the request
+ * (`prepareTools`), one `unsupported` warning on the stream. On those ids the refusal this
+ * middleware hears never comes, and the roster sent is the vendor's narrower one, not this
+ * middleware's whole roster; an id the table does not know still takes the road above. (3.0.107
+ * forwarded the forced choice whole and the API refused it.) Pinned in the owner suite on the
+ * request the real adapter sends.
  */
 export class ForcedToolChoice {
   /** The provider's refusal, in its own words (Anthropic; the same clause on every model that refuses). */
