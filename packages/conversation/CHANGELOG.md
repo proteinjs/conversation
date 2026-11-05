@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.7](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.6...@proteinjs/conversation@6.20.7) (2026-11-05)
+
+
+### Bug Fixes
+
+* **conversation:** strip the bounded utterance — no acknowledgment call precedes a step; the side utterance (the nudge's door) keeps the Utterance owner, the step's envelope and the first-paragraph line (row 3105; DECISIONS 1099) ([4a4c209](https://github.com/proteinjs/conversation/commit/4a4c2099e173d3defc70df85141bcf16c49e1380))
+
+
+
+
+
 ## [6.20.6](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.5...@proteinjs/conversation@6.20.6) (2026-11-04)
 
 
