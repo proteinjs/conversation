@@ -4,7 +4,6 @@ import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { Conversation, type GenerateStreamParams } from '../../src/Conversation';
 import { RequestedEffort } from '../../src/RequestedEffort';
-import { Utterance } from '../../src/Utterance';
 import { fixtureModelData } from './fixtureModelData';
 
 /**
@@ -14,10 +13,11 @@ import { fixtureModelData } from './fixtureModelData';
  * ForcedToolChoice.follow → model.
  *
  * The refusal is the provider's, recorded live 2026-09-22 (OpenAI, `gpt-6-astra`, the Responses
- * API): the bounded utterance — the acknowledgment line a turn speaks first — asks for
- * `reasoning.effort: none`, and the model answered HTTP 400 with the clause below. Before this
- * rule EVERY GPT-6 Astra turn ran without its acknowledgment line and paid a refused request
- * each time, and no per-level probe could see it (a probe runs only the levels a model claims).
+ * API): a request at `reasoning.effort: none` — then the bounded utterance's, the acknowledgment
+ * call retired 2026-11-05; here the main step asked at that level — and the model answered HTTP
+ * 400 with the clause below. Before this rule EVERY such request failed and paid a refused
+ * request each time, and no per-level probe could see it (a probe runs only the levels a model
+ * claims).
  *
  * Since 2026-09-29 the re-issue OMITS the effort (the provider's own default applies) instead of
  * picking the nearest listed level — the ruling: "leave the current functionality of omitting
@@ -67,17 +67,6 @@ const usage = {
   outputTokens: { total: 1, text: 1, reasoning: 0 },
 };
 
-const LINE = 'On it — checking the timetable now.';
-
-const textStep = (text: string, warnings: unknown[] = []) =>
-  convertArrayToReadableStream([
-    { type: 'stream-start' as const, warnings: warnings as never },
-    { type: 'text-start' as const, id: 't1' },
-    { type: 'text-delta' as const, id: 't1', delta: text },
-    { type: 'text-end' as const, id: 't1' },
-    { type: 'finish' as const, finishReason: { unified: 'stop' as const, raw: 'stop' }, usage },
-  ]);
-
 const reasonedStep = (reasoning: string, text: string) =>
   convertArrayToReadableStream([
     { type: 'stream-start' as const, warnings: [] },
@@ -100,7 +89,7 @@ const effortOf = (call: Call): unknown => call.providerOptions?.openai?.reasonin
 
 /**
  * A model shaped like the provider's adapter: refuses the efforts in `refuses` with the provider's
- * own clause, answers the utterance with one line, the step with a reasoned answer.
+ * own clause, answers the step with a reasoned answer.
  */
 const scriptedModel = (opts: {
   provider: string;
@@ -115,9 +104,7 @@ const scriptedModel = (opts: {
       if (refusal) {
         throw refusal;
       }
-      return {
-        stream: Utterance.isRequest(call.prompt as never) ? textStep(LINE) : reasonedStep('planning', 'THE ANSWER'),
-      };
+      return { stream: reasonedStep('planning', 'THE ANSWER') };
     },
   });
 
@@ -129,20 +116,15 @@ const astra = () =>
     refuses: (effort) => (effort === 'none' ? openAiRefusal(ASTRA_CLAUSE) : undefined),
   });
 
-/** The bounded utterance's door (the idle path): one no-input inbox, `utterance` on. */
-const utteranceParams = (): Pick<
+/** A streaming turn's doors: one no-input inbox, nothing arriving mid-turn. */
+const turnParams = (): Pick<
   GenerateStreamParams,
-  'drainInjectedContext' | 'peekInjectedContext' | 'inputArrived' | 'absorbExitNotes' | 'utterance' | 'utteranceEffort'
+  'drainInjectedContext' | 'peekInjectedContext' | 'inputArrived' | 'absorbExitNotes'
 > => ({
   drainInjectedContext: () => [],
   peekInjectedContext: () => false,
   inputArrived: () => new Promise<void>(() => undefined),
   absorbExitNotes: true,
-  utterance: true,
-  // THE CALLER'S WORD (DECISIONS 1019, row 3082): the library applies no default of its own any more — the caller's
-  // catalog names the least thinking the model offers. 'none' is that answer on an OpenAI row that lists it (Sol) and
-  // on Anthropic (no thinking block); a Google caller says 'low' (no off switch on Gemini — see the Google case below).
-  utteranceEffort: 'none',
 });
 
 const newConversation = (name: string) =>
@@ -153,7 +135,7 @@ const newConversation = (name: string) =>
     limits: { enforceLimits: false },
   });
 
-type Part = { type: string; textDelta?: string; utterance?: true; warnings?: Array<Record<string, unknown>> };
+type Part = { type: string; textDelta?: string; warnings?: Array<Record<string, unknown>> };
 
 async function collect(fullStream: AsyncIterable<unknown>): Promise<Part[]> {
   const parts: Part[] = [];
@@ -163,28 +145,20 @@ async function collect(fullStream: AsyncIterable<unknown>): Promise<Part[]> {
   return parts;
 }
 
-/** The acknowledgment line the consumer saw: the text before the step-finish flagged `utterance`, or nothing. */
-const utteredLine = (parts: Part[]): string | undefined => {
-  const at = parts.findIndex((part) => part.type === 'step-finish' && part.utterance);
-  if (at < 0) {
-    return undefined;
-  }
-  return parts
-    .slice(0, at)
-    .filter((part) => part.type === 'text-delta')
-    .map((part) => part.textDelta ?? '')
-    .join('');
-};
-
 /** Every warning the stream's `step-start` parts carried, in order. */
 const streamWarnings = (parts: Part[]): Array<Record<string, unknown>> =>
   parts.filter((part) => part.type === 'step-start').flatMap((part) => part.warnings ?? []);
 
-/** A turn with the bounded utterance leading it, through the real wiring; the SDK's warning log captured. */
+/**
+ * A streaming turn through the real wiring, the step asked at `reasoningEffort` — THE CALLER'S WORD (DECISIONS 1019,
+ * row 3082): the library applies no default of its own; 'none' is the least an OpenAI row that lists it (Sol) and
+ * Anthropic (no thinking block) offer; a Google caller says 'low' (no off switch on Gemini — see the Google case
+ * below). The SDK's warning log is captured.
+ */
 const turn = async (
   name: string,
   model: MockLanguageModelV3,
-  reasoningEffort: 'high' | 'auto' = 'high',
+  reasoningEffort: 'none' | 'low' | 'high' | 'auto' = 'none',
   extra: Partial<GenerateStreamParams> = {}
 ) => {
   const logged: Array<{ warnings: unknown[]; model?: string }> = [];
@@ -196,7 +170,7 @@ const turn = async (
       messages: ['A train leaves at 9:40…'],
       model: model as never,
       reasoningEffort,
-      ...utteranceParams(),
+      ...turnParams(),
       ...extra,
     });
     const parts = await collect(result.fullStream);
@@ -228,21 +202,17 @@ const dump = (name: string, json: string): void => {
 
 beforeEach(() => RequestedEffort.forgetAll());
 
-describe('the requested effort follows the model (the bounded utterance asks for the least thinking the caller names — none here; a model without none runs with the effort omitted)', () => {
+describe('the requested effort follows the model (a step asked at a level the provider refuses runs with the effort omitted)', () => {
   test(
-    'the provider refuses `none` — the utterance is re-issued with the effort OMITTED (the provider’s default), the acknowledgment line arrives, and the omission rides the stream as a step-start warning',
+    'the provider refuses `none` — the step is re-issued with the effort OMITTED (the provider’s default), the answer arrives, and the omission rides the stream as a step-start warning',
     async () => {
       const model = astra();
       const { parts, text, warnings } = await turn('effort-refused-once', model);
 
-      // The line arrived: its own step, flagged, before the answer.
-      expect(utteredLine(parts)).toBe(LINE);
       expect(text).toContain('THE ANSWER');
-      // Three requests: the utterance at none (refused, nothing billed), the utterance with NO
-      // effort field (the provider applies its own default — never a level of this library's
-      // choosing), the step at its own effort.
-      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', undefined, 'high']);
-      expect(Utterance.isRequest(model.doStreamCalls[1].prompt as never)).toBe(true);
+      // Two requests: the step at none (refused, nothing billed), the step with NO effort field
+      // (the provider applies its own default — never a level of this library's choosing).
+      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', undefined]);
       expect(model.doStreamCalls[1].providerOptions?.openai).not.toHaveProperty('reasoningEffort');
       // The omission is surfaced ONCE, as a warning on the stream (the SDK's warning channel),
       // never as an error to the person — and the conversation forwards it on its own stream.
@@ -268,8 +238,8 @@ describe('the requested effort follows the model (the bounded utterance asks for
       const second = astra();
       const { parts, warnings } = await turn('effort-remembered-second', second);
 
-      expect(utteredLine(parts)).toBe(LINE);
-      expect(second.doStreamCalls.map((call) => effortOf(call as never))).toEqual([undefined, 'high']);
+      expect(parts.some((part) => part.type === 'text-delta')).toBe(true);
+      expect(second.doStreamCalls.map((call) => effortOf(call as never))).toEqual([undefined]);
       expect(warnings).toHaveLength(0);
       expect(streamWarnings(parts)).toHaveLength(0);
     },
@@ -277,13 +247,13 @@ describe('the requested effort follows the model (the bounded utterance asks for
   );
 
   test(
-    'a model that accepts `none` is untouched — one utterance request, at none, byte-identical',
+    'a model that accepts `none` is untouched — one request, at none, byte-identical',
     async () => {
       const model = scriptedModel({ provider: 'openai.responses', modelId: 'gpt-5.6-sol' });
-      const { parts, warnings } = await turn('effort-accepted', model);
+      const { text, warnings } = await turn('effort-accepted', model);
 
-      expect(utteredLine(parts)).toBe(LINE);
-      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', 'high']);
+      expect(text).toContain('THE ANSWER');
+      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none']);
       expect(warnings).toHaveLength(0);
       dump('openai-accepts-none', requestsJson(model));
     },
@@ -291,13 +261,13 @@ describe('the requested effort follows the model (the bounded utterance asks for
   );
 
   test(
-    'a caller that knows the model’s levels passes `utteranceEffort` — the utterance asks at that level, nothing is refused, nothing is remembered',
+    'a caller that knows the model’s levels asks at a listed level — nothing is refused, nothing is remembered',
     async () => {
       const model = astra();
-      const { parts, warnings } = await turn('effort-utterance-level', model, 'high', { utteranceEffort: 'low' });
+      const { text, warnings } = await turn('effort-listed-level', model, 'low');
 
-      expect(utteredLine(parts)).toBe(LINE);
-      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['low', 'high']);
+      expect(text).toContain('THE ANSWER');
+      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['low']);
       expect(warnings).toHaveLength(0);
       expect(RequestedEffort.omits('gpt-6-astra', 'none')).toBe(false);
     },
@@ -305,24 +275,24 @@ describe('the requested effort follows the model (the bounded utterance asks for
   );
 
   test(
-    'Anthropic and Google requests hear no refusal, nothing substituted — the utterance at the least each provider offers: Anthropic at none (no thinking block, no effort field), Google at low (no off switch on Gemini: a thinkingLevel, never no config)',
+    'Anthropic and Google requests hear no refusal, nothing substituted — the step at the least each provider offers: Anthropic at none (no thinking block, no effort field), Google at low (no off switch on Gemini: a thinkingLevel, never no config)',
     async () => {
-      // Where each provider carries the effort — the utterance's level is the caller's word (the owner's answer per
-      // provider: 'none' on Anthropic sends NO field; 'low' on Google sends thinkingLevel 'low'), and the step's `high`
-      // is sent as asked (the dumps are md5-compared across the fix).
+      // Where each provider carries the effort — the level is the caller's word (the owner's answer per provider:
+      // 'none' on Anthropic sends NO field; 'low' on Google sends thinkingLevel 'low'), sent as asked (the dumps are
+      // md5-compared across the fix).
       const effortField = {
         anthropic: (call: Call) => call.providerOptions?.anthropic?.effort,
         google: (call: Call) =>
           (call.providerOptions?.google?.thinkingConfig as { thinkingLevel?: unknown } | undefined)?.thinkingLevel,
       };
-      for (const [provider, modelId, name, least, utteranceField] of [
+      for (const [provider, modelId, name, least, field] of [
         ['anthropic.messages', 'claude-opus-5-5', 'anthropic', 'none', undefined],
         ['google.generative-ai', 'gemini-3-pro', 'google', 'low', 'low'],
       ] as const) {
         const model = scriptedModel({ provider, modelId });
-        const { parts, warnings } = await turn(`effort-${name}`, model, 'high', { utteranceEffort: least });
-        expect(utteredLine(parts)).toBe(LINE);
-        expect(model.doStreamCalls.map((call) => effortField[name](call as never))).toEqual([utteranceField, 'high']);
+        const { text, warnings } = await turn(`effort-${name}`, model, least);
+        expect(text).toContain('THE ANSWER');
+        expect(model.doStreamCalls.map((call) => effortField[name](call as never))).toEqual([field]);
         expect(warnings).toHaveLength(0);
         dump(name, requestsJson(model));
       }
@@ -331,19 +301,16 @@ describe('the requested effort follows the model (the bounded utterance asks for
   );
 
   test(
-    'any other 400 surfaces untouched — the utterance fails as before, nothing re-issued, nothing remembered',
+    'any other 400 surfaces untouched — the step fails as before, nothing re-issued, nothing remembered',
     async () => {
       const model = scriptedModel({
         provider: 'openai.responses',
         modelId: 'gpt-6-astra',
-        refuses: (_effort, call) => (Utterance.isRequest(call.prompt as never) ? otherBadRequest() : undefined),
+        refuses: () => otherBadRequest(),
       });
-      const { parts, text, warnings } = await turn('effort-other-400', model);
+      await expect(turn('effort-other-400', model)).rejects.toThrow();
 
-      expect(utteredLine(parts)).toBeUndefined();
-      expect(text).toContain('THE ANSWER');
-      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', 'high']);
-      expect(warnings).toHaveLength(0);
+      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none']);
       expect(RequestedEffort.omits('gpt-6-astra', 'none')).toBe(false);
     },
     TIMEOUT
@@ -355,20 +322,18 @@ describe('the requested effort follows the model (the bounded utterance asks for
       const model = scriptedModel({
         provider: 'openai.responses',
         modelId: 'gpt-6-nova',
-        refuses: (effort, call) =>
+        refuses: (effort) =>
           effort === 'none'
             ? openAiRefusal(
                 "Unsupported value: 'none' is not supported with the 'gpt-6-nova' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'."
               )
-            : effort === undefined && Utterance.isRequest(call.prompt as never)
+            : effort === undefined
               ? otherBadRequest()
               : undefined,
       });
-      const { parts, text } = await turn('effort-refused-twice', model);
+      await expect(turn('effort-refused-twice', model)).rejects.toThrow();
 
-      expect(utteredLine(parts)).toBeUndefined();
-      expect(text).toContain('THE ANSWER');
-      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', undefined, 'high']);
+      expect(model.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', undefined]);
       expect(RequestedEffort.omits('gpt-6-nova', 'none')).toBe(false);
     },
     TIMEOUT

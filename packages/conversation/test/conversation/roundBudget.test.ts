@@ -1,6 +1,5 @@
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { Conversation, type GenerateStreamParams } from '../../src/Conversation';
-import { Utterance } from '../../src/Utterance';
 import { fixtureModelData } from './fixtureModelData';
 
 /**
@@ -33,7 +32,7 @@ const usage = {
 };
 
 type Prompt = Array<{ role: string; content: unknown }>;
-type Part = { type: string; textDelta?: string; finishReason?: string; utterance?: true };
+type Part = { type: string; textDelta?: string; finishReason?: string };
 
 const textStep = (text: string) =>
   convertArrayToReadableStream([
@@ -554,10 +553,6 @@ describe('the interjection shape — after-generation takes the note when the ge
     let call = 0;
     const model = new MockLanguageModelV3({
       doStream: async (options: { prompt: Prompt; abortSignal?: AbortSignal }) => {
-        if (Utterance.isRequest(options.prompt)) {
-          prompts.push({ at: Date.now(), prompt: options.prompt });
-          return { stream: textStep('Taking that in.') };
-        }
         prompts.push({ at: Date.now(), prompt: options.prompt });
         call++;
         if (call === 1) {
@@ -606,59 +601,6 @@ describe('the interjection shape — after-generation takes the note when the ge
       expect(assistant).toHaveLength(1);
       expect(messageText(assistant[0] as never)).toBe(fullText);
       expect(messageText(round2[round2.length - 1] as never)).toContain(NOTE);
-    },
-    TIMEOUT
-  );
-
-  test(
-    "'after-generation' under the bounded utterance: the acknowledgment still rides — asked once the generation ended, streamed as its own step between the finished text and the continuation",
-    async () => {
-      process.env.CONVERSATION_TOOL_SOFT_BUDGET_MS = '300';
-      const NOTE = 'Also mention costs.';
-      const inbox = new Inbox();
-      let pushedAt = 0;
-      const { model, prompts, fullText } = longGeneration(inbox, NOTE, () => {
-        pushedAt = Date.now();
-      });
-      const result = await conversation('interjection-after-generation-utterance').generateStream({
-        messages: ['write a long answer'],
-        model: model as never,
-        ...inbox.params(),
-        utterance: true,
-        interjection: 'after-generation',
-      });
-      const { text, parts } = await collect(result.fullStream);
-
-      // The calls: the take-in line (the idle path), the generation, the note's line, the continuation.
-      expect(prompts.map((p) => (Utterance.isRequest(p.prompt as never) ? 'utterance' : 'step'))).toEqual([
-        'utterance',
-        'step',
-        'utterance',
-        'step',
-      ]);
-      expect(prompts[2].at - pushedAt).toBeGreaterThanOrEqual(3_000);
-      // On the stream: the take-in line (its own step; the consumer adds the ack's joiner), the whole
-      // generation with the joiner INSIDE its finished step, the note's line as its own flagged step, the
-      // continuation.
-      expect(text).toBe(`Taking that in.${fullText}\n\nTaking that in.FOLDED IN`);
-      const finishes = parts.map((part, index) => ({ part, index })).filter(({ part }) => part.type === 'step-finish');
-      expect(finishes.map(({ part }) => !!part.utterance)).toEqual([true, false, true, false]);
-      const generationEnd = finishes[1].index;
-      const ackEnd = finishes[2].index;
-      const between = parts
-        .slice(generationEnd + 1, ackEnd)
-        .filter((part) => part.type === 'text-delta')
-        .map((part) => part.textDelta)
-        .join('');
-      expect(between).toBe('Taking that in.');
-      // The continuation's prompt: … the full text → the note → the line as the agent's own → the continue framing.
-      const round = prompts[3].prompt;
-      const texts = round.map((m) => `${m.role}: ${messageText(m as never)}`);
-      const noteAt = texts.findIndex((t) => t.startsWith('user:') && t.includes(NOTE));
-      expect(noteAt).toBeGreaterThan(0);
-      expect(texts[noteAt - 1]).toBe(`assistant: ${fullText}`);
-      expect(texts[noteAt + 1]).toBe('assistant: Taking that in.');
-      expect(texts[noteAt + 2].startsWith('user:')).toBe(true);
     },
     TIMEOUT
   );

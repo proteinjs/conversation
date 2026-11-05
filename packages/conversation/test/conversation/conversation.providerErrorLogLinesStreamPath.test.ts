@@ -8,7 +8,7 @@ import { fixtureModelData } from './fixtureModelData';
 
 /**
  * THE PROVIDER'S WORDS STAY OFF THE LIBRARY'S OWN LINES, on the stream path as it is now: the
- * round's `onError` line, the buffered read's throw, the bounded utterance's failure line and the
+ * round's `onError` line, the buffered read's throw, the side utterance's failure line and the
  * streaming egress under a web search. A provider words its error itself and may quote the request
  * in it (a refused prompt, a value it could not parse), so the words a person's card carries — the
  * THROW's, `providerErrorClause` — are not the words a log line carries: the line carries the error
@@ -241,44 +241,42 @@ describe('the provider`s words stay off the library`s own lines on the stream pa
   );
 
   test(
-    'the bounded utterance: its own line about a failed line names the failure`s code, never the provider`s words',
+    'the side utterance: its own line about a failed line names the failure`s code, never the provider`s words',
     async () => {
       const written = consoleWrites();
       type UtteranceInternals = {
         utter(args: {
           model: unknown;
           transcript: unknown[];
-          inputs: { text: string }[];
+          inputs: { text: string; ask: string }[];
           tools: Record<string, unknown>;
           provider: string;
           modelString: string;
           abortSignal: AbortSignal;
           onResult: (result: unknown) => void;
-        }): AsyncGenerator<unknown, string | undefined>;
+        }): Promise<string | undefined>;
       };
       const conversation = newConversation('warn') as unknown as UtteranceInternals;
 
-      const parts = conversation.utter({
+      const line = await conversation.utter({
         model: new LlmTransportRetry({ budgetMs: 5_000 }).wrap(rawPayloadBeforeText() as never),
         transcript: [{ role: 'user', content: 'and the login page?' }],
-        inputs: [{ text: 'also the header' }],
+        inputs: [
+          {
+            text: 'HARNESS NUDGE: nothing has reached the user for a while.',
+            ask: 'In one sentence, what are you doing?',
+          },
+        ],
         tools: {},
         provider: 'anthropic',
         modelString: 'claude-test',
         abortSignal: new AbortController().signal,
         onResult: () => undefined,
       });
-      let line: string | undefined;
-      for (let next = await parts.next(); ; next = await parts.next()) {
-        if (next.done) {
-          line = next.value;
-          break;
-        }
-      }
 
       expect(line).toBeUndefined();
       const console_ = written.join('\n');
-      expect(console_).toContain('The bounded utterance has no line');
+      expect(console_).toContain('The side utterance has no line');
       expect(console_).toContain('invalid_request_error');
       expect(console_).not.toContain(MARKER);
     },

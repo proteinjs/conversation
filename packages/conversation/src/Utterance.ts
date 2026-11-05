@@ -1,87 +1,67 @@
 import type { ModelMessage } from 'ai';
 
 /**
- * The BOUNDED UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c — the load-bearing guarantee of the
- * 10-second bar): before the mind takes an input into its next step, the harness asks it for ONE
- * LINE — a separate call on the same model over the same transcript and the same tool roster as
- * the step that follows (the step's own cache prefix: the call's cache write is the step's read;
- * no tool runs on the call), with the input appended and this instruction, thinking off, NO
- * output cap: the length is
- * guidance in the ask ("one short sentence — two at most"), never a cut (the ruling 2026-09-13:
- * "it needs to be a guidance on how long the response should be, but we should never cut off a
- * response"). The line is the acknowledgment the user is owed at once, in the agent's own words;
- * its turnaround is a no-thinking completion on a cached prefix (1–2 s), whatever the main step's
- * adaptive thinking decides. The main step then runs with the input spliced and the line riding as the agent's OWN
- * prior utterance followed by the continue framing — roles alternate, so it works with thinking
- * on (a prefill would not), and the mind never acknowledges twice.
+ * THE SIDE UTTERANCE'S WORDS (plans/FREE_AGENT.md §M.3 part 5 — the nudge's door): when the host
+ * wants ONE LINE said mid-round without touching the round — the harness asking the mind what it
+ * is doing after a long silence — the loop asks for it in a separate call on the same model over
+ * the round's transcript and the step's tool roster (the step's cache prefix; no tool runs on the
+ * call), with the input appended and the input's OWN ask. The line lands as one `side-utterance`
+ * part, and the next step runs with the input spliced and the line riding as the agent's own prior
+ * message followed by the continue framing — roles alternate, so it works with thinking on (a
+ * prefill would not), and the mind never says the line twice.
  *
- * One owner for the words: the instruction, the framing, and the request shape live here; the
- * loop (`Conversation.generateStream`) owns when the utterance runs — at turn start (the idle
- * path), and at every drain that hands inputs to the model (a step boundary, a thinking-phase
- * restart, a mid-text cut, the exit absorption).
+ * One owner for the words: the ask's marker, the request shape and the framing live here; the loop
+ * (`Conversation.generateStream`) owns when a side utterance runs (`GenerateStreamParams.sideUtterance`).
+ *
+ * The BOUNDED utterance (part 2c — a separate no-tools call for a one-line acknowledgment before
+ * every step that took an input in, at turn start and at every drain) was retired 2026-11-05
+ * (DECISIONS 1099): the screen shows the thinking row and the voice reader waits for the settled
+ * message, so a line within 3 s bought nothing, and the call's one-sentence ask was where a
+ * planning paragraph landed above the answer (row 3105). The main step's own pre-tool words are the
+ * acknowledgment now, committed by the consumer's window (thought-server's `TurnAckWindow`).
  */
 /**
  * An input the mind takes in (what `GenerateStreamParams.drainInjectedContext` hands the loop, and
  * what a side utterance is asked for): its text, spliced into the next step as a user message, and
- * — when the input kind has its own utterance ask — the instruction the one line is asked with in
- * place of the default {@link Utterance.INSTRUCTION}. A user note and a job result ride the
- * default (acknowledge what you are taking in); a nudge (plans/FREE_AGENT.md §3.4) asks for what
- * the mind is doing right now. Every ask ends with {@link Utterance.REPLY_WITH_THE_LINE_ONLY} —
- * the marker {@link Utterance.isRequest} reads.
+ * — for a side utterance — the instruction the one line is asked with (`ask`: the nudge's "what are
+ * you doing right now", plans/FREE_AGENT.md §3.4). Every ask ends with
+ * {@link Utterance.REPLY_WITH_THE_LINE_ONLY} — the marker {@link Utterance.isRequest} reads. An
+ * input a drain hands the loop carries no ask: it is spliced, never uttered.
  */
 export type DrainedInput = { text: string; ask?: string };
 
 export class Utterance {
-  /** The sentence every utterance ask ends with — the request marker scripted models key on. */
+  /** The sentence every side ask ends with — the request marker scripted models key on. */
   static readonly REPLY_WITH_THE_LINE_ONLY = 'Reply with the line only.';
-
-  /**
-   * The F7 instruction, appended to the input the mind is about to take in. The trailing sentence
-   * is the marker {@link Utterance.isRequest} reads — a scripted model can tell the utterance call
-   * from the main step by it.
-   */
-  static readonly INSTRUCTION =
-    'Before you continue: acknowledge, in one short sentence — two at most — and in your own words, ' +
-    'what you are taking in from the message above and that it is handled — nothing about your plan, ' +
-    'your tools, or what comes next, and no time estimate. That single line reaches the user right ' +
-    `away; you continue the work after it. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`;
 
   /** The break that ends the line: the model's own paragraph break. */
   static readonly PARAGRAPH_BREAK = '\n\n';
 
   /**
-   * The request: the transcript as the next step will see it, plus the inputs being taken in and
-   * the instruction — one user message. With no inputs (the idle path: the transcript's own last
-   * message is the request), the instruction rides that last user message instead.
+   * The request: the transcript as the next step will see it, plus the input being asked about and
+   * its ask — one user message. A side utterance is always asked FOR something: an empty input set
+   * is a programming error, never a request.
    */
   static request(transcript: ModelMessage[], inputs: Array<string | DrainedInput>): ModelMessage[] {
     const drained = Utterance.inputs(inputs);
-    if (drained.length > 0) {
-      const instruction = Utterance.askFor(drained);
-      return [
-        ...transcript,
-        {
-          role: 'user',
-          content: `${drained.map((input) => input.text).join('\n\n')}\n\n${instruction}`,
-        } as ModelMessage,
-      ];
+    if (drained.length === 0) {
+      throw new Error('A side utterance is asked for an input — none was given');
     }
-    const last = transcript[transcript.length - 1];
-    if (!last || last.role !== 'user') {
-      return [...transcript, { role: 'user', content: Utterance.INSTRUCTION } as ModelMessage];
-    }
-    const withInstruction: ModelMessage =
-      typeof last.content === 'string'
-        ? ({ ...last, content: `${last.content}\n\n${Utterance.INSTRUCTION}` } as ModelMessage)
-        : ({ ...last, content: [...last.content, { type: 'text', text: Utterance.INSTRUCTION }] } as ModelMessage);
-    return [...transcript.slice(0, -1), withInstruction];
+    const instruction = Utterance.askFor(drained);
+    return [
+      ...transcript,
+      {
+        role: 'user',
+        content: `${drained.map((input) => input.text).join('\n\n')}\n\n${instruction}`,
+      } as ModelMessage,
+    ];
   }
 
   /**
-   * The framing the main step runs under once the line is said: the inputs as user messages, the
+   * The framing the next step runs under once the line is said: the inputs as user messages, the
    * line as the agent's own prior message, then the continue instruction — so the step's prompt
-   * ends on a user turn (never a prefill) and the mind knows the acknowledgment is already on the
-   * user's screen.
+   * ends on a user turn (never a prefill) and the mind knows the line is already on the user's
+   * screen.
    */
   static framing(inputs: Array<string | DrainedInput>, line: string): ModelMessage[] {
     return [
@@ -100,9 +80,9 @@ export class Utterance {
   }
 
   /**
-   * Whether a provider prompt is an utterance request (its last user text ends with the request
-   * marker every ask carries, {@link Utterance.REPLY_WITH_THE_LINE_ONLY}) — for scripted models in
-   * tests, which answer the utterance with a line and the main step with their script.
+   * Whether a provider prompt is a side utterance's request (its last user text ends with the
+   * request marker every ask carries, {@link Utterance.REPLY_WITH_THE_LINE_ONLY}) — for scripted
+   * models in tests, which answer the side ask with a line and the main step with their script.
    */
   static isRequest(prompt: ReadonlyArray<{ role: string; content: unknown }>): boolean {
     const last = prompt[prompt.length - 1];
@@ -121,16 +101,16 @@ export class Utterance {
   }
 
   /**
-   * The ask a set of inputs is uttered with: the LAST input that carries its own ask names it (an
-   * input kind with its own question — the nudge's "what are you doing right now"), else the
-   * default acknowledgment instruction. Normalized to end with the request marker.
+   * The ask a set of inputs is uttered with: the LAST input that carries its own ask names it (the
+   * nudge's "what are you doing right now"), normalized to end with the request marker. An input
+   * set with no ask has nothing to be asked — a programming error, never a default instruction.
    */
   static askFor(inputs: Array<string | DrainedInput>): string {
     const own = Utterance.inputs(inputs)
       .reverse()
       .find((input) => typeof input.ask === 'string' && input.ask.trim().length > 0);
     if (!own?.ask) {
-      return Utterance.INSTRUCTION;
+      throw new Error('A side utterance is asked with the input’s own ask — none of the inputs carries one');
     }
     const ask = own.ask.trim();
     return ask.endsWith(Utterance.REPLY_WITH_THE_LINE_ONLY) ? ask : `${ask} ${Utterance.REPLY_WITH_THE_LINE_ONLY}`;
@@ -147,7 +127,7 @@ export class Utterance {
     return text.indexOf(Utterance.PARAGRAPH_BREAK, lead);
   }
 
-  /** Inputs as {@link DrainedInput}s — a bare string is an input with the default ask. */
+  /** Inputs as {@link DrainedInput}s — a bare string is an input with no ask of its own. */
   static inputs(inputs: Array<string | DrainedInput>): DrainedInput[] {
     return inputs.map((input) => (typeof input === 'string' ? { text: input } : input));
   }

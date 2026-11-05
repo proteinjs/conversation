@@ -318,28 +318,14 @@ export type GenerateStreamParams = {
    *    next boundary of any kind (never mid-word, never inside a code fence — {@link CutBoundary}),
    *    the text so far commits, and the SAME response continues with the note spliced;
    *  - `'after-generation'` (the shape before part 2b): the generation always runs to its end, then
-   *    the exit absorption (`absorbExitNotes`) continues the same response with the note — the
-   *    acknowledgment (`utterance`) rides at that boundary exactly as it rides at a cut.
+   *    the exit absorption (`absorbExitNotes`) continues the same response with the note.
    * Absent = `'cut-and-continue'`. The thinking-phase restart (`peekInjectedContext`, part 2a) is
    * not this knob's — nothing visible is lost by re-planning a round that has shown nothing.
    */
   interjection?: InterjectionShape;
   /**
-   * The bounded UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c; see {@link Utterance}): before the
-   * mind takes an input into a step — at turn start, and at every drain that hands inputs to
-   * the model (a step boundary, a thinking-phase restart, a mid-text cut, the exit absorption) —
-   * the loop asks it for ONE LINE in a separate least-thinking call over the same transcript and the
-   * same tool roster (the step's cache prefix, so the call's cache write serves the step; no tool
-   * runs on it), streams that line as its own step (a `step-finish` part flagged `utterance`, the
-   * acknowledgment the consumer commits to the response), then runs the step with the inputs
-   * spliced and the line riding as the agent's own prior message + the continue framing. A
-   * failed or empty utterance is logged and the step runs as it would have without one.
-   * Streaming consumers only (the first round starts inside the stream).
-   */
-  utterance?: boolean;
-  /**
-   * The reasoning effort the bounded utterance (and the side utterance) is asked at. This library
-   * keeps no catalog and applies NO default: the caller names the least thinking the model in hand
+   * The reasoning effort the side utterance ({@link GenerateStreamParams.sideUtterance}) is asked
+   * at. This library keeps no catalog and applies NO default: the caller names the least thinking the model in hand
    * OFFERS — `none` only where it is a real off switch (a level the model lists: OpenAI, xAI; or a
    * provider whose request without a thinking block does not think: Anthropic), else the model's
    * lowest listed level. Gemini 3 and later have no off switch — `low` is their least, and `none`
@@ -356,11 +342,14 @@ export type GenerateStreamParams = {
    * The SIDE utterance (plans/FREE_AGENT.md §M.3 part 5 — the nudge's door): a promise that resolves
    * when the host wants ONE LINE said right now, mid-round, without touching the round — the harness
    * asking the mind what it is doing after a long silence. The loop asks the mind for the line over
-   * the round's transcript with the input's own ask ({@link DrainedInput.ask}), yields it as ONE
-   * `side-utterance` part the moment it lands (no restart, no cut, no boundary needed), and frames it
-   * into the next step the way every utterance rides (the input as a user message, the line as the
-   * agent's own prior message, the continue instruction). Re-asked after each resolution; only
-   * raced while a round is being consumed. Streaming consumers under `utterance`.
+   * the round's transcript with the input's own ask ({@link DrainedInput.ask}), on the step's own
+   * tool roster (its cache prefix; nothing runnable on the call), yields it as ONE `side-utterance`
+   * part the moment it lands (no restart, no cut, no boundary needed), and frames it into the next
+   * step (the input as a user message, the line as the agent's own prior message, the continue
+   * instruction — {@link Utterance.framing}). Re-asked after each resolution; only raced while a
+   * round is being consumed. Streaming consumers only. The bounded utterance — a separate call for
+   * a one-line acknowledgment before every step that took an input in — was retired 2026-11-05
+   * (DECISIONS 1099; see {@link Utterance}): the first words about an input are the step's own.
    */
   sideUtterance?: () => Promise<DrainedInput>;
   /**
@@ -501,12 +490,6 @@ export type StreamPart =
       type: 'step-finish';
       finishReason: string;
       /**
-       * This step was the bounded UTTERANCE (plans/FREE_AGENT.md §M.3 part 2c): its text is the
-       * one-line acknowledgment of the inputs the mind is taking in — the consumer commits it to
-       * the response as the acknowledgment part, whatever the window says.
-       */
-      utterance?: true;
-      /**
        * A `content-filter` finish after the refusal ladder ({@link GenerateStreamParams.refusalLadder})
        * was walked and EVERY rung declined this step: the models that declined, in the order they
        * were tried, the requested model first. Absent when no rung was walked.
@@ -646,7 +629,7 @@ type UsageStep = {
 /**
  * A round as the turn's accounting reads it (`generateStream`'s `roundResults`, summed by
  * `finalizeAcrossRounds`): the round's usage and its steps as {@link UsageStep}s. A `streamText`
- * result is one; the bounded utterance hands in its own — its steps carrying no tool call, since
+ * result is one; the side utterance hands in its own — its steps carrying no tool call, since
  * nothing runs on that call ({@link Conversation.utter}).
  */
 type AccountedRound = {
@@ -846,12 +829,6 @@ export class Conversation {
     // then re-projected at that anchor on every subsequent step. Steps only append raw messages, so
     // the projection is deterministic and the prefix stays byte-stable between steps.
     const injectedContextSplices: Array<{ anchorIndex: number; message: ModelMessage }> = [];
-    // The boundary utterance's queue (plans/FREE_AGENT.md §M.3 part 2c): a drain at `prepareStep`
-    // asks the mind for its one line THERE, but the line's parts must reach the consumer in
-    // order — after the step that just finished, before the step about to start. prepareStep
-    // streams them into this queue; the combined generator yields it at its next boundary (the
-    // SDK starts the next step only after prepareStep returns, so the order holds by construction).
-    const boundaryUtterance = new StreamPartQueue();
     // The side utterance's queue + its pending framing (plans/FREE_AGENT.md §M.3 part 5): a line said
     // mid-round at the host's ask is yielded from here the moment it lands (raced beside the provider's
     // parts, boundary or not), and rides into the transcript at the next step — the ask as a user
@@ -996,26 +973,10 @@ export class Conversation {
             if (params.drainInjectedContext) {
               const drained = Conversation.drainTexts(params.drainInjectedContext);
               if (drained.length > 0) {
-                // The bounded utterance at the boundary (part 2c): the line is asked for over the
-                // transcript this step would have seen, streamed to the consumer through the
-                // boundary queue, and the framing splices in after the inputs.
-                const line = params.utterance
-                  ? await this.utterInto(boundaryUtterance, {
-                      model,
-                      transcript: this.projectOutgoingStepMessages(
-                        Conversation.spliceInjectedContext(stepMessages, injectedContextSplices),
-                        projection
-                      ),
-                      inputs: drained,
-                      tools: allTools,
-                      provider,
-                      modelString,
-                      abortSignal: combinedAbortSignal,
-                      utteranceEffort: params.utteranceEffort,
-                      onResult: (r) => roundResults.push(r),
-                    })
-                  : undefined;
-                for (const message of Conversation.inputMessages(drained, line)) {
+                // The inputs splice in as user messages: the step about to start takes them in,
+                // and its own first words are what the person reads about them (the consumer's
+                // acknowledgment window — no separate call precedes the step).
+                for (const message of Conversation.inputMessages(drained)) {
                   injectedContextSplices.push({ anchorIndex: stepMessages.length, message });
                 }
               }
@@ -1072,8 +1033,8 @@ export class Conversation {
     // can abort ONE round without ending the turn.
     let roundController = new AbortController();
     // Every round's accounting, in order — usage and tool invocations are summed over ALL of them
-    // as ONE logical response (see finalizeAcrossRounds); the bounded utterance's calls ride here
-    // too, for their usage alone (no tool call on those — nothing runs on an utterance call).
+    // as ONE logical response (see finalizeAcrossRounds); the side utterance's calls ride here
+    // too, for their usage alone (no tool call on those — nothing runs on a side utterance call).
     const roundResults: AccountedRound[] = [];
     let liveResult: ReturnType<typeof startCall> | undefined;
     // The side utterance said over a transcript (plans/FREE_AGENT.md §M.3 part 5): one call over the
@@ -1082,7 +1043,7 @@ export class Conversation {
     // the next step (`pendingSideFramings`). The transcript must be CLOSED (no server tool open —
     // `openServerToolCallIds`); the callers own that check.
     const sayAside = async (ask: DrainedInput, transcript: ModelMessage[]): Promise<void> => {
-      const parts = this.utter({
+      const line = await this.utter({
         model,
         provider,
         modelString,
@@ -1093,11 +1054,6 @@ export class Conversation {
         inputs: [ask],
         onResult: (r) => roundResults.push(r),
       });
-      let next = await parts.next();
-      while (!next.done) {
-        next = await parts.next();
-      }
-      const line = next.value;
       if (!line) {
         return;
       }
@@ -1122,11 +1078,9 @@ export class Conversation {
       latestStepMessages = roundMessages;
       return round;
     };
-    // The first round starts NOW for a buffered consumer (generateResponse reads the promises
-    // without touching fullStream) and for a plain streaming call; under the bounded utterance it
-    // starts inside the stream, after the take-in line (the line precedes the first step's
-    // thinking — plans/FREE_AGENT.md §M.3 part 2c, the idle path).
-    const result = params.utterance ? undefined : startRound(messages);
+    // The first round starts NOW — for a buffered consumer (generateResponse reads the promises
+    // without touching fullStream) and for a streaming call alike.
+    const result = startRound(messages);
 
     // ── Boundary-note absorption (the steering hold) ──
     // A note that arrives DURING the final generation step never meets prepareStep (it only runs
@@ -1215,20 +1169,18 @@ export class Conversation {
       finalized = true;
       void finalizeAcrossRounds();
     };
-    if (result) {
-      Promise.resolve(result.totalUsage).then(
-        () => {
-          if (!generatorStarted) {
-            finalizeOnce();
-          }
-        },
-        () => {
-          if (!generatorStarted) {
-            finalizeOnce();
-          }
+    Promise.resolve(result.totalUsage).then(
+      () => {
+        if (!generatorStarted) {
+          finalizeOnce();
         }
-      );
-    }
+      },
+      () => {
+        if (!generatorStarted) {
+          finalizeOnce();
+        }
+      }
+    );
 
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
@@ -1256,21 +1208,6 @@ export class Conversation {
       // paragraph break; past N + the grace (the deadline) at the next boundary of any kind; past
       // the window at the next word boundary — never mid-word, never inside a code fence (CutBoundary).
       const softBudgetMs = ToolBudget.softBudgetMs();
-      const utterOptions = {
-        model,
-        provider,
-        modelString,
-        abortSignal: combinedAbortSignal,
-        utteranceEffort: params.utteranceEffort,
-        tools: allTools,
-      };
-      const utter = (transcript: ModelMessage[], inputs: DrainedInput[]) =>
-        self.utter({
-          ...utterOptions,
-          transcript: self.projectOutgoingStepMessages(transcript, projection),
-          inputs,
-          onResult: (r) => roundResults.push(r),
-        });
       // The side utterance (part 5): the host's ask, raced beside every provider part while a round is
       // consumed; the line is asked for over the round's latest transcript and lands as ONE part.
       let sideWake: Promise<DrainedInput> | undefined;
@@ -1295,24 +1232,14 @@ export class Conversation {
         }
         await sayAside(ask, transcript);
       };
-      // The first round: started here when the bounded utterance leads it (the take-in line
-      // precedes the first step's thinking — the idle path of the bar), else already running.
-      let current: ReturnType<typeof startCall>;
-      if (result) {
-        current = result;
-      } else {
-        const line = yield* utter(messages, []);
-        if (line) {
-          currentMessages = [...messages, ...Utterance.framing([], line)];
-        }
-        current = startRound(currentMessages);
-      }
+      // The first round: already running (started with the call).
+      let current: ReturnType<typeof startCall> = result;
       try {
         while (true) {
           // ── One round, consumed part by part ──
           // Each part is raced against the input wake (a note landing mid-thinking restarts the
           // round at once; a note landing mid-text arms the cut clock), the cut deadline, and the
-          // boundary utterance queue. `turnMaterial` flips at the first user-material part: tool
+          // side utterance's door. `turnMaterial` flips at the first user-material part: tool
           // parts BEFORE the restart check (input streaming means execution is imminent — never
           // abort into a side effect), text AFTER it (the first text-delta hasn't been yielded yet,
           // so restarting right at it shows nothing).
@@ -1342,8 +1269,7 @@ export class Conversation {
           // The current step carried a tool part (a call began, ran, or settled): the step is
           // user-material whatever it finished on — a refusal after it is never re-run.
           let stepTool = false;
-          // Between steps (after a step-finish, or before the round's first part): where the
-          // boundary utterance queue may be yielded.
+          // Between steps (after a step-finish, or before the round's first part).
           let atBoundary = true;
           const iterator = self
             .guardStreamLiveness(current.fullStream, livenessController, rung.modelString, locallyExecutedToolNames)
@@ -1376,19 +1302,14 @@ export class Conversation {
           };
           try {
             while (true) {
-              if (atBoundary) {
-                for (const queued of boundaryUtterance.take()) {
-                  yield queued;
-                }
-              }
               if (!pendingNext) {
                 pendingNext = iterator.next();
                 pendingNext.catch(() => undefined);
               }
-              const racers: Promise<'part' | 'input' | 'cut' | 'queued' | 'restart' | 'side' | 'side-part'>[] = [
+              const racers: Promise<'part' | 'input' | 'cut' | 'restart' | 'side' | 'side-part'>[] = [
                 pendingNext.then(() => 'part' as const),
               ];
-              if (params.sideUtterance && params.utterance) {
+              if (params.sideUtterance) {
                 sideWake ??= params.sideUtterance();
                 racers.push(sideWake.then(() => 'side' as const));
                 racers.push(sideQueue.wait().then(() => 'side-part' as const));
@@ -1413,13 +1334,7 @@ export class Conversation {
                   racers.push(cutClock.then(() => 'cut' as const));
                 }
               }
-              if (atBoundary) {
-                racers.push(boundaryUtterance.wait().then(() => 'queued' as const));
-              }
               const won = await Promise.race(racers);
-              if (won === 'queued') {
-                continue;
-              }
               if (won === 'side-part') {
                 for (const queued of sideQueue.take()) {
                   yield queued;
@@ -1587,11 +1502,10 @@ export class Conversation {
               nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
               injectedContextSplices.length = 0;
             }
-            const line = params.utterance && drained.length > 0 ? yield* utter(nextMessages, drained) : undefined;
-            nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained, line)];
+            nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained)];
             self.logger.info({
               message: 'Restarting thinking-phase round with mid-turn notes',
-              obj: { noteCount: drained.length, round: rounds + 1, uttered: !!line },
+              obj: { noteCount: drained.length, round: rounds + 1 },
             });
             current = startRound(nextMessages);
             currentMessages = nextMessages;
@@ -1604,7 +1518,7 @@ export class Conversation {
             // from the transcript the step was running on plus that text, with the notes spliced.
             if (stepText.length > 0) {
               // The joiner completes the paragraph break the cut text may already carry part of —
-              // the acknowledgment that follows is its own paragraph, and so is the continuation.
+              // the continuation that follows is its own paragraph.
               const trailingNewlines = /\n*$/.exec(stepText)![0].length;
               if (trailingNewlines < 2) {
                 yield { type: 'text-delta', delta: '\n'.repeat(2 - trailingNewlines) };
@@ -1620,11 +1534,10 @@ export class Conversation {
             if (stepText.trim().length > 0) {
               nextMessages = [...nextMessages, { role: 'assistant', content: stepText.trimEnd() } as ModelMessage];
             }
-            const line = params.utterance && drained.length > 0 ? yield* utter(nextMessages, drained) : undefined;
-            nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained, line)];
+            nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained)];
             self.logger.info({
               message: 'Cut the streaming round for mid-turn notes — the text so far committed, continuing',
-              obj: { noteCount: drained.length, round: rounds + 1, textChars: stepText.length, uttered: !!line },
+              obj: { noteCount: drained.length, round: rounds + 1, textChars: stepText.length },
             });
             current = startRound(nextMessages);
             currentMessages = nextMessages;
@@ -1805,11 +1718,10 @@ export class Conversation {
           for (const ask of heldSideAsks.splice(0, heldSideAsks.length)) {
             await sayAside(ask, self.projectOutgoingStepMessages(nextMessages, projection));
           }
-          const line = params.utterance ? yield* utter(nextMessages, drained) : undefined;
-          nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained, line)];
+          nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained)];
           self.logger.info({
             message: 'Absorbing boundary notes into the same response',
-            obj: { noteCount: drained.length, round: rounds + 1, uttered: !!line },
+            obj: { noteCount: drained.length, round: rounds + 1 },
           });
           current = startRound(nextMessages);
           currentMessages = nextMessages;
@@ -2814,7 +2726,7 @@ export class Conversation {
           }
           // Default path: preserve the SDK's historical behavior — string →
           // text, everything else → json — JSON-SAFE: the value rides the step
-          // transcript, which the bounded utterance replays as a fresh prompt
+          // transcript, which the side utterance replays as a fresh prompt
           // the SDK validates (a Date or a date library's object in a tool
           // result fails that validation; see `jsonSafeToolOutput`).
           return typeof output === 'string'
@@ -3145,8 +3057,8 @@ export class Conversation {
    * A tool's non-string result as the model reads it: its JSON form — `toJSON()` honoured (a
    * Date, a moment, any date library's object → its ISO string), functions and `undefined`
    * dropped, `undefined` itself → null. The one owner of JSON-safety for tool results: the value
-   * rides the step transcript, and every fresh prompt built over that transcript (the bounded
-   * utterance, the side utterance) is validated by the SDK as a prompt — a raw Date or an object
+   * rides the step transcript, and every fresh prompt built over that transcript (the side
+   * utterance) is validated by the SDK as a prompt — a raw Date or an object
    * with methods fails that validation (InvalidPromptError) before any provider call. Tools return
    * what they return; nothing they return can put an unserializable value into the transcript.
    */
@@ -4471,44 +4383,36 @@ export class Conversation {
       .filter((item) => item.text.length > 0);
   }
 
-  /**
-   * The messages a set of drained inputs becomes in the next request: under the bounded
-   * utterance, the inputs + the line as the agent's own prior message + the continue framing
-   * (`Utterance.framing`); without a line, the inputs as user messages.
-   */
-  private static inputMessages(inputs: DrainedInput[], line: string | undefined): ModelMessage[] {
-    return line
-      ? Utterance.framing(inputs, line)
-      : inputs.map((input) => ({ role: 'user', content: input.text }) as ModelMessage);
+  /** The messages a set of drained inputs becomes in the next request: the inputs as user messages. */
+  private static inputMessages(inputs: DrainedInput[]): ModelMessage[] {
+    return inputs.map((input) => ({ role: 'user', content: input.text }) as ModelMessage);
   }
 
   /**
-   * The bounded utterance (plans/FREE_AGENT.md §M.3 part 2c; {@link Utterance}): one least-thinking
-   * call (the effort the caller named — {@link GenerateStreamParams.utteranceEffort}) over
-   * `transcript` + `inputs` + the instruction, its line yielded as ONE text-delta part
-   * and closed by a step-finish flagged `utterance`. Returns the line, or nothing when the call
+   * The side utterance's call (plans/FREE_AGENT.md §M.3 part 5; {@link Utterance}): one
+   * least-thinking call (the effort the caller named — {@link GenerateStreamParams.utteranceEffort})
+   * over `transcript` + the input + its own ask. Returns the line, or nothing when the call
    * produced no line — no text, a failure, or the provider's output limit reached before the
-   * line's end (logged — the step then runs without its line, and the consumer's acknowledgment
-   * window commits that step's own first text as before).
+   * line's end (logged — nothing is said, the round runs on).
    *
-   * THE REQUEST'S ENVELOPE IS THE STEP'S. The call rides the same tool roster as the step that
-   * follows it, over the same projected transcript (the same system prefix, the same cache
+   * THE REQUEST'S ENVELOPE IS THE STEP'S. The call rides the same tool roster as the round it is
+   * said beside, over the same projected transcript (the same system prefix, the same cache
    * breakpoints — `projectOutgoingStepMessages`): a provider's prompt cache is keyed on the
    * request's prefix bytes in order — the roster first, then the system prefix, then the
-   * messages — so only a request with the step's roster writes an entry the step then reads.
-   * Sent without it (as it was), the utterance wrote the whole system region to the cache at the
-   * write price and the step wrote it again. The words the model reads are unchanged: the roster
-   * is the step's own; the ask is for the line. No tool is runnable on this call (`execute`
-   * stripped — {@link Conversation.unexecutableTools}): a tool-call answer is a missing line,
-   * logged, never a run — and never a call of the turn's: the round rides the turn's accounting
-   * for its usage alone (`onResult` — no `callsPerTool` count, no step tool row, no invocation
-   * for a call that never ran). The request does not say `toolChoice: 'none'` (it should — the
-   * choice is no part of the cache key): the Anthropic adapter at the lock (@ai-sdk/anthropic
-   * 3.0.107, `prepareTools`) answers `none` by dropping the roster from the request, the very
-   * cache miss this envelope exists to prevent; the line waits for an adapter that sends the
-   * choice with the roster.
+   * messages — so only a request with the step's roster reads the entry the step wrote. Sent
+   * without it, the call would write the whole system region to the cache again at the write
+   * price. The words the model reads are unchanged: the roster is the step's own; the ask is for
+   * the line. No tool is runnable on this call (`execute` stripped —
+   * {@link Conversation.unexecutableTools}): a tool-call answer is a missing line, logged, never
+   * a run — and never a call of the turn's: the round rides the turn's accounting for its usage
+   * alone (`onResult` — no `callsPerTool` count, no step tool row, no invocation for a call that
+   * never ran). The request does not say `toolChoice: 'none'` (it should — the choice is no part
+   * of the cache key): the Anthropic adapter at the lock (@ai-sdk/anthropic 3.0.107,
+   * `prepareTools`) answers `none` by dropping the roster from the request, the very cache miss
+   * this envelope exists to prevent; the line waits for an adapter that sends the choice with the
+   * roster.
    */
-  private async *utter(args: {
+  private async utter(args: {
     model: LanguageModel;
     transcript: ModelMessage[];
     inputs: DrainedInput[];
@@ -4521,39 +4425,31 @@ export class Conversation {
     utteranceEffort?: ReasoningEffort;
     /** The call for the turn's accounting: its usage, its steps with no tool call on them. */
     onResult: (round: AccountedRound) => void;
-  }): AsyncGenerator<any, string | undefined> {
+  }): Promise<string | undefined> {
     const request = Utterance.request(args.transcript, args.inputs);
     const tools = Conversation.unexecutableTools(args.tools);
     const startedAt = Date.now();
     // The LINE is the first paragraph of what the model writes, WHOLE or nothing (the ruling
-    // 2026-09-13: the length is guidance in the ask — Utterance.INSTRUCTION's "one short sentence
-    // — two at most" — never a cut). No output cap rides the request; the line is held until it
-    // is complete — the model's own paragraph break, or the model's own stop — and yielded as one
-    // delta. At the paragraph break the line is DONE: it is yielded at once and the rest of the
-    // call (a caveat the model wrote past the ask) drains in the background — never shown, never
-    // waited for by the step that follows, still read to its end so its usage rides the turn's
-    // (the cap's latency role, owned here instead). A call that reaches the provider's output
-    // limit before the line ended ('length' — a failure, never a normal stop) or fails mid-stream
-    // has NO line: nothing reaches the consumer, no utterance step, no framing, not even the whole
-    // sentences before the cut. Retries stay off (maxRetries 0): a retry would hold the main step
-    // at the boundary for the backoff on top of the failed attempt, while the degradation is free
-    // — the step runs and its own first text is the acknowledgment. The call asks for the LEAST
-    // thinking the model in hand offers, as the caller's catalog names it (`utteranceEffort`:
-    // `none` only where that is a real off switch — a listed level, or Anthropic's no-thinking-block
-    // road — else the model's lowest listed level; Gemini has no off switch, so `low`). No default
-    // of this library's rides in its place: with no effort named, no level is sent and the provider's
-    // default shape stands, as on a step with no level. A model whose provider refuses the value
-    // asked (GPT-6 Astra lists no `none`) is not this call's to know — `RequestedEffort` (under the
-    // transport layer) hears the refusal once, re-issues with the effort omitted and remembers it,
-    // so the line arrives and no later turn pays the refused request; a value this library itself
-    // refuses (`none` on Google) fails the call before it is made — no line, the step runs.
+    // 2026-09-13: the length is guidance in the ask — "one short sentence" — never a cut). No
+    // output cap rides the request; the line is held until it is complete — the model's own
+    // paragraph break, or the model's own stop. At the paragraph break the line is DONE: it is
+    // returned at once and the rest of the call (a caveat the model wrote past the ask) drains in
+    // the background — never shown, never waited for, still read to its end so its usage rides the
+    // turn's. A call that reaches the provider's output limit before the line ended ('length' — a
+    // failure, never a normal stop) or fails mid-stream has NO line: nothing is said, not even the
+    // whole sentences before the cut. Retries stay off (maxRetries 0): the degradation is free —
+    // the round runs on. The call asks for the LEAST thinking the model in hand offers, as the
+    // caller's catalog names it (`utteranceEffort`: `none` only where that is a real off switch — a
+    // listed level, or Anthropic's no-thinking-block road — else the model's lowest listed level;
+    // Gemini has no off switch, so `low`). No default of this library's rides in its place: with no
+    // effort named, no level is sent and the provider's default shape stands, as on a step with no
+    // level. A model whose provider refuses the value asked (GPT-6 Astra lists no `none`) is not
+    // this call's to know — `RequestedEffort` (under the transport layer) hears the refusal once,
+    // re-issues with the effort omitted and remembers it; a value this library itself refuses
+    // (`none` on Google) fails the call before it is made — no line.
     let text = '';
     let lineEnded = false;
     let failure: unknown;
-    // The utterance request's own SDK warnings (RequestedEffort's omitted effort rides here when
-    // the provider refused the value asked): forwarded as the utterance step's `start-step`, the
-    // same way every step's are, so the consumer reads the substitution instead of guessing.
-    let stepStart: unknown;
     // Whether the model answered the ask with a tool call: nothing runs (no tool here can), and
     // the call has no line.
     let toolCallAnswer = false;
@@ -4588,9 +4484,7 @@ export class Conversation {
       const iterator = (result.fullStream as AsyncIterable<any>)[Symbol.asyncIterator]();
       for (let next = await iterator.next(); !next.done; next = await iterator.next()) {
         const part = next.value;
-        if (part.type === 'start-step') {
-          stepStart = { type: 'start-step', warnings: Array.isArray(part.warnings) ? part.warnings : [] };
-        } else if (part.type === 'text-delta') {
+        if (part.type === 'text-delta') {
           const delta = String(part.delta ?? part.text ?? part.textDelta ?? '');
           if (!delta) {
             continue;
@@ -4624,15 +4518,12 @@ export class Conversation {
       // The error itself, marked: the line below carries its status, code and a house sentence.
       failure = ProviderFailureLine.mark(error, { modelId: args.modelString, provider: args.provider });
     }
-    if (stepStart) {
-      yield stepStart;
-    }
     if (!failure && toolCallAnswer && !text.trim()) {
       failure = 'the model answered the ask with a tool call instead of a line (nothing ran)';
     }
     if (failure) {
       this.logger.warn({
-        message: 'The bounded utterance has no line — the step runs without its acknowledgment line',
+        message: 'The side utterance has no line — nothing is said, the round runs on',
         obj: { failure, partialChars: text.length, inputCount: args.inputs.length },
       });
       return undefined;
@@ -4641,10 +4532,8 @@ export class Conversation {
     if (!line) {
       return undefined;
     }
-    yield { type: 'text-delta', delta: line };
-    yield { type: 'finish-step', finishReason: 'stop', utterance: true };
     this.logger.info({
-      message: 'Bounded utterance',
+      message: 'Side utterance',
       obj: {
         ms: Date.now() - startedAt,
         chars: line.length,
@@ -4674,7 +4563,7 @@ export class Conversation {
     ) as ToolSet;
   }
 
-  /** Read a provider stream to its end without holding anyone: the tail of an utterance call past
+  /** Read a provider stream to its end without holding anyone: the tail of a side utterance call past
    *  the line's paragraph break — never shown, read so the call's usage resolves and rides the
    *  turn's; the turn's abort ends it (the call carries that signal). */
   private static drainInBackground(iterator: AsyncIterator<any>): void {
@@ -4689,10 +4578,9 @@ export class Conversation {
     })();
   }
 
-  /** The utterance streamed into a boundary queue (the `prepareStep` seam) instead of yielded. */
   /**
    * What `streamText` is handed as `onError` — the ONE line about a round that ended on an error,
-   * at every stream the library starts (the writer loop, the object tool loop, the bounded
+   * at every stream the library starts (the writer loop, the object tool loop, the side
    * utterance). The client library's DEFAULT prints the error with `console.error` — whole, past
    * the logger, request body and all; this door keeps it off the console: one line through the
    * logger, the error marked first (ProviderFailureLine). The failure still reaches the caller as
@@ -4718,19 +4606,6 @@ export class Conversation {
         obj: { model: call.modelId, error: ProviderFailureLine.mark(error, call) },
       });
     };
-  }
-
-  private async utterInto(
-    queue: StreamPartQueue,
-    args: Parameters<Conversation['utter']>[0]
-  ): Promise<string | undefined> {
-    const parts = this.utter(args);
-    let next = await parts.next();
-    while (!next.done) {
-      queue.push(next.value);
-      next = await parts.next();
-    }
-    return next.value;
   }
 
   private async *guardStreamLiveness(
@@ -4869,7 +4744,6 @@ export class Conversation {
               yield {
                 type: 'step-finish' as const,
                 finishReason: String(finishReason),
-                ...(part.utterance ? { utterance: true as const } : {}),
                 ...(Array.isArray(part.declined) && part.declined.length > 0 ? { declined: [...part.declined] } : {}),
               };
             } else if (part.type === 'model-rerun') {
@@ -5221,8 +5095,8 @@ function deriveToolCallDetail(input: unknown): string | undefined {
 
 /**
  * An ordered hand-off of stream parts produced OUTSIDE the combined stream's generator (the
- * bounded utterance at `prepareStep`) — the generator yields them at its next step boundary,
- * waking on `wait()` so a line reaches the consumer the moment it streams.
+ * side utterance said mid-round) — the generator yields them at its next turn of the race,
+ * waking on `wait()` so a line reaches the consumer the moment it lands.
  */
 class StreamPartQueue {
   private parts: any[] = [];

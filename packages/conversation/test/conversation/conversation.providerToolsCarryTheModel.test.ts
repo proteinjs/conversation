@@ -8,7 +8,7 @@ import { fixtureModelData } from './fixtureModelData';
  * A skill's provider-defined tools are asked for WITH THE MODEL the call rides (prod 2026-10-28, v1.32.0:
  * the dev skill's BrowserSkill handed Anthropic's `computer_20251124` to every Anthropic model, and
  * claude-sonnet-5-5 refuses that tool type — HTTP 400 `invalid_request_error`, "'claude-sonnet-5-5' does
- * not support tool types: computer_20251124" — on the bounded utterance's call and the step's alike, so
+ * not support tool types: computer_20251124" — on the side utterance's call and the step's alike, so
  * every turn in a workspace-bound chat on that model ended before a word). A provider's built-in tool
  * types are accepted PER MODEL, so the hook that hands them is told the model id (the catalog's id, after
  * any `provider:` prefix) and hands a tool only where the provider takes it.

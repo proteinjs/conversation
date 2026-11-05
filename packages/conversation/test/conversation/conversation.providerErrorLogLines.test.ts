@@ -409,7 +409,7 @@ describe('a provider error on a log line never carries the request, the response
   );
 
   test(
-    'the bounded utterance: its failed stream is not printed by the client library either',
+    'the side utterance: its failed stream is not printed by the client library either',
     async () => {
       const written = consoleWrites();
       const model = new MockLanguageModelV3({
@@ -423,13 +423,13 @@ describe('a provider error on a log line never carries the request, the response
         utter(args: {
           model: unknown;
           transcript: unknown[];
-          inputs: { text: string }[];
+          inputs: { text: string; ask: string }[];
           tools: Record<string, unknown>;
           provider: string;
           modelString: string;
           abortSignal: AbortSignal;
           onResult: (result: unknown) => void;
-        }): AsyncGenerator<unknown, string | undefined>;
+        }): Promise<string | undefined>;
       };
       const conversation = new Conversation({
         modelData: fixtureModelData,
@@ -438,19 +438,21 @@ describe('a provider error on a log line never carries the request, the response
         limits: { enforceLimits: false },
       }) as unknown as UtteranceInternals;
 
-      const parts = conversation.utter({
+      await conversation.utter({
         model: new LlmTransportRetry({ budgetMs: 5_000 }).wrap(model as never),
         transcript: [{ role: 'user', content: 'and the login page?' }],
-        inputs: [{ text: 'also the header' }],
+        inputs: [
+          {
+            text: 'HARNESS NUDGE: nothing has reached the user for a while.',
+            ask: 'In one sentence, what are you doing?',
+          },
+        ],
         tools: {},
         provider: 'anthropic',
         modelString: 'claude-test',
         abortSignal: new AbortController().signal,
         onResult: () => undefined,
       });
-      for (let next = await parts.next(); !next.done; next = await parts.next()) {
-        // no line is expected: the call failed
-      }
 
       expect(written.join('\n')).toContain('The round ended on an error');
       expectNoMarker(written.join('\n'));
