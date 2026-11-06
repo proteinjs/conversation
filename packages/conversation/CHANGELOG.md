@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.8](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.7...@proteinjs/conversation@6.20.8) (2026-11-06)
+
+
+### Bug Fixes
+
+* **conversation:** a forced tool choice is softened with the whole roster before it leaves when the vendor's table says the id refuses forcing — the adapter's narrowing never reached, the cache prefix stable across steps ([60f98ec](https://github.com/proteinjs/conversation/commit/60f98ecad72316d338552003b7388fc190d0edeb))
+* **conversation:** effort 'none' sends Anthropic's explicit off per family — a request with no thinking block thinks from the fifth generation on ([220ca49](https://github.com/proteinjs/conversation/commit/220ca496de1ac49c9da7cb5b5db18cfe8c6cacff))
+* **conversation:** the Anthropic floor raised to ^3.0.138 — Sonnet 5.5's between_tools rides the wire; one owner of the family for every thinking branch; the least effort exported for the consumers ([209e310](https://github.com/proteinjs/conversation/commit/209e3106387aab808c8efce5a0b6e438ea96ba7b))
+
+
+
+
+
 ## [6.20.7](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.6...@proteinjs/conversation@6.20.7) (2026-11-05)
 
 
