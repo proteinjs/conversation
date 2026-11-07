@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.9](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.8...@proteinjs/conversation@6.20.9) (2026-11-07)
+
+
+### Bug Fixes
+
+* **conversation:** the structured output mode is the house's decision — said from the API's documented limits on every object request, never the adapter's 'auto' ([c5b1fd7](https://github.com/proteinjs/conversation/commit/c5b1fd70fb38d6e925a07617ec7b6e5f85e7932b))
+
+
+
+
+
 ## [6.20.8](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.7...@proteinjs/conversation@6.20.8) (2026-11-06)
 
 
