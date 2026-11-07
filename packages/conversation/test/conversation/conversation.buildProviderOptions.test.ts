@@ -1,5 +1,6 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { Conversation, ReasoningEffort } from '../../src/Conversation';
+import { AnthropicStructuredOutputRules } from '../../src/AnthropicStructuredOutputRules';
 import { fixtureModelData } from './fixtureModelData';
 import { PromptCacheScriptedTransport, type WireBody } from './PromptCacheScriptedTransport';
 
@@ -404,5 +405,225 @@ describe('Conversation.buildProviderOptions (xai)', () => {
       expect(buildXai('auto', 'grok-4.3', true)).not.toHaveProperty('searchParameters');
       expect(buildXai('auto', 'grok-4-1-fast-reasoning', false)).not.toHaveProperty('searchParameters');
     });
+  });
+});
+
+/**
+ * THE STRUCTURED OUTPUT MODE ON THE generateObject ROAD IS THE HOUSE'S DECISION
+ * (AnthropicStructuredOutputRules) — read on the request body the real adapter sends over a capturing
+ * `fetch`, no network, no key. RED at 6.20.8: `@ai-sdk/anthropic` 3.0.13x under the ^3.0.138 floor
+ * demotes, in its default `auto` mode, every schema past its OWN 10 optional properties to its `json`
+ * tool (`supportsNativeStructuredOutputSchema`, `MAX_OPTIONAL_PROPERTIES = 10`) — the readiness
+ * checkpoint's class of schema (20 optionals, nested, an array of objects) rode as a tool in `tools`,
+ * no `output_config.format`, and a consumer's request-shape pin went red at CI. The API's documented
+ * limit is 24; the house says the mode from the documented limits: `outputFormat` within them, `jsonTool`
+ * past them or on an open object, and nothing (the adapter's road) for a model the adapter's own table
+ * marks as lacking native structured output.
+ */
+type ObjectWire = WireBody & {
+  output_config?: { format?: { type?: string; schema?: { properties?: Record<string, unknown> } } };
+};
+
+const optionalStrings = (n: number, prefix: string): Record<string, { type: string }> =>
+  Object.fromEntries(Array.from({ length: n }, (_, i) => [`${prefix}${i}`, { type: 'string' }]));
+
+/** The readiness checkpoint's class: 20 optional properties at every depth, nested objects, an array of objects. */
+const READINESS_SHAPED = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    ready: { type: 'boolean' },
+    summary: { type: 'string' },
+    digest: { type: 'string' },
+    clarification: { type: 'string' },
+    gateRequest: { type: 'string' },
+    continuePlanning: { type: 'boolean' },
+    projectedTokens: { type: 'integer' },
+    investigation: {
+      type: 'object',
+      properties: {
+        summary: { type: 'string' },
+        findings: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              file: { type: 'string' },
+              lines: { type: 'string' },
+              symbols: { type: 'array', items: { type: 'string' } },
+              note: { type: 'string' },
+            },
+            required: ['file'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['findings'],
+      additionalProperties: false,
+    },
+    verification: {
+      type: 'object',
+      properties: {
+        elevated: { type: 'boolean' },
+        why: { type: 'string' },
+        riskSpots: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['elevated', 'why', 'riskSpots'],
+      additionalProperties: false,
+    },
+    openQuestions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          question: { type: 'string' },
+          allowMultiple: { type: 'boolean' },
+          options: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: { label: { type: 'string' }, recommended: { type: 'boolean' } },
+              required: ['label'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ['question', 'options'],
+        additionalProperties: false,
+      },
+    },
+    completeness: {
+      type: 'object',
+      properties: {
+        complete: { type: 'boolean' },
+        gaps: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { gap: { type: 'string' }, mustFix: { type: 'boolean' }, where: { type: 'string' } },
+            required: ['gap'],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ['complete', 'gaps'],
+      additionalProperties: false,
+    },
+    projectionBasis: {
+      type: 'object',
+      properties: { steps: { type: 'integer' }, filesTouched: { type: 'integer' }, notes: { type: 'string' } },
+      required: ['steps', 'filesTouched'],
+      additionalProperties: false,
+    },
+    diligence: { type: 'string', enum: ['quick', 'careful'] },
+    costNote: { type: 'string' },
+  },
+  required: ['title', 'ready', 'summary', 'digest'],
+  additionalProperties: false,
+};
+
+/** A map — an open object by the adapter's definition. */
+const MAP_SHAPED = {
+  type: 'object',
+  properties: { title: { type: 'string' }, byName: { type: 'object', additionalProperties: { type: 'string' } } },
+  required: ['title'],
+  additionalProperties: false,
+};
+
+/** One past the documented 24. */
+const TWENTY_FIVE_OPTIONALS = {
+  type: 'object',
+  properties: { title: { type: 'string' }, ...optionalStrings(25, 'o') },
+  required: ['title'],
+  additionalProperties: false,
+};
+
+/** Well within every limit — the adapter's own 10 included. */
+const SMALL = {
+  type: 'object',
+  properties: { title: { type: 'string' }, ...optionalStrings(5, 's') },
+  required: ['title'],
+  additionalProperties: false,
+};
+
+const OBJECT_ANSWER = { title: 'Wire', ready: false, summary: 's', digest: 'd' };
+
+/**
+ * One object request through the real adapter over a capturing fetch: the body it sent. The canned
+ * answer follows the road the body took — a `json` tool call when the body carries the adapter's tool,
+ * a text block otherwise — so the conversation's object parse completes on either.
+ */
+async function objectRequest(modelId: string, schema: Record<string, unknown>): Promise<ObjectWire> {
+  const requests: ObjectWire[] = [];
+  const fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const body = JSON.parse(String(init?.body)) as ObjectWire;
+    requests.push(body);
+    const viaTool = (body.tools ?? []).some((tool) => tool.name === 'json');
+    const message = {
+      id: 'msg_object_wire',
+      type: 'message',
+      role: 'assistant',
+      model: modelId,
+      content: viaTool
+        ? [{ type: 'tool_use', id: 'toolu_json', name: 'json', input: OBJECT_ANSWER }]
+        : [{ type: 'text', text: JSON.stringify(OBJECT_ANSWER) }],
+      stop_reason: viaTool ? 'tool_use' : 'end_turn',
+      stop_sequence: null,
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+    return new Response(JSON.stringify(message), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const conversation = new Conversation({
+    modelData: fixtureModelData,
+    name: `object-wire-${modelId}`,
+    logLevel: 'error',
+    limits: { enforceLimits: false },
+  });
+  const model = createAnthropic({ apiKey: 'scripted', fetch })(modelId);
+  const result = await conversation.generateObject<typeof OBJECT_ANSWER>({
+    messages: ['Assess the plan and produce a readiness checkpoint.'],
+    model: model as never,
+    schema,
+    recordInHistory: false,
+  });
+  expect(result.object.title).toBe('Wire');
+  expect(requests).toHaveLength(1);
+  return requests[0];
+}
+
+const jsonToolOf = (body: ObjectWire) => (body.tools ?? []).find((tool) => tool.name === 'json');
+
+describe('the structured output mode on the generateObject road is the house’s decision, on the wire', () => {
+  test('the readiness checkpoint’s class — 20 optionals, nested, an array of objects — rides as output_config.format (the grammar path), no tools', async () => {
+    // The fixture is the class it claims: 20 optional properties at every depth, within the documented 24.
+    expect(AnthropicStructuredOutputRules.measure(READINESS_SHAPED).optionalProperties).toBe(20);
+    const body = await objectRequest('claude-opus-5-5', READINESS_SHAPED);
+    expect(body.output_config?.format?.type).toBe('json_schema');
+    expect(Object.keys(body.output_config?.format?.schema?.properties ?? {})).toEqual(
+      Object.keys(READINESS_SHAPED.properties)
+    );
+    expect(body.tools).toBeUndefined();
+  }, 30_000);
+
+  test('an open object (a map) rides the json tool — said by the mode, no output_config.format', async () => {
+    const body = await objectRequest('claude-opus-5-5', MAP_SHAPED);
+    expect(jsonToolOf(body)).toBeDefined();
+    expect(body.output_config?.format).toBeUndefined();
+  }, 30_000);
+
+  test('25 optionals — one past the documented 24 — rides the json tool', async () => {
+    const body = await objectRequest('claude-opus-5-5', TWENTY_FIVE_OPTIONALS);
+    expect(jsonToolOf(body)).toBeDefined();
+    expect(body.output_config?.format).toBeUndefined();
+  }, 30_000);
+
+  test('a model the adapter’s table marks as lacking native structured output keeps the adapter’s road — the json tool, even within every limit', async () => {
+    const body = await objectRequest('claude-sonnet-4-20250514', SMALL);
+    expect(jsonToolOf(body)).toBeDefined();
+    expect(body.output_config?.format).toBeUndefined();
+  }, 30_000);
+
+  test('the text and tool roads carry no response schema, so no mode is said there', () => {
+    expect(buildAnthropic('auto', 'claude-opus-5-5')).not.toHaveProperty('structuredOutputMode');
   });
 });

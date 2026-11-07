@@ -5,6 +5,7 @@ import {
   streamText,
   generateObject as aiGenerateObject,
   jsonSchema,
+  asSchema,
   stepCountIs,
   hasToolCall,
   NoObjectGeneratedError,
@@ -35,6 +36,7 @@ import { getModelCapabilities } from '@ai-sdk/anthropic/internal';
 import { RequestedEffort } from './RequestedEffort';
 import { OpenAiModelRules, type OpenAiReasoningEffort } from './OpenAiModelRules';
 import { AnthropicModelRules } from './AnthropicModelRules';
+import { AnthropicStructuredOutputRules } from './AnthropicStructuredOutputRules';
 import { OpenAiResponseRetention } from './OpenAiResponseRetention';
 import { ToolStrictness } from './ToolStrictness';
 import { ToolBudget, type ToolBudgetHost } from './ToolBudget';
@@ -1925,6 +1927,14 @@ export class Conversation {
     // The caller's per-request seat (GenerateStreamParams.beforeRequest): the one request this call sends.
     params.beforeRequest?.({ messages, modelString, provider, stepNumber: 0 });
 
+    // THE STRUCTURED OUTPUT MODE IS THE HOUSE'S DECISION (AnthropicStructuredOutputRules, read by
+    // buildProviderOptions): the JSON schema the adapter will gate on — a Zod schema's conversion, a JSON
+    // schema as authored, resolved the way `generateObject` resolves it for the provider — rides with the
+    // provider options so the mode is said from the API's documented limits on every object request,
+    // never left to the adapter's 'auto' (which demotes any schema past its own 10 optional properties
+    // to its json tool, silently; 3.0.13x under the ^3.0.138 floor).
+    const responseSchema = await asSchema(normalizedSchema).jsonSchema;
+
     // What the client library raises ABOVE the transport leaves through here: an answer that was
     // not the object becomes the library's typed error, by finish reason (typeObjectFailure —
     // nothing re-issued, nothing repaired through the model); every error is marked for log lines.
@@ -1938,7 +1948,7 @@ export class Conversation {
       maxOutputTokens: params.maxTokens,
       temperature: params.temperature,
       topP: params.topP,
-      providerOptions: this.buildProviderOptions(provider, params, modelString),
+      providerOptions: this.buildProviderOptions(provider, { ...params, responseSchema }, modelString),
       experimental_repairText: (async ({ text }) => {
         const cleaned = String(text ?? '')
           .trim()
@@ -3463,7 +3473,13 @@ export class Conversation {
 
   private buildProviderOptions(
     provider: string,
-    params: { reasoningEffort?: ReasoningEffort; webSearch?: boolean; serviceTier?: OpenAiServiceTier },
+    params: {
+      reasoningEffort?: ReasoningEffort;
+      webSearch?: boolean;
+      serviceTier?: OpenAiServiceTier;
+      /** The JSON schema of an object request's response (the generateObject road only) — the mode is said from it. */
+      responseSchema?: unknown;
+    },
     modelString?: string
   ): Record<string, any> {
     const options: Record<string, any> = {};
@@ -3528,6 +3544,19 @@ export class Conversation {
           );
         }
         anthropicOpts.thinking = off;
+      }
+      if (params.responseSchema !== undefined) {
+        // THE STRUCTURED OUTPUT MODE IS THE HOUSE'S DECISION, said from the API's documented limits
+        // (AnthropicStructuredOutputRules — one owner): 'outputFormat' (the grammar path) when the response
+        // schema is representable within them, 'jsonTool' when it is not, and nothing — the adapter's own
+        // road — for a model the adapter's table marks as lacking native structured output. Never 'auto':
+        // under it the adapter demotes every schema past its OWN 10 optional properties to its json tool,
+        // silently — the house's 11–24-optional schemas (budgeted against the documented 24) all left the
+        // grammar path the day the floor rose to ^3.0.138, and a consumer's request-shape pin went red.
+        const mode = AnthropicStructuredOutputRules.mode(modelString ?? '', params.responseSchema);
+        if (mode) {
+          anthropicOpts.structuredOutputMode = mode;
+        }
       }
       options.anthropic = anthropicOpts;
     }
