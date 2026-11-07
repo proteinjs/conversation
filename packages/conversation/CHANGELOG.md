@@ -3,6 +3,17 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.10](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.9...@proteinjs/conversation@6.20.10) (2026-11-07)
+
+
+### Bug Fixes
+
+* **conversation:** one counter of Anthropic's structured-output limits — the measure and the rule exported, a json-tool demotion said once at the owner ([4d59fcf](https://github.com/proteinjs/conversation/commit/4d59fcfc2d000918eff2218e4efa55d4239f8b90))
+
+
+
+
+
 ## [6.20.9](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.8...@proteinjs/conversation@6.20.9) (2026-11-07)
 
 
