@@ -86,13 +86,15 @@ const DEFAULT_PROVIDER = 'openai';
 /**
  * THE routing decision for a model string — its one owner. `resolveModel` builds the model from
  * it and `routedProvider` reports it, so whatever a conversation says to "the provider" (how
- * strict its tools are, its provider options) is said to the provider that receives the call.
+ * strict its tools are, its provider options) is said to the provider that receives the call;
+ * `RequestedEffort` reads a caller's model name through it, so a refusal is found under the id the
+ * request named. Never a second prefix stripper: ask this.
  *
  * - `"provider:model-id"` goes to the named provider (an unknown prefix is an error);
  * - a bare name goes to the provider whose name pattern it matches;
  * - a bare name no pattern recognizes goes to the default provider.
  */
-function routeModelString(model: string): { provider: string; modelId: string } {
+export function routeModelString(model: string): { provider: string; modelId: string } {
   const raw = model.trim();
   if (!raw) {
     throw new Error('resolveModel: empty model string');

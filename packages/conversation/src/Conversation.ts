@@ -33,7 +33,7 @@ import { EmptyDeltaMetadata } from './EmptyDeltaMetadata';
 import { LlmTransportRetry, type LlmTransportRetryActivity } from './LlmTransportRetry';
 import { ForcedToolChoice } from './ForcedToolChoice';
 import { getModelCapabilities } from '@ai-sdk/anthropic/internal';
-import { RequestedEffort } from './RequestedEffort';
+import { RequestedEffort, type EffortRefusal } from './RequestedEffort';
 import { OpenAiModelRules, type OpenAiReasoningEffort } from './OpenAiModelRules';
 import { AnthropicModelRules } from './AnthropicModelRules';
 import { AnthropicStructuredOutputRules } from './AnthropicStructuredOutputRules';
@@ -395,7 +395,18 @@ export type GenerateStreamParams = {
  * `other` note. Forwarded verbatim on the `step-start` part so a consumer can READ what the
  * transport changed instead of inferring it from the answer.
  */
-export type StreamWarning = { type: string; feature?: string; details?: string; message?: string };
+export type StreamWarning = {
+  type: string;
+  feature?: string;
+  details?: string;
+  message?: string;
+  /**
+   * On RequestedEffort's warning: WHO REFUSED the level asked — the provider, or the installed provider package (its
+   * name and version) — with the level, the model id and the refusal's own words, as fields. `details` is the sentence
+   * rendered from them (`RequestedEffort.describe`); a consumer reads these, never the sentence.
+   */
+  refusal?: EffortRefusal;
+};
 
 /** A single part emitted by the interleaved full stream. */
 export type StreamPart =
@@ -4773,12 +4784,17 @@ export class Conversation {
               const carriedEffort = RequestedEffort.carried(stepProvider, part.request?.body);
               yield {
                 type: 'step-start' as const,
-                warnings: warnings.map((warning: Record<string, unknown>) => ({
-                  type: String(warning?.type ?? 'other'),
-                  ...(typeof warning?.feature === 'string' ? { feature: warning.feature } : {}),
-                  ...(typeof warning?.details === 'string' ? { details: warning.details } : {}),
-                  ...(typeof warning?.message === 'string' ? { message: warning.message } : {}),
-                })),
+                warnings: warnings.map((warning: Record<string, unknown>): StreamWarning => {
+                  // Who refused a level, as RequestedEffort's fields — the fact a consumer reads, never the sentence.
+                  const refusal = RequestedEffort.refusalOf(warning);
+                  return {
+                    type: String(warning?.type ?? 'other'),
+                    ...(typeof warning?.feature === 'string' ? { feature: warning.feature } : {}),
+                    ...(typeof warning?.details === 'string' ? { details: warning.details } : {}),
+                    ...(typeof warning?.message === 'string' ? { message: warning.message } : {}),
+                    ...(refusal ? { refusal } : {}),
+                  };
+                }),
                 ...(carriedEffort !== undefined ? { carriedEffort } : {}),
               };
             } else if (part.type === 'finish-step') {

@@ -1,5 +1,5 @@
 {
-  "branch": "fix/effort-sends-the-rows-word",
+  "branch": "fix/effort-sends-the-rows-word-r2",
   "packages": [
     "conversation"
   ],

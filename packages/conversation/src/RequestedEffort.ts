@@ -9,7 +9,38 @@ import type {
 } from '@ai-sdk/provider';
 import { wrapLanguageModel } from 'ai';
 import { Logger } from '@proteinjs/logger';
-import { providerPackage } from './resolveModel';
+import { providerPackage, routeModelString } from './resolveModel';
+
+/**
+ * WHO REFUSED a requested level, as fields: the `refusal` on the `compatibility` warning RequestedEffort raises, which
+ * the conversation forwards on the `step-start` part (`StreamWarning.refusal`). The warning's `details` sentence is
+ * rendered from these fields ({@link RequestedEffort.describe}), so a consumer reads who refused here and never parses
+ * the sentence.
+ */
+export type EffortRefusal =
+  | {
+      /** The provider: the request left at the level and came back refused (a 400 in its own words). */
+      by: 'provider';
+      /** The level word refused. */
+      level: string;
+      /** The model id the request named. */
+      modelId: string;
+      /** The provider's clause. */
+      clause: string;
+    }
+  | {
+      /**
+       * The installed provider package: its options list lacks the level, so no request left at it — the provider was
+       * never asked, and the answer is a release of that package, not a fact about the model.
+       */
+      by: 'package';
+      level: string;
+      modelId: string;
+      /** The package's own words (its options error and the cause that names the value). */
+      clause: string;
+      /** The package that refused and the version this process loads. */
+      package: { name: string; version: string };
+    };
 
 /**
  * THE REQUESTED EFFORT FOLLOWS THE MODEL. A caller asks for a reasoning effort the way it asks
@@ -37,11 +68,12 @@ import { providerPackage } from './resolveModel';
  * semantic-error bar), a model that accepts the value is never touched (its request leaves
  * byte-identical), and a request that carries no effort has nothing to hear.
  *
- * WHO REFUSED is said: the provider (its clause — the request left and came back a 400), or the
- * installed provider PACKAGE, whose options schema lists the levels it can carry and refuses any
- * other word before a request leaves (`@ai-sdk/xai` has no `max`; `@ai-sdk/google` had no `xhigh`
- * before 3.0.146) — named with its version, because the provider was never asked and the answer is
- * a release of that package, not a fact about the model.
+ * WHO REFUSED is said, as fields on the warning ({@link EffortRefusal}): the provider (its clause —
+ * the request left and came back a 400), or the installed provider PACKAGE, whose options schema
+ * lists the levels it can carry and refuses any other word before a request leaves (`@ai-sdk/xai`
+ * has no `max`; `@ai-sdk/google` had no `xhigh` before 3.0.146) — named with its version, because
+ * the provider was never asked and the answer is a release of that package, not a fact about the
+ * model. The warning's sentence is rendered from those fields.
  *
  * And the level each request CARRIED is this class's to read ({@link RequestedEffort.carried}): the
  * word in the body the provider package itself reports it sent, at the one place each provider's
@@ -70,9 +102,12 @@ export class RequestedEffort {
     google: ['generationConfig', 'thinkingConfig', 'thinkingLevel'],
   };
 
-  /** The parameter names the providers refuse the effort under (OpenAI's `param`; the field path in a message). */
+  /**
+   * The parameter names the providers refuse the effort under (OpenAI's `param`; the field path in a message, or the
+   * field named in plain words — "thinking level").
+   */
   private static readonly EFFORT_PARAM =
-    /(reasoning[._]?effort|output_config\.effort|\beffort\b|thinking[._]?level|thinking[._]?config)/i;
+    /(reasoning[._ ]?effort|output_config\.effort|\beffort\b|thinking[._ ]?level|thinking[._ ]?config)/i;
 
   /** The words of a refused value, in every provider's grammar. */
   private static readonly REFUSED =
@@ -88,9 +123,12 @@ export class RequestedEffort {
     return wrapLanguageModel({ model, middleware: RequestedEffort.middleware() });
   }
 
-  /** Whether `effort` is omitted for this model (in this process) because the provider refused it. */
-  static omits(modelId: string, effort: string): boolean {
-    return RequestedEffort.omissions.get(modelId)?.has(effort) ?? false;
+  /**
+   * Whether `effort` is omitted for this model (in this process) because it was refused. The model is named as a caller
+   * names it to a request (see {@link RequestedEffort.forget}).
+   */
+  static omits(model: string, effort: string): boolean {
+    return RequestedEffort.omitted(routeModelString(model).modelId, effort);
   }
 
   /**
@@ -112,16 +150,57 @@ export class RequestedEffort {
    * Forget one remembered refusal — this model's, at this level — so the next request at that level asks again and
    * the answer is the provider's own (a catalog's level check asks every time; a refusal heard earlier in the process
    * would otherwise leave its request with no level and no warning). Every other omission stays.
+   *
+   * The model is named as a caller names it to a request — `provider:model-id` or a bare name — and read by the
+   * library's one routing decision (`routeModelString`, the one every request takes), so the refusal forgotten is the
+   * one the request named; a name no request could take (an unknown provider prefix) throws as the request would.
+   * Answers whether a refusal was remembered there and is now forgotten — false when there was none to forget.
    */
-  static forget(modelId: string, effort: string): void {
+  static forget(model: string, effort: string): boolean {
+    const { modelId } = routeModelString(model);
     const forModel = RequestedEffort.omissions.get(modelId);
-    if (!forModel) {
-      return;
+    if (!forModel?.delete(effort)) {
+      return false;
     }
-    forModel.delete(effort);
     if (forModel.size === 0) {
       RequestedEffort.omissions.delete(modelId);
     }
+    return true;
+  }
+
+  /**
+   * The warning's sentence, rendered from who refused ({@link EffortRefusal}) — the `details` RequestedEffort's
+   * warning carries beside its `refusal`. Words for a person; a consumer that must know who refused reads the fields.
+   */
+  static describe(refusal: EffortRefusal): string {
+    const omitted = `re-issued with the effort omitted (the provider's own default applies) and remembered for this process.`;
+    return refusal.by === 'package'
+      ? `The installed ${refusal.package.name} ${refusal.package.version} does not list reasoning effort '${refusal.level}', so no request for ${refusal.modelId} left at it — ${omitted} The package: ${refusal.clause}`
+      : `${refusal.modelId} does not accept reasoning effort '${refusal.level}' — ${omitted} The provider: ${refusal.clause}`;
+  }
+
+  /**
+   * Who refused, read off a warning as the SDK hands it on (a `start-step` part's warning, or a result's): the
+   * {@link EffortRefusal} RequestedEffort put there, field for field; undefined on any other warning.
+   */
+  static refusalOf(warning: unknown): EffortRefusal | undefined {
+    const refusal = (warning as { refusal?: Record<string, unknown> } | undefined)?.refusal;
+    if (
+      typeof refusal?.level !== 'string' ||
+      typeof refusal.modelId !== 'string' ||
+      typeof refusal.clause !== 'string'
+    ) {
+      return undefined;
+    }
+    const { level, modelId, clause } = refusal;
+    if (refusal.by === 'provider') {
+      return { by: 'provider', level, modelId, clause };
+    }
+    const named = refusal.package as { name?: unknown; version?: unknown } | undefined;
+    if (refusal.by !== 'package' || typeof named?.name !== 'string' || typeof named.version !== 'string') {
+      return undefined;
+    }
+    return { by: 'package', level, modelId, clause, package: { name: named.name, version: named.version } };
   }
 
   /**
@@ -203,41 +282,50 @@ export class RequestedEffort {
       if (!sent || !RequestedEffort.isRefusal(error, sent.value)) {
         throw error;
       }
-      const clause = RequestedEffort.words(error);
-      const refusedBy = RequestedEffort.packageRefused(error) ? providerPackage(sent.provider) : undefined;
+      const refusal = RequestedEffort.refusal(error, sent, model.modelId);
       RequestedEffort.logger.warn({
-        message: refusedBy
-          ? 'The installed provider package cannot carry the requested reasoning effort — no request left; re-issuing once with the effort omitted (the provider’s own default) and remembering it'
-          : 'The provider refused the requested reasoning effort for this model — re-issuing once with the effort omitted (the provider’s own default) and remembering it',
-        obj: { modelId: model.modelId, requested: sent.value, clause, ...(refusedBy ? { package: refusedBy } : {}) },
+        message:
+          refusal.by === 'package'
+            ? 'The installed provider package cannot carry the requested reasoning effort — no request left; re-issuing once with the effort omitted (the provider’s own default) and remembering it'
+            : 'The provider refused the requested reasoning effort for this model — re-issuing once with the effort omitted (the provider’s own default) and remembering it',
+        obj: refusal,
       });
       const result = await rerun(RequestedEffort.withoutEffort(params, sent));
       RequestedEffort.remember(model.modelId, sent.value);
-      const omitted = `re-issued with the effort omitted (the provider's own default applies) and remembered for this process.`;
-      return warned(result, {
+      const warning: SharedV3Warning & { refusal: EffortRefusal } = {
         type: 'compatibility',
         feature: 'reasoningEffort',
-        details: refusedBy
-          ? `The installed ${refusedBy.name} ${refusedBy.version} does not list reasoning effort '${sent.value}', so no request for ${model.modelId} left at it — ${omitted} The package: ${clause}`
-          : `${model.modelId} does not accept reasoning effort '${sent.value}' — ${omitted} The provider: ${clause}`,
-      });
+        details: RequestedEffort.describe(refusal),
+        refusal,
+      };
+      return warned(result, warning);
     }
   }
 
   /**
-   * Whether the refusal is the installed package's own: its options schema refused the value before any request left
-   * (`parseProviderOptions` raises AI_InvalidArgumentError on `providerOptions`). Anything else heard as a refusal came
-   * back from the provider.
+   * Who refused this request's level: the installed package, when its own options schema refused the value before any
+   * request left (`parseProviderOptions` raises AI_InvalidArgumentError on `providerOptions`); else the provider, whose
+   * clause came back.
    */
-  private static packageRefused(error: unknown): boolean {
+  private static refusal(error: unknown, sent: { provider: string; value: string }, modelId: string): EffortRefusal {
+    const clause = RequestedEffort.words(error);
     const raised = error as { name?: unknown; argument?: unknown } | undefined;
-    return raised?.name === 'AI_InvalidArgumentError' && raised?.argument === 'providerOptions';
+    const packageRefused = raised?.name === 'AI_InvalidArgumentError' && raised?.argument === 'providerOptions';
+    const refusedBy = packageRefused ? providerPackage(sent.provider) : undefined;
+    return refusedBy
+      ? { by: 'package', level: sent.value, modelId, clause, package: refusedBy }
+      : { by: 'provider', level: sent.value, modelId, clause };
   }
 
   /** The request with a remembered omission applied before it leaves — else the request as it came. */
   private static remembered(params: LanguageModelV3CallOptions, modelId: string): LanguageModelV3CallOptions {
     const sent = RequestedEffort.sentEffort(params);
-    return sent && RequestedEffort.omits(modelId, sent.value) ? RequestedEffort.withoutEffort(params, sent) : params;
+    return sent && RequestedEffort.omitted(modelId, sent.value) ? RequestedEffort.withoutEffort(params, sent) : params;
+  }
+
+  /** Whether `effort` is omitted for this model id — the id the request named (the resolved model's own). */
+  private static omitted(modelId: string, effort: string): boolean {
+    return RequestedEffort.omissions.get(modelId)?.has(effort) ?? false;
   }
 
   private static remember(modelId: string, refused: string): void {
@@ -277,7 +365,6 @@ export class RequestedEffort {
     return { ...params, providerOptions: { ...params.providerOptions, [sent.provider]: options } as never };
   }
 
-  /** OpenAI names the refused parameter in the error body (`error.param`); the SDK keeps the body on `data`. */
   /** An error's words with its cause's — the SDK names the refused option only in the cause. */
   private static words(error: unknown): string {
     const message = String((error as { message?: unknown })?.message ?? error ?? '');
@@ -288,6 +375,7 @@ export class RequestedEffort {
     return `${message} — ${String((cause as { message?: unknown })?.message ?? cause)}`;
   }
 
+  /** OpenAI names the refused parameter in the error body (`error.param`); the SDK keeps the body on `data`. */
   private static namedParam(error: unknown): string | undefined {
     const param = (error as { data?: { error?: { param?: unknown } } })?.data?.error?.param;
     return typeof param === 'string' ? param : undefined;

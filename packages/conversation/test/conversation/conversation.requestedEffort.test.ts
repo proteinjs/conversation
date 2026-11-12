@@ -7,7 +7,7 @@ import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { Conversation, type GenerateStreamParams, type ReasoningEffort } from '../../src/Conversation';
-import { RequestedEffort } from '../../src/RequestedEffort';
+import { RequestedEffort, type EffortRefusal } from '../../src/RequestedEffort';
 import { fixtureModelData } from './fixtureModelData';
 
 /**
@@ -530,6 +530,30 @@ describe('the requested effort follows the model (a step asked at a level the pr
     TIMEOUT
   );
 
+  // The catalog names a model as a request does — a provider prefix or a bare name — and the refusal is remembered
+  // under the id the request named. Round 2: at 8a80ec31 forget was keyed by the bare id and silent, so a prefixed
+  // name forgot nothing and its caller never knew.
+  test.each([['openai:gpt-6-astra'], ['gpt-6-astra']])(
+    'forget takes the model as a caller names it (%s), routed as the request is, and answers whether it forgot',
+    async (name) => {
+      await turn('effort-forget-named-first', astra());
+      expect(RequestedEffort.omits(name, 'none')).toBe(true);
+
+      // A miss answers no: another level, another model.
+      expect(RequestedEffort.forget(name, 'low')).toBe(false);
+      expect(RequestedEffort.forget('openai:gpt-6-sol', 'none')).toBe(false);
+      expect(RequestedEffort.forget(name, 'none')).toBe(true);
+      // Forgotten once: nothing is left to forget.
+      expect(RequestedEffort.forget(name, 'none')).toBe(false);
+
+      // The next request asks the provider again at the level.
+      const again = astra();
+      await turn('effort-forget-named-again', again);
+      expect(again.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', undefined]);
+    },
+    TIMEOUT
+  );
+
   test(
     'a model that accepts `none` is untouched — one request, at none, byte-identical',
     async () => {
@@ -710,7 +734,8 @@ describe('a level the installed SDK cannot carry is a refusal too (the transport
   // asked. The re-issue is the same as for the provider's refusal; the warning names the package and the version
   // that refused — the fact a catalog turns into "save the row without it" — never the provider. RED at 9261af0a:
   // the library sent xAI's max as xhigh and Google's as high, so the package was never reached at max; at
-  // the package's refusal the warning said the model did not accept the level.
+  // the package's refusal the warning said the model did not accept the level. WHO REFUSED is read off the warning's
+  // fields at the part a consumer reads (round 2: at 8a80ec31 it lived only in the sentence, read by a regex).
   test.each([
     ['xai', 'grok-4.5', '@ai-sdk/xai'],
     ['google', 'gemini-4-hydrogen', '@ai-sdk/google'],
@@ -734,11 +759,33 @@ describe('a level the installed SDK cannot carry is a refusal too (the transport
       const forwarded = streamWarnings(parts);
       expect(forwarded).toHaveLength(1);
       expect(forwarded[0]).toMatchObject({ type: 'compatibility', feature: 'reasoningEffort' });
-      const details = String(forwarded[0].details);
-      expect(details).toContain(`${packageName} ${installedVersion(packageName)}`);
-      expect(details).toContain("'max'");
-      expect(details).not.toContain('does not accept');
+      // Who refused, as fields: the installed package (its name and the version this process loads), at max, for the
+      // model the request named — and the package's own words, which name the refused value in their cause.
+      const refusal = forwarded[0].refusal as EffortRefusal;
+      expect(refusal).toEqual({
+        by: 'package',
+        level: 'max',
+        modelId,
+        clause: expect.stringContaining('max'),
+        package: { name: packageName, version: installedVersion(packageName) },
+      });
+      // The sentence is those fields rendered.
+      expect(forwarded[0].details).toBe(RequestedEffort.describe(refusal));
       expect(RequestedEffort.omits(modelId, 'max')).toBe(true);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'the provider’s refusal (the request left and came back a 400) carries its fields too: by the provider, the level, the model and its clause — the sentence is them rendered',
+    async () => {
+      const { parts } = await turn('effort-refused-fields', astra());
+
+      const forwarded = streamWarnings(parts);
+      expect(forwarded).toHaveLength(1);
+      const refusal = forwarded[0].refusal as EffortRefusal;
+      expect(refusal).toEqual({ by: 'provider', level: 'none', modelId: 'gpt-6-astra', clause: ASTRA_CLAUSE });
+      expect(forwarded[0].details).toBe(RequestedEffort.describe(refusal));
     },
     TIMEOUT
   );
@@ -804,6 +851,10 @@ describe('RequestedEffort — the verdict', () => {
       RequestedEffort.isRefusal(new Error("output_config.effort: 'xhigh' is not supported for this model."), 'xhigh')
     ).toBe(true);
     expect(RequestedEffort.isRefusal(new Error("Invalid value for 'thinking_level': 'medium'."), 'medium')).toBe(true);
+    // … or names the field in plain words, in any case.
+    expect(RequestedEffort.isRefusal(new Error('Thinking level XHIGH is not supported for this model.'), 'xhigh')).toBe(
+      true
+    );
     // … or quotes the value this request sent.
     expect(
       RequestedEffort.isRefusal(new Error("Unsupported value: 'none' is not supported with this model."), 'none')
