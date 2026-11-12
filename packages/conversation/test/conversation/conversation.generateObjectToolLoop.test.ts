@@ -172,6 +172,23 @@ describe('Conversation.generateObject tool loop — request shape', () => {
     TIMEOUT
   );
 
+  // The object's result reports the level word the request that produced it carried — on this road the submitting
+  // step's, read from the body the provider package reports it sent (here step 1 left at high, step 2 at low).
+  test(
+    'the result reports the level its submitting step’s body carried — the last step’s',
+    async () => {
+      const { model } = buildScriptedModel('claude-opus-5-5');
+      const scripted = model.doStream;
+      const carried = [{ output_config: { effort: 'high' } }, { output_config: { effort: 'low' } }];
+      model.doStream = async (options) => ({ ...(await scripted(options)), request: { body: carried.shift() } });
+      const result = await runLoop(model);
+
+      expect(result.object).toEqual({ answer: '42' });
+      expect(result.carriedEffort).toBe('low');
+    },
+    TIMEOUT
+  );
+
   test(
     'every Anthropic step carries cache breakpoints: last system + last two non-system messages',
     async () => {

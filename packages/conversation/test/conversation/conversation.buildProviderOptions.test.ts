@@ -43,7 +43,7 @@ type OpenAIProviderOptions = {
 };
 
 type GoogleProviderOptions = {
-  thinkingConfig?: { includeThoughts?: boolean; thinkingLevel?: 'minimal' | 'low' | 'medium' | 'high' };
+  thinkingConfig?: { includeThoughts?: boolean; thinkingLevel?: string };
 };
 
 const conv = new Conversation({ modelData: fixtureModelData, name: 'test-providerOptions' });
@@ -266,7 +266,7 @@ describe('Conversation.buildProviderOptions (openai)', () => {
     ['medium', 'medium'],
     ['high', 'high'],
     ['xhigh', 'xhigh'],
-    ['max', 'xhigh'], // 'max' is GPT-5's top level, xhigh (a level of its own from GPT-6 — openAiModelRules.test)
+    ['max', 'max'], // the row's word on every generation (openAiModelRules.test: GPT-5.6 Sol and Terra list max)
   ] as Array<[ReasoningEffort, string]>)('forwards reasoningEffort %s → %s', (input, expected) => {
     const openai = buildOpenAI(input, 'gpt-5.5');
     expect(openai.reasoningEffort).toBe(expected);
@@ -332,16 +332,22 @@ describe('Conversation.buildProviderOptions (google)', () => {
     }
   );
 
+  // THE ROW'S WORD IS SENT (DECISIONS 157 call 4: never a level of this library's choosing). Google lists xhigh on
+  // gemini-4-hydrogen (its thinking page, 2026-11-12) and the installed package's list decides whether a word can leave
+  // (RequestedEffort hears its refusal and says it). RED at 9261af0a: xhigh and max were sent as 'high' and any other
+  // word as 'medium', so a model at xhigh ran at high and the catalog's check passed it.
   test.each([
-    ['low', 'low'],
-    ['medium', 'medium'],
-    ['high', 'high'],
-    ['xhigh', 'high'], // Gemini caps at 'high'
-    ['max', 'high'],
-  ] as Array<[ReasoningEffort, string]>)(
-    'effort %s → thinkingLevel %s, always includes thoughts',
-    (input, expected) => {
-      const google = buildGoogle(input, 'gemini-3.5-flash');
+    ['gemini-3.5-flash', 'low', 'low'],
+    ['gemini-3.5-flash', 'medium', 'medium'],
+    ['gemini-3.5-flash', 'high', 'high'],
+    ['gemini-4-hydrogen', 'xhigh', 'xhigh'],
+    ['gemini-4-hydrogen', 'max', 'max'],
+    // A word the product does not have (Google's 'minimal') is handed as given, never rewritten.
+    ['gemini-3.5-flash', 'minimal', 'minimal'],
+  ] as Array<[string, ReasoningEffort, string]>)(
+    '%s at effort %s → thinkingLevel %s, always includes thoughts',
+    (model, input, expected) => {
+      const google = buildGoogle(input, model);
       expect(google.thinkingConfig?.includeThoughts).toBe(true);
       expect(google.thinkingConfig?.thinkingLevel).toBe(expected);
     }
@@ -362,7 +368,7 @@ describe('Conversation.buildProviderOptions (google)', () => {
 });
 
 type XaiProviderOptions = {
-  reasoningEffort?: 'low' | 'high';
+  reasoningEffort?: string;
 };
 
 const buildXai = (
@@ -385,8 +391,11 @@ describe('Conversation.buildProviderOptions (xai)', () => {
       expect(buildXai('high', 'grok-4-1-fast-reasoning').reasoningEffort).toBe('high');
     });
 
-    test('max — a level xAI does not have — is sent as its top, xhigh', () => {
-      expect(buildXai('max', 'grok-4.5').reasoningEffort).toBe('xhigh');
+    // A new Grok whose models API states max is asked at max: the row's word leaves as given, and the installed
+    // package's list decides whether a request can carry it (RequestedEffort hears that refusal and names the
+    // package). RED at 9261af0a: max was sent as xhigh — the level a check at max then proved was never asked.
+    test('max is sent as max — the row’s word, never a level of the library’s choosing', () => {
+      expect(buildXai('max', 'grok-4.5').reasoningEffort).toBe('max');
     });
 
     test('auto omits reasoningEffort everywhere (the model’s own default)', () => {

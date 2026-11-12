@@ -1,8 +1,12 @@
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { createOpenAI } from '@ai-sdk/openai';
+import { createXai } from '@ai-sdk/xai';
 import { APICallError } from 'ai';
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { Conversation, type GenerateStreamParams } from '../../src/Conversation';
+import { Conversation, type GenerateStreamParams, type ReasoningEffort } from '../../src/Conversation';
 import { RequestedEffort } from '../../src/RequestedEffort';
 import { fixtureModelData } from './fixtureModelData';
 
@@ -135,7 +139,7 @@ const newConversation = (name: string) =>
     limits: { enforceLimits: false },
   });
 
-type Part = { type: string; textDelta?: string; warnings?: Array<Record<string, unknown>> };
+type Part = { type: string; textDelta?: string; warnings?: Array<Record<string, unknown>>; carriedEffort?: string };
 
 async function collect(fullStream: AsyncIterable<unknown>): Promise<Part[]> {
   const parts: Part[] = [];
@@ -201,6 +205,258 @@ const dump = (name: string, json: string): void => {
   }
 };
 
+type WireProvider = 'openai' | 'anthropic' | 'google' | 'xai';
+type WireRoad = 'generate' | 'stream';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type WireBody = Record<string, any>;
+
+/** The answer every scripted wire gives: the object's JSON on a generate call, its text on a stream call. */
+const WIRE_TEXT = '{"answer":"ok"}';
+const ANSWER_SCHEMA = {
+  type: 'object',
+  properties: { answer: { type: 'string' } },
+  required: ['answer'],
+  additionalProperties: false,
+};
+
+/** The installed provider package's own version — the one the transport loads. */
+const installedVersion = (packageName: string): string =>
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  require(`${packageName}/package.json`).version;
+
+/** The level word at the one place each provider's body carries it — read here from the body that reached fetch. */
+const levelAtFetch = (provider: WireProvider, body: WireBody | undefined): unknown =>
+  provider === 'openai' || provider === 'xai'
+    ? body?.reasoning?.effort
+    : provider === 'anthropic'
+      ? body?.output_config?.effort
+      : body?.generationConfig?.thinkingConfig?.thinkingLevel;
+
+/**
+ * Each provider's REAL package over a scripted `fetch`: every body that reached the wire kept, a minimal answer served
+ * in that provider's own wire shape for the road the call took — JSON for a generate call, server-sent events for a
+ * stream call. What the library reports is then compared with what left. No network, no key.
+ */
+class ProviderWire {
+  readonly bodies: WireBody[] = [];
+
+  constructor(
+    private readonly provider: WireProvider,
+    private readonly road: WireRoad
+  ) {}
+
+  readonly fetch = async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const body = JSON.parse(String(init?.body)) as WireBody;
+    this.bodies.push(body);
+    return this.road === 'stream'
+      ? new Response(ProviderWire.events(this.provider), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        })
+      : new Response(JSON.stringify(ProviderWire.message(this.provider, body)), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+  };
+
+  model(modelId: string): unknown {
+    const settings = { apiKey: 'scripted', fetch: this.fetch as never };
+    if (this.provider === 'openai') {
+      return createOpenAI(settings).responses(modelId);
+    }
+    if (this.provider === 'xai') {
+      return createXai(settings).responses(modelId);
+    }
+    if (this.provider === 'anthropic') {
+      return createAnthropic(settings)(modelId);
+    }
+    return createGoogleGenerativeAI(settings)(modelId);
+  }
+
+  /** A generate call's answer. Anthropic's object road may be the adapter's json tool — answered on the road the body took. */
+  private static message(provider: WireProvider, body: WireBody): WireBody {
+    if (provider === 'google') {
+      return {
+        candidates: [{ content: { role: 'model', parts: [{ text: WIRE_TEXT }] }, finishReason: 'STOP', index: 0 }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 3, totalTokenCount: 8 },
+      };
+    }
+    if (provider === 'anthropic') {
+      const viaTool = (body.tools ?? []).some((tool: { name?: string }) => tool.name === 'json');
+      return {
+        id: 'msg_wire',
+        type: 'message',
+        role: 'assistant',
+        model: body.model,
+        content: viaTool
+          ? [{ type: 'tool_use', id: 'toolu_json', name: 'json', input: JSON.parse(WIRE_TEXT) }]
+          : [{ type: 'text', text: WIRE_TEXT }],
+        stop_reason: viaTool ? 'tool_use' : 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 5, output_tokens: 3 },
+      };
+    }
+    return ProviderWire.response('completed', body.model, [ProviderWire.item('completed')]);
+  }
+
+  /** A stream call's answer, as the provider streams it. */
+  private static events(provider: WireProvider): string {
+    const data = (event: WireBody) => `data: ${JSON.stringify(event)}\n\n`;
+    if (provider === 'google') {
+      return data({
+        candidates: [{ content: { role: 'model', parts: [{ text: WIRE_TEXT }] }, finishReason: 'STOP', index: 0 }],
+        usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 3, totalTokenCount: 8 },
+      });
+    }
+    if (provider === 'anthropic') {
+      const named = (event: WireBody) => `event: ${String(event.type)}\n${data(event)}`;
+      return [
+        named({
+          type: 'message_start',
+          message: {
+            id: 'msg_wire',
+            type: 'message',
+            role: 'assistant',
+            model: 'scripted',
+            content: [],
+            stop_reason: null,
+            usage: { input_tokens: 5, output_tokens: 1 },
+          },
+        }),
+        named({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+        named({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: WIRE_TEXT } }),
+        named({ type: 'content_block_stop', index: 0 }),
+        named({
+          type: 'message_delta',
+          delta: { stop_reason: 'end_turn', stop_sequence: null },
+          usage: { output_tokens: 3 },
+        }),
+        named({ type: 'message_stop' }),
+      ].join('');
+    }
+    // OpenAI's and xAI's Responses wire.
+    let sequence = 0;
+    const event = (fields: WireBody) => data({ ...fields, sequence_number: sequence++ });
+    const at = { item_id: 'msg_wire', output_index: 0, content_index: 0 };
+    return [
+      event({ type: 'response.created', response: ProviderWire.response('in_progress', 'scripted', []) }),
+      event({ type: 'response.output_item.added', output_index: 0, item: ProviderWire.item('in_progress') }),
+      event({ type: 'response.output_text.delta', ...at, delta: WIRE_TEXT, logprobs: [] }),
+      event({ type: 'response.output_text.done', ...at, text: WIRE_TEXT, logprobs: [] }),
+      event({ type: 'response.output_item.done', output_index: 0, item: ProviderWire.item('completed') }),
+      event({
+        type: 'response.completed',
+        response: ProviderWire.response('completed', 'scripted', [ProviderWire.item('completed')]),
+      }),
+    ].join('');
+  }
+
+  private static response(status: string, model: string, output: WireBody[]): WireBody {
+    return {
+      id: 'resp_wire',
+      object: 'response',
+      created_at: 1762900000,
+      status,
+      incomplete_details: null,
+      model,
+      output,
+      service_tier: 'default',
+      usage:
+        status === 'completed'
+          ? {
+              input_tokens: 5,
+              input_tokens_details: { cached_tokens: 0 },
+              output_tokens: 3,
+              output_tokens_details: { reasoning_tokens: 0 },
+              total_tokens: 8,
+            }
+          : null,
+    };
+  }
+
+  private static item(status: string): WireBody {
+    return {
+      id: 'msg_wire',
+      type: 'message',
+      role: 'assistant',
+      status,
+      content: status === 'completed' ? [{ type: 'output_text', text: WIRE_TEXT, annotations: [], logprobs: [] }] : [],
+    };
+  }
+}
+
+/**
+ * One call through the library on one road over the provider's real package: the level word the library REPORTS
+ * for the request (the step's `carriedEffort` on a stream call, the result's on a generate call) beside the word in
+ * the body that reached fetch.
+ */
+const reportedAndFetched = async (
+  provider: WireProvider,
+  modelId: string,
+  effort: string,
+  road: WireRoad
+): Promise<{ reported: unknown[]; fetched: unknown[] }> => {
+  const wire = new ProviderWire(provider, road);
+  const conversation = newConversation(`carried-${provider}-${modelId}-${effort}-${road}`);
+  const model = wire.model(modelId) as never;
+  const reasoningEffort = effort as ReasoningEffort;
+  if (road === 'generate') {
+    const result = await conversation.generateObject<{ answer: string }>({
+      messages: ['Say ok.'],
+      model,
+      reasoningEffort,
+      schema: ANSWER_SCHEMA,
+      recordInHistory: false,
+    });
+    expect(result.object.answer).toBe('ok');
+    return {
+      reported: [result.carriedEffort],
+      fetched: wire.bodies.map((body) => levelAtFetch(provider, body)),
+    };
+  }
+  const result = await conversation.generateStream({ messages: ['Say ok.'], model, reasoningEffort });
+  const parts = await collect(result.fullStream);
+  expect(await result.text).toBe(WIRE_TEXT);
+  return {
+    reported: parts.filter((part) => part.type === 'step-start').map((part) => part.carriedEffort),
+    fetched: wire.bodies.map((body) => levelAtFetch(provider, body)),
+  };
+};
+
+/**
+ * Every named level of the 10 live source rows with levels (chat-common's modelCatalog.declaration.json at chat
+ * 0ec951c1, read 2026-11-12: 47 levels) and gemini-4-hydrogen's four (Google's thinking page, 2026-11-12).
+ */
+const LIVE_LEVELS: Array<[WireProvider, string, string[]]> = [
+  ['anthropic', 'claude-fable-5-1', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['anthropic', 'claude-opus-4-8', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['anthropic', 'claude-opus-5', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['anthropic', 'claude-sonnet-5', ['low', 'medium', 'high', 'xhigh', 'max']],
+  ['google', 'gemini-3.1-pro-preview', ['low', 'medium', 'high']],
+  ['openai', 'gpt-5.5-pro', ['medium', 'high', 'xhigh']],
+  ['openai', 'gpt-5.6-sol', ['none', 'low', 'medium', 'high', 'xhigh', 'max']],
+  ['openai', 'gpt-5.6-terra', ['none', 'low', 'medium', 'high', 'xhigh', 'max']],
+  ['xai', 'grok-4.3', ['none', 'low', 'medium', 'high', 'xhigh']],
+  ['xai', 'grok-4.5', ['low', 'medium', 'high', 'xhigh']],
+  ['google', 'gemini-4-hydrogen', ['low', 'medium', 'high', 'xhigh']],
+];
+
+/** Silences the SDK's own warning log for the length of a call (the warnings themselves are read off the step). */
+const quietly = async <T>(run: () => Promise<T>): Promise<T> => {
+  const g = globalThis as { AI_SDK_LOG_WARNINGS?: unknown };
+  const prior = g.AI_SDK_LOG_WARNINGS;
+  g.AI_SDK_LOG_WARNINGS = false;
+  try {
+    return await run();
+  } finally {
+    if (prior === undefined) {
+      delete g.AI_SDK_LOG_WARNINGS;
+    } else {
+      g.AI_SDK_LOG_WARNINGS = prior;
+    }
+  }
+};
+
 beforeEach(() => RequestedEffort.forgetAll());
 
 describe('the requested effort follows the model (a step asked at a level the provider refuses runs with the effort omitted)', () => {
@@ -243,6 +499,33 @@ describe('the requested effort follows the model (a step asked at a level the pr
       expect(second.doStreamCalls.map((call) => effortOf(call as never))).toEqual([undefined]);
       expect(warnings).toHaveLength(0);
       expect(streamWarnings(parts)).toHaveLength(0);
+    },
+    TIMEOUT
+  );
+
+  // A caller that must hear the provider itself (the catalog's level check) forgets the one refusal it is about to
+  // ask again: before this, a second check of a refused level in the same process left with no level and no warning,
+  // and passed (the attack's finding 1a, 2026-11-12). Forgetting is per model and per level.
+  test(
+    'a remembered refusal, forgotten for that model and level, is asked again — the next request carries the level',
+    async () => {
+      await turn('effort-forget-first', astra());
+      expect(RequestedEffort.omits('gpt-6-astra', 'none')).toBe(true);
+
+      // Another level, or another model, forgets nothing of it.
+      RequestedEffort.forget('gpt-6-astra', 'low');
+      RequestedEffort.forget('gpt-6-sol', 'none');
+      const still = astra();
+      await turn('effort-forget-other', still);
+      expect(still.doStreamCalls.map((call) => effortOf(call as never))).toEqual([undefined]);
+
+      RequestedEffort.forget('gpt-6-astra', 'none');
+      const again = astra();
+      const { parts } = await turn('effort-forget-again', again);
+      // The provider is asked at the level, refuses it in its own words, and the omission is said once more.
+      expect(again.doStreamCalls.map((call) => effortOf(call as never))).toEqual(['none', undefined]);
+      expect(streamWarnings(parts)).toHaveLength(1);
+      expect(String(streamWarnings(parts)[0].details)).toContain(ASTRA_CLAUSE);
     },
     TIMEOUT
   );
@@ -422,36 +705,40 @@ describe('a level the installed SDK cannot carry is a refusal too (the transport
     });
   };
 
-  test(
-    "xAI's provider options refuse 'xhigh' (recorded live 2026-09-29, @ai-sdk/xai 3.0.92 on grok-4.5): the step is re-issued with the effort OMITTED, the omission rides the stream as the same step-start warning, and it is remembered",
-    async () => {
-      const model = new MockLanguageModelV3({
-        provider: 'xai',
-        modelId: 'grok-4.5',
-        doStream: async (call) => {
-          const effort = (call as Call).providerOptions?.xai?.reasoningEffort;
-          if (effort === 'xhigh') {
-            throw sdkRefusal('xai', { reasoningEffort: 'xhigh' });
-          }
-          return { stream: reasonedStep('planning', 'THE ANSWER') };
-        },
-      });
-      const result = await newConversation('sdk-refusal-xhigh').generateStream({
+  // The installed package's own options schema refuses a word its list lacks before any request leaves (xAI's
+  // reasoningEffort lists none…xhigh; Google's thinkingLevel minimal…xhigh from 3.0.146): the provider was never
+  // asked. The re-issue is the same as for the provider's refusal; the warning names the package and the version
+  // that refused — the fact a catalog turns into "save the row without it" — never the provider. RED at 9261af0a:
+  // the library sent xAI's max as xhigh and Google's as high, so the package was never reached at max; at
+  // the package's refusal the warning said the model did not accept the level.
+  test.each([
+    ['xai', 'grok-4.5', '@ai-sdk/xai'],
+    ['google', 'gemini-4-hydrogen', '@ai-sdk/google'],
+  ] as Array<[WireProvider, string, string]>)(
+    "%s's installed package lacks max (%s): no request leaves at max, the step is re-issued without the level, and the warning names the package and its version",
+    async (provider, modelId, packageName) => {
+      const wire = new ProviderWire(provider, 'stream');
+      const result = await newConversation(`package-refusal-${provider}`).generateStream({
         messages: ['A train leaves at 9:40…'],
-        model: model as never,
-        reasoningEffort: 'xhigh',
+        model: wire.model(modelId) as never,
+        reasoningEffort: 'max',
       });
       const parts = await collect(result.fullStream);
-      expect(await result.text).toContain('THE ANSWER');
-      const sent = model.doStreamCalls.map((call) => (call as Call).providerOptions?.xai?.reasoningEffort);
-      expect(sent).toEqual(['xhigh', undefined]);
-      expect(model.doStreamCalls[1].providerOptions?.xai).not.toHaveProperty('reasoningEffort');
+
+      expect(await result.text).toBe(WIRE_TEXT);
+      // One request reached the wire — the re-issue, carrying no level; the step reports none carried.
+      expect(wire.bodies).toHaveLength(1);
+      expect(levelAtFetch(provider, wire.bodies[0])).toBeUndefined();
+      const starts = parts.filter((part) => part.type === 'step-start');
+      expect(starts.map((part) => part.carriedEffort)).toEqual([undefined]);
       const forwarded = streamWarnings(parts);
       expect(forwarded).toHaveLength(1);
       expect(forwarded[0]).toMatchObject({ type: 'compatibility', feature: 'reasoningEffort' });
-      expect(String(forwarded[0].details)).toMatch(/grok-4.5 does not accept reasoning effort 'xhigh'/);
-      expect(String(forwarded[0].details)).toMatch(/invalid xai provider options/);
-      expect(RequestedEffort.omits('grok-4.5', 'xhigh')).toBe(true);
+      const details = String(forwarded[0].details);
+      expect(details).toContain(`${packageName} ${installedVersion(packageName)}`);
+      expect(details).toContain("'max'");
+      expect(details).not.toContain('does not accept');
+      expect(RequestedEffort.omits(modelId, 'max')).toBe(true);
     },
     TIMEOUT
   );
@@ -462,6 +749,47 @@ describe('a level the installed SDK cannot carry is a refusal too (the transport
     // Another option the schema refuses is not the effort's refusal.
     expect(RequestedEffort.isRefusal(sdkRefusal('xai', { searchParameters: 'x' }), 'xhigh')).toBe(false);
   });
+});
+
+describe('each request reports the level word its body carried — read from the provider package’s own report of the body', () => {
+  // The fact a catalog's check proves a level by: the word that LEFT, never the word asked (a substitution, a package
+  // that drops a level, an id the library says does not reason, a remembered refusal all leave something else).
+  // RED at 9261af0a: nothing was reported on either road.
+  test('on a generate call and on a stream call, for each of the four providers, the reported word is the word in the body at fetch, and that word is the row’s', async () => {
+    const misses: string[] = [];
+    let cells = 0;
+    await quietly(async () => {
+      for (const [provider, modelId, levels] of LIVE_LEVELS) {
+        for (const level of levels) {
+          for (const road of ['generate', 'stream'] as const) {
+            cells += 1;
+            const { reported, fetched } = await reportedAndFetched(provider, modelId, level, road);
+            if (fetched.length !== 1 || fetched[0] !== level || reported.length !== 1 || reported[0] !== fetched[0]) {
+              misses.push(
+                `${provider} ${modelId} at ${level} (${road}): at fetch ${JSON.stringify(fetched)}, reported ${JSON.stringify(reported)}`
+              );
+            }
+          }
+        }
+      }
+    });
+    expect(cells).toBe(102);
+    expect(misses).toEqual([]);
+  }, 120_000);
+
+  test(
+    'an id the library says does not reason (o5): the body carries no level and the reported word is absent, on both roads',
+    async () => {
+      await quietly(async () => {
+        for (const road of ['generate', 'stream'] as const) {
+          const { reported, fetched } = await reportedAndFetched('openai', 'o5', 'high', road);
+          expect(fetched).toEqual([undefined]);
+          expect(reported).toEqual([undefined]);
+        }
+      });
+    },
+    TIMEOUT
+  );
 });
 
 describe('RequestedEffort — the verdict', () => {

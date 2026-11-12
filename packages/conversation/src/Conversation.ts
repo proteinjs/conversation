@@ -409,6 +409,13 @@ export type StreamPart =
        */
       type: 'step-start';
       warnings: StreamWarning[];
+      /**
+       * The thinking level word this step's request CARRIED — read from the provider package's own
+       * report of the body it sent (`RequestedEffort.carried`), never from the level asked; absent
+       * when the body carried none (`auto`, a level omitted after a refusal, an id the library says
+       * does not reason, a budget sent for a level). What a check that proves a level reads.
+       */
+      carriedEffort?: string;
     }
   | { type: 'text-delta'; textDelta: string }
   | { type: 'reasoning-start' }
@@ -609,6 +616,12 @@ export type GenerateObjectResult<T> = {
   usage: UsageData;
   reasoning?: string;
   toolInvocations: ToolInvocationResult[];
+  /**
+   * The thinking level word the request that produced the object CARRIED (the tool loop's: its last step's) — read
+   * from the provider package's own report of the body it sent, as the stream's `step-start` reports it; absent when
+   * the body carried none.
+   */
+  carriedEffort?: string;
 };
 
 export type GenerateResponseResult = {
@@ -1591,6 +1604,8 @@ export class Conversation {
                 reason: 'refusal',
                 from: rung.modelString,
                 to: nextRung.modelString,
+                // The rung's provider, for reading its steps' request bodies (mapFullStream); not forwarded.
+                provider: nextRung.provider,
                 declined: [...refusalDeclined],
               };
               let nextMessages = [...latestStepMessages];
@@ -1988,12 +2003,14 @@ export class Conversation {
 
     // Extract reasoning if available
     const reasoning = this.extractReasoningFromResult(result);
+    const carriedEffort = RequestedEffort.carried(provider, result?.request?.body);
 
     return {
       object: (result?.object ?? {}) as T,
       usage,
       reasoning: reasoning || undefined,
       toolInvocations: [],
+      ...(carriedEffort !== undefined ? { carriedEffort } : {}),
     };
   }
 
@@ -2162,11 +2179,13 @@ export class Conversation {
       }
     }
 
+    const carriedEffort = RequestedEffort.carried(args.provider, steps?.[steps.length - 1]?.request?.body);
     return {
       object: submitted,
       usage,
       reasoning: this.extractReasoningFromResult({ reasoning: reasoningParts }) || undefined,
       toolInvocations: capturedInvocations,
+      ...(carriedEffort !== undefined ? { carriedEffort } : {}),
     };
   }
 
@@ -3487,8 +3506,8 @@ export class Conversation {
 
     if (provider === 'openai') {
       const openaiOpts: Record<string, any> = {};
-      // The effort as THIS model's provider names it (OpenAiModelRules: 'max' is its own level
-      // from GPT-6 on, 'xhigh' the top before that); 'auto' omits it — the model's default.
+      // The caller's level as asked (OpenAiModelRules); 'auto' omits it — the model's default. A
+      // level the model lacks is OpenAI's to refuse (RequestedEffort hears it and says it).
       const openaiEffort = OpenAiModelRules.reasoningEffort(modelString ?? '', effort);
       if (openaiEffort) {
         openaiOpts.reasoningEffort = openaiEffort;
@@ -3587,18 +3606,14 @@ export class Conversation {
         // the whole thinkingConfig went with the level and the timeline showed nothing.
         googleOpts.thinkingConfig = { includeThoughts: true };
       } else {
-        // Google accepts thinkingLevel: minimal | low | medium | high
-        // Our 'max'/'xhigh' have no Google equivalent → map to 'high'
-        const levelMap: Record<string, string> = {
-          low: 'low',
-          medium: 'medium',
-          high: 'high',
-          xhigh: 'high',
-          max: 'high',
-        };
+        // The caller's level as asked — never a level of this library's choosing (DECISIONS 157
+        // call 4). Which words a model takes is Google's per model (gemini-4-hydrogen adds xhigh,
+        // 2026-11-12), and which words a request can carry is the installed @ai-sdk/google's list;
+        // a word either refuses is RequestedEffort's to hear and say. Before this, xhigh and max
+        // left as 'high' and any other word as 'medium': a row at xhigh ran at high, unsaid.
         googleOpts.thinkingConfig = {
           includeThoughts: true,
-          thinkingLevel: levelMap[effort] ?? 'medium',
+          thinkingLevel: effort,
         };
       }
       options.google = googleOpts;
@@ -3611,10 +3626,12 @@ export class Conversation {
       // none…xhigh, default low; read 2026-09-29, one live call per level on grok-4.5 accepted).
       // The effort is sent as asked for EVERY xAI model: the `/fast/` gate that stood here (a
       // 2026-07 reading of grok-4 refusing the parameter) held grok-4.5's levels back from the
-      // wire. `auto` omits it (the model's default); `max` — a level xAI does not have — is its
-      // top, `xhigh`; a value the model in hand refuses is RequestedEffort's to hear.
+      // wire. `auto` omits it (the model's default); every other level is sent as asked, `max`
+      // included (a new Grok's models API may state it) — a value the installed @ai-sdk/xai cannot
+      // carry, or the model in hand refuses, is RequestedEffort's to hear and say. Before this,
+      // `max` left as `xhigh`, unsaid.
       if (effort && effort !== 'auto') {
-        xaiOpts.reasoningEffort = effort === 'max' ? 'xhigh' : effort;
+        xaiOpts.reasoningEffort = effort;
       }
       // Live Search is enabled via the `webSearch` tool factory on the
       // Responses endpoint (handled in getWebSearchTools). The old
@@ -3800,8 +3817,8 @@ export class Conversation {
     // Under the retry layer, the request follows the provider's verdict for the model: a forced
     // tool choice it refuses is softened with the whole roster — before it leaves when the vendor's
     // own table marks the id, else on the refusal heard once (ForcedToolChoice); a reasoning effort
-    // it refuses is re-issued at the nearest level it accepts (RequestedEffort) — each remembered
-    // for the process, no house list of ids.
+    // it (or the installed package) refuses is re-issued with the effort omitted (RequestedEffort)
+    // — each remembered for the process, no house list of ids.
     // Innermost, on the provider's own stream: the metadata of an empty text delta (a streamed
     // thought signature) rides to the block's end before the core discards the delta (EmptyDeltaMetadata).
     return this.transportRetry.wrap(
@@ -4721,6 +4738,9 @@ export class Conversation {
     return {
       async *[Symbol.asyncIterator]() {
         const partCounts: Record<string, number> = {};
+        // The provider whose body a step's request is — the conversation's, until the refusal ladder moves a step
+        // to another model (`model-rerun`), whose provider then speaks for every step after it.
+        let stepProvider = provider;
         try {
           for await (const part of aiSdkFullStream) {
             const partType = part.type ?? 'unknown';
@@ -4748,6 +4768,9 @@ export class Conversation {
               // feature, a middleware's substitution — RequestedEffort's omitted effort), so a
               // consumer reads what the transport changed instead of inferring it from the answer.
               const warnings = Array.isArray(part.warnings) ? part.warnings : [];
+              // And the level word the request carried — the provider package's own report of the body it
+              // sent (the step's `request.body`), read at that provider's one place; only the word leaves.
+              const carriedEffort = RequestedEffort.carried(stepProvider, part.request?.body);
               yield {
                 type: 'step-start' as const,
                 warnings: warnings.map((warning: Record<string, unknown>) => ({
@@ -4756,6 +4779,7 @@ export class Conversation {
                   ...(typeof warning?.details === 'string' ? { details: warning.details } : {}),
                   ...(typeof warning?.message === 'string' ? { message: warning.message } : {}),
                 })),
+                ...(carriedEffort !== undefined ? { carriedEffort } : {}),
               };
             } else if (part.type === 'finish-step') {
               // The step delimiter (SDK-normalized finishReason: 'tool-calls' = more work
@@ -4771,6 +4795,7 @@ export class Conversation {
             } else if (part.type === 'model-rerun') {
               // The refusal ladder moved a refused step one rung down (see
               // GenerateStreamParams.refusalLadder) — passes through for the surfaces that show it.
+              stepProvider = String(part.provider);
               yield {
                 type: 'model-rerun' as const,
                 reason: 'refusal' as const,

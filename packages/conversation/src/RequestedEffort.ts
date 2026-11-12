@@ -9,6 +9,7 @@ import type {
 } from '@ai-sdk/provider';
 import { wrapLanguageModel } from 'ai';
 import { Logger } from '@proteinjs/logger';
+import { providerPackage } from './resolveModel';
 
 /**
  * THE REQUESTED EFFORT FOLLOWS THE MODEL. A caller asks for a reasoning effort the way it asks
@@ -35,6 +36,17 @@ import { Logger } from '@proteinjs/logger';
  * Only that refusal is heard: any other 4xx surfaces untouched (the transport-retry layer's
  * semantic-error bar), a model that accepts the value is never touched (its request leaves
  * byte-identical), and a request that carries no effort has nothing to hear.
+ *
+ * WHO REFUSED is said: the provider (its clause — the request left and came back a 400), or the
+ * installed provider PACKAGE, whose options schema lists the levels it can carry and refuses any
+ * other word before a request leaves (`@ai-sdk/xai` has no `max`; `@ai-sdk/google` had no `xhigh`
+ * before 3.0.146) — named with its version, because the provider was never asked and the answer is
+ * a release of that package, not a fact about the model.
+ *
+ * And the level each request CARRIED is this class's to read ({@link RequestedEffort.carried}): the
+ * word in the body the provider package itself reports it sent, at the one place each provider's
+ * body holds it — the proof a caller reads, since the word asked is not always the word that left
+ * (a refusal omitted it, a package dropped it, an id the library says does not reason sends none).
  */
 export class RequestedEffort {
   /** Where each provider carries the effort in `providerOptions` (the field this library writes). */
@@ -43,6 +55,19 @@ export class RequestedEffort {
     xai: ['reasoningEffort'],
     anthropic: ['effort'],
     google: ['thinkingConfig', 'thinkingLevel'],
+  };
+
+  /**
+   * Where each provider's REQUEST BODY carries the level — the field the provider package writes from the option
+   * above (OpenAI's and xAI's Responses `reasoning.effort`, Anthropic's `output_config.effort`, Google's
+   * `generationConfig.thinkingConfig.thinkingLevel`). Pinned against every installed package by the request-body suite:
+   * a package that moves the field turns that pin red here, and a caller then reads "no level carried", never a stale one.
+   */
+  private static readonly BODY_FIELDS: Readonly<Record<string, readonly string[]>> = {
+    openai: ['reasoning', 'effort'],
+    xai: ['reasoning', 'effort'],
+    anthropic: ['output_config', 'effort'],
+    google: ['generationConfig', 'thinkingConfig', 'thinkingLevel'],
   };
 
   /** The parameter names the providers refuse the effort under (OpenAI's `param`; the field path in a message). */
@@ -66,6 +91,37 @@ export class RequestedEffort {
   /** Whether `effort` is omitted for this model (in this process) because the provider refused it. */
   static omits(modelId: string, effort: string): boolean {
     return RequestedEffort.omissions.get(modelId)?.has(effort) ?? false;
+  }
+
+  /**
+   * The level word a request's body carried, read from the provider package's own report of the body it sent
+   * (`request.body` on a generate call's result and on the stream's `start-step` part) at the one place that
+   * provider's body holds it; undefined when it carried none — `auto`, a level omitted after a refusal, an id the
+   * library says does not reason, a budget sent for a level. Only the word is read: the body is never kept or logged.
+   */
+  static carried(provider: string, body: unknown): string | undefined {
+    const path = RequestedEffort.BODY_FIELDS[provider];
+    if (!path) {
+      return undefined;
+    }
+    const value = path.reduce<unknown>((node, key) => (node as Record<string, unknown> | undefined)?.[key], body);
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  /**
+   * Forget one remembered refusal — this model's, at this level — so the next request at that level asks again and
+   * the answer is the provider's own (a catalog's level check asks every time; a refusal heard earlier in the process
+   * would otherwise leave its request with no level and no warning). Every other omission stays.
+   */
+  static forget(modelId: string, effort: string): void {
+    const forModel = RequestedEffort.omissions.get(modelId);
+    if (!forModel) {
+      return;
+    }
+    forModel.delete(effort);
+    if (forModel.size === 0) {
+      RequestedEffort.omissions.delete(modelId);
+    }
   }
 
   /**
@@ -148,19 +204,34 @@ export class RequestedEffort {
         throw error;
       }
       const clause = RequestedEffort.words(error);
+      const refusedBy = RequestedEffort.packageRefused(error) ? providerPackage(sent.provider) : undefined;
       RequestedEffort.logger.warn({
-        message:
-          'The provider refused the requested reasoning effort for this model — re-issuing once with the effort omitted (the provider’s own default) and remembering it',
-        obj: { modelId: model.modelId, requested: sent.value, clause },
+        message: refusedBy
+          ? 'The installed provider package cannot carry the requested reasoning effort — no request left; re-issuing once with the effort omitted (the provider’s own default) and remembering it'
+          : 'The provider refused the requested reasoning effort for this model — re-issuing once with the effort omitted (the provider’s own default) and remembering it',
+        obj: { modelId: model.modelId, requested: sent.value, clause, ...(refusedBy ? { package: refusedBy } : {}) },
       });
       const result = await rerun(RequestedEffort.withoutEffort(params, sent));
       RequestedEffort.remember(model.modelId, sent.value);
+      const omitted = `re-issued with the effort omitted (the provider's own default applies) and remembered for this process.`;
       return warned(result, {
         type: 'compatibility',
         feature: 'reasoningEffort',
-        details: `${model.modelId} does not accept reasoning effort '${sent.value}' — re-issued with the effort omitted (the provider's own default applies) and remembered for this process. The provider: ${clause}`,
+        details: refusedBy
+          ? `The installed ${refusedBy.name} ${refusedBy.version} does not list reasoning effort '${sent.value}', so no request for ${model.modelId} left at it — ${omitted} The package: ${clause}`
+          : `${model.modelId} does not accept reasoning effort '${sent.value}' — ${omitted} The provider: ${clause}`,
       });
     }
+  }
+
+  /**
+   * Whether the refusal is the installed package's own: its options schema refused the value before any request left
+   * (`parseProviderOptions` raises AI_InvalidArgumentError on `providerOptions`). Anything else heard as a refusal came
+   * back from the provider.
+   */
+  private static packageRefused(error: unknown): boolean {
+    const raised = error as { name?: unknown; argument?: unknown } | undefined;
+    return raised?.name === 'AI_InvalidArgumentError' && raised?.argument === 'providerOptions';
   }
 
   /** The request with a remembered omission applied before it leaves — else the request as it came. */

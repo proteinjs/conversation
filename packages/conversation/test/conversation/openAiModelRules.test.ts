@@ -42,12 +42,14 @@ describe('OpenAiModelRules', () => {
     expect(OpenAiModelRules.reasons(id)).toBe(expected);
   });
 
+  // The row's word on every generation — the provider's own refusal is the rule for a level a model lacks
+  // (RequestedEffort), never a level of this library's choosing.
   test.each([
     ['gpt-6-sol', 'max', 'max'],
     ['gpt-6-astra', 'max', 'max'],
-    ['gpt-5.6-sol', 'max', 'xhigh'],
-    ['gpt-5.5-pro', 'max', 'xhigh'],
-    ['o3', 'max', 'xhigh'],
+    ['gpt-5.6-sol', 'max', 'max'],
+    ['gpt-5.5-pro', 'max', 'max'],
+    ['o3', 'max', 'max'],
     ['gpt-6-sol', 'xhigh', 'xhigh'],
     ['gpt-6-sol', 'none', 'none'],
     ['gpt-6-sol', 'low', 'low'],
@@ -83,9 +85,12 @@ describe('Conversation.buildProviderOptions (openai) states the rules to the SDK
     expect(build('auto', 'gpt-6-astra')).toEqual({ reasoningSummary: 'auto', forceReasoning: true, ...stateless });
   });
 
-  test('a GPT-5 model reasons — max is its top level, xhigh', () => {
-    expect(build('max', 'gpt-5.6-sol')).toEqual({
-      reasoningEffort: 'xhigh',
+  // THE PROD DEFECT OF 2026-11-12: GPT-5.6 Sol and Terra list max beside xhigh (OpenAI's model pages for both ids:
+  // "none, low, medium (default), high, xhigh, and max"), two stops on the slider, and max left as xhigh — the
+  // generation rule read max as GPT-6's own level. RED at 9261af0a: reasoningEffort xhigh on both.
+  test.each([['gpt-5.6-sol'], ['gpt-5.6-terra']])('a GPT-5 model reasons — max on %s is sent as max', (model) => {
+    expect(build('max', model)).toEqual({
+      reasoningEffort: 'max',
       reasoningSummary: 'auto',
       forceReasoning: true,
       ...stateless,

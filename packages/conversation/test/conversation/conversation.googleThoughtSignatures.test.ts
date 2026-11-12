@@ -166,6 +166,31 @@ describe('Google thought signatures — every step of a turn carries them back o
     TIMEOUT
   );
 
+  // gemini-4-hydrogen lists low, medium, high and xhigh (Google's thinking page and API reference, 2026-11-12). The
+  // row's word reaches the wire through the installed package, which lists xhigh from 3.0.146. RED at 9261af0a: the
+  // request carried 'high' (the library's substitution); at @ai-sdk/google 3.0.141 the package's own list refused the
+  // word before any request and the step left with no level.
+  test(
+    'gemini-4-hydrogen at xhigh: the one request that reaches the wire carries thinkingLevel xhigh',
+    async () => {
+      const wire = new ScriptedGoogleWire([sse([[{ text: 'Four.' }]], 'STOP', usage({ thoughts: 9 }))]);
+      const result = await conversationOver().generateStream({
+        messages: ['What is two plus two?'],
+        model: wire.model('gemini-4-hydrogen'),
+        reasoningEffort: 'xhigh',
+      });
+      await drain(result.fullStream);
+
+      expect(await result.text).toBe('Four.');
+      expect(wire.requests).toHaveLength(1);
+      expect(wire.requests[0].generationConfig?.thinkingConfig).toEqual({
+        includeThoughts: true,
+        thinkingLevel: 'xhigh',
+      });
+    },
+    TIMEOUT
+  );
+
   test(
     'a tool call step: the functionCall part goes back on the next step with its signature, inside its own part, ahead of the function response',
     async () => {

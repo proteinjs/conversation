@@ -33,17 +33,16 @@ export class OpenAiModelRules {
   }
 
   /**
-   * Our effort as the provider names it for THIS model. `auto` omits the parameter (the model's
-   * default); `max` is a level of its own from the 6th generation on, and the highest level the
-   * earlier generations have — `xhigh` — before that.
+   * The effort the request carries. `auto` omits the parameter (the model's default); every other
+   * level is the caller's word, sent as asked on every model — never a level of this library's
+   * choosing (DECISIONS 157 call 4). A level a model lacks is the provider's to refuse, and
+   * `RequestedEffort` hears that refusal and says it. (Until 2026-11-12 `max` went out as `xhigh`
+   * below the 6th generation, so GPT-5.6 Sol and Terra, whose pages list `max` beside `xhigh`, ran
+   * their Max stop at xhigh.)
    */
-  static reasoningEffort(modelId: string, effort?: ReasoningEffort): OpenAiReasoningEffort | undefined {
+  static reasoningEffort(_modelId: string, effort?: ReasoningEffort): OpenAiReasoningEffort | undefined {
     if (!effort || effort === 'auto') {
       return undefined;
-    }
-    if (effort === 'max') {
-      const generation = OpenAiModelRules.generation(modelId);
-      return generation !== undefined && generation >= 6 ? 'max' : 'xhigh';
     }
     return effort;
   }

@@ -46,6 +46,21 @@ const PROVIDER_FACTORIES: Record<string, (modelId: string) => LanguageModel> = {
 };
 
 /**
+ * The package each factory above requires, read for its installed version only when asked (a refusal that names it).
+ * One row per provider, beside the factory that loads the same package.
+ */
+const PROVIDER_PACKAGES: Record<string, () => { name: string; version: string }> = {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  openai: () => ({ name: '@ai-sdk/openai', version: String(require('@ai-sdk/openai/package.json').version) }),
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  anthropic: () => ({ name: '@ai-sdk/anthropic', version: String(require('@ai-sdk/anthropic/package.json').version) }),
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  google: () => ({ name: '@ai-sdk/google', version: String(require('@ai-sdk/google/package.json').version) }),
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  xai: () => ({ name: '@ai-sdk/xai', version: String(require('@ai-sdk/xai/package.json').version) }),
+};
+
+/**
  * Model name patterns that map to a provider.
  *
  * Order matters: first match wins. Patterns are tested against the raw model
@@ -143,6 +158,15 @@ export function routedProvider(model: LanguageModel | string): string {
     return family;
   }
   return providerByNamePattern(String(instance.modelId ?? '').trim()) ?? 'unknown';
+}
+
+/**
+ * The installed package that serves a provider's calls — its name and the version this process loads. What a
+ * refusal names when the package's own options schema, not the provider, refused a value before any request left
+ * (RequestedEffort): the answer is that package's next release. Undefined for a provider this library does not route.
+ */
+export function providerPackage(provider: string): { name: string; version: string } | undefined {
+  return PROVIDER_PACKAGES[provider]?.();
 }
 
 /**

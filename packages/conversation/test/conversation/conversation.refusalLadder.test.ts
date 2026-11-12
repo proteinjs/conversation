@@ -223,6 +223,35 @@ describe('Conversation.generateStream — the refusal ladder', () => {
     TIMEOUT
   );
 
+  // A step's `carriedEffort` is read from its request body at the place THAT request's provider carries the level:
+  // after a rung on another provider, the rung's provider speaks for its steps (an OpenAI body read at Anthropic's
+  // place would report no level carried).
+  test(
+    'a rung on another provider: each step reports the level its own provider’s body carried',
+    async () => {
+      const withBody = (model: MockLanguageModelV3, body: Record<string, unknown>) => {
+        const scripted = model.doStream;
+        model.doStream = async (options) => ({ ...(await scripted(options)), request: { body } });
+        return model;
+      };
+      const first = withBody(scriptedModel('claude-first', ['refuse']), { output_config: { effort: 'max' } });
+      const second = withBody(scriptedModel('gpt-6-sol', [{ text: 'done' }]), { reasoning: { effort: 'xhigh' } });
+      const { conversation } = buildConversation();
+
+      const result = await conversation.generateStream({
+        messages: ['do the work'],
+        model: first as never,
+        refusalLadder: () => second as never,
+      });
+      const { parts, text } = await drain(result);
+
+      expect(text).toBe('done');
+      const carried = parts.flatMap((part) => (part.type === 'step-start' ? [part.carriedEffort] : []));
+      expect(carried).toEqual(['max', 'xhigh']);
+    },
+    TIMEOUT
+  );
+
   test(
     'every rung refuses: the refusal surfaces once, as the content-filter step-finish naming every model that declined',
     async () => {
