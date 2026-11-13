@@ -1,7 +1,7 @@
 import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { encoding_for_model } from 'tiktoken';
 import { jsonSchema } from 'ai';
-import { Conversation } from '../../src/Conversation';
+import { Conversation, type StreamPart } from '../../src/Conversation';
 import { ConversationSkill } from '../../src/ConversationSkill';
 import { Function } from '../../src/Function';
 import { MessageModerator } from '../../src/history/MessageModerator';
@@ -304,6 +304,40 @@ describe('Conversation — toolResultCeiling: an oversized tool result never ent
       expect(read).toBe(
         ['Lines 1–2 of 60 (tool result "tc-1", Glob).', '1: mid/file-0.ts', '2: mid/file-1.ts'].join('\n')
       );
+    },
+    TIMEOUT
+  );
+
+  test(
+    'over the ceiling the call still settles from what its tool returned: the outcome hook counts the whole listing, the model still reads the head + pointer',
+    async () => {
+      const countedGlob: Function = {
+        ...globTool,
+        getTimelineOutcome: (_args: unknown, result: unknown) => ({
+          detail: `${String(result).split('\n').length} files`,
+        }),
+      };
+      const { model, prompts } = scriptedModel([
+        { type: 'tool', toolName: 'Glob', input: '{"pattern":"**/plans/**"}' },
+        { type: 'text', text: 'done' },
+      ]);
+      // The settle is a stream part, so this turn is played through the stream.
+      const result = await buildConversation([countedGlob]).generateStream({
+        messages: ['list the plans'],
+        model: model as never,
+        toolResultCeiling: { tokensPerResult: 1_000 },
+      });
+      const outcomes: StreamPart[] = [];
+      for await (const part of result.fullStream) {
+        if (part.type === 'tool-outcome') {
+          outcomes.push(part);
+        }
+      }
+      expect(outcomes).toEqual([{ type: 'tool-outcome', toolName: 'Glob', detail: `${LISTING_LINES} files` }]);
+      const carried = toolResultTexts(prompts()[1]);
+      expect(carried).toHaveLength(1);
+      expect(carried[0]).toContain('Tool result set aside:');
+      expect(carried[0]).not.toContain(`frame-${LISTING_LINES - 1}.png`);
     },
     TIMEOUT
   );

@@ -806,6 +806,33 @@ describe('SkillDispatcherSkill', () => {
         )
       ).toEqual({ name: 'write', detail: { text: 'Monday morning', href: 'journal://entry/1' } });
     });
+
+    it("a dispatcher inside a dispatcher: after the call, the tool's outcome hook is handed the object the tool returned — each dispatcher keeps what its target answered under the argument object the call was handed", async () => {
+      const entry = { id: 7, title: 'Monday morning' };
+      const seen: unknown[] = [];
+      const read: ConvFunction = {
+        ...makeFn('readEntry', 'r', async () => entry),
+        getTimelineOutcome: (_args: unknown, result: unknown) => {
+          seen.push(result);
+          return { detail: (result as { title?: string } | undefined)?.title };
+        },
+      };
+      const inner = new SkillDispatcherSkill([makeSkill({ id: 'j', name: 'Journal', functions: [read] })]);
+      const outer = new SkillDispatcherSkill([inner]);
+      // ONE argument object for the call and for the hook, as the executor hands them.
+      const input = {
+        skill: 'skill-dispatcher',
+        tool: 'useSkill',
+        args: { skill: 'j', tool: 'readEntry', args: { value: 'v' } },
+      };
+      const result = await useSkillTool(outer).call(input);
+      // What the call hands on is what it handed on before: the 2-space JSON text.
+      expect(result).toBe(JSON.stringify(entry, null, 2));
+      const outcome = await useSkillTool(outer).getTimelineOutcome!(input, result);
+      expect(seen).toHaveLength(1);
+      expect(seen[0]).toBe(entry);
+      expect(outcome).toEqual({ name: 'readEntry', detail: 'Monday morning' });
+    });
   });
 
   describe('useSkill — the dispatched tool is the call’s TARGET (`Function.dispatchTarget`)', () => {

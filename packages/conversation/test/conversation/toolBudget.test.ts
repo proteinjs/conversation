@@ -102,6 +102,8 @@ const recordingHost = () => {
  */
 const runLoop = async (args: {
   fns: Function[];
+  /** Functions handed for this one call (`GenerateStreamParams.tools`), beside the conversation's own. */
+  tools?: Function[];
   host?: ToolBudgetHost;
   steps: Array<() => ReturnType<typeof toolCallStep> | ReturnType<typeof textStep>>;
 }) => {
@@ -126,6 +128,7 @@ const runLoop = async (args: {
   const result = await conversation.generateStream({
     messages: ['do the work'],
     model: model as never,
+    ...(args.tools ? { tools: args.tools } : {}),
     ...(args.host ? { toolBudget: args.host } : {}),
   });
   const parts: StreamPart[] = [];
@@ -893,6 +896,30 @@ describe('a dispatching function takes its TARGET’s declaration and identity (
     expect(result).toBe('doc-1');
     await expect(conversions[0].outcome!(result)).resolves.toEqual({ name: 'slowWrite', detail: 'made doc-1' });
 
+    // A job whose result is an OBJECT: the host holds the promise, which still resolves to what the dispatcher hands
+    // on (the 2-space JSON text), and the hook it asks with that text answers from the object the tool returned.
+    const build: Function = {
+      definition: tool('slowBuild'),
+      job: { kind: 'agent' },
+      getTimelineOutcome: (_args: unknown, made: unknown) => ({
+        detail: `built ${String((made as { pages?: number } | undefined)?.pages)} pages`,
+      }),
+      call: async () => ({ pages: 3 }),
+    };
+    const buildHost = recordingHost();
+    await runLoop({
+      fns: catalog([build]).getFunctions(),
+      host: buildHost.host,
+      steps: [() => toolCallStep('useSkill', ['tc-2'], dispatch('slowBuild', {})), () => textStep('started')],
+    });
+    expect(buildHost.conversions).toHaveLength(1);
+    const built = await buildHost.conversions[0].promise;
+    expect(built).toBe(JSON.stringify({ pages: 3 }, null, 2));
+    await expect(buildHost.conversions[0].outcome!(built)).resolves.toEqual({
+      name: 'slowBuild',
+      detail: 'built 3 pages',
+    });
+
     // A direct call's conversion carries its own hook; a tool without one carries none.
     const direct: Function = {
       definition: tool('directWrite'),
@@ -934,6 +961,156 @@ describe('a dispatching function takes its TARGET’s declaration and identity (
     expect(toolResultTexts(missing.prompts[1].prompt)[0]).toContain('has no dispatcher-reachable tool named "nothing"');
     expect(missing.parts.find((p) => p.type === 'tool-outcome')).toBeUndefined();
     expect(missing.toolInvocations[0].converted).toBeUndefined();
+  }, 20_000);
+
+  /**
+   * THE OUTCOME HOOK IS HANDED THE TOOL'S OWN RESULT ON EVERY ROAD (row 3531). The outcome is read once, in the
+   * frame that holds what the tool returned, and every later reader takes that reading: the dispatcher's hook hands
+   * its target's hook the object or array the target returned (never the JSON text the model reads), and the
+   * stream's settle is the executor's one reading (never a second ask with the SDK's copy of the model's result).
+   *
+   * RED at 6.20.10: through the dispatcher a hook that reads an object or an array was handed text and never
+   * matched, a tool that threw settled done, and the stream asked every hook a second time.
+   */
+  const settledOk = (parts: StreamPart[]) => parts.flatMap((p) => (p.type === 'tool-settled' ? [p.ok] : []));
+  const outcomeDetail = (parts: StreamPart[]) => parts.flatMap((p) => (p.type === 'tool-outcome' ? [p.detail] : []));
+
+  /** A change refused, then the same change landed: two `useSkill` steps to a tool that says its refusal as an OBJECT. */
+  const refusedThenLanded = async (opts: { host?: ToolBudgetHost; task?: string }) => {
+    let calls = 0;
+    const update: Function = {
+      definition: tool('updateRoutine', { id: { type: 'string' } }),
+      getTimelineOutcome: (_args: unknown, result: unknown) =>
+        typeof result === 'object' && result !== null && (result as { changed?: boolean }).changed === false
+          ? { ok: false }
+          : undefined,
+      call: async () => ({ changed: calls++ > 0 }),
+    };
+    return runLoop({
+      fns: catalog([update]).getFunctions(),
+      ...(opts.host ? { host: opts.host } : {}),
+      steps: [
+        () => toolCallStep('useSkill', ['tc-1'], dispatch('updateRoutine', { id: 'r-1' }, opts.task)),
+        () => toolCallStep('useSkill', ['tc-2'], dispatch('updateRoutine', { id: 'r-1' }, opts.task)),
+        () => textStep('changed'),
+      ],
+    });
+  };
+
+  test('a refusal that is an OBJECT settles not done through the dispatcher, and the call that then lands settles done — under a budget host, the `task` label in the dispatch', async () => {
+    const run = await refusedThenLanded({ host: recordingHost().host, task: 'Changing the routine' });
+    expect(settledOk(run.parts)).toEqual([false, true]);
+    expect(run.toolInvocations[0].outcome).toEqual({ ok: false, name: 'updateRoutine', detail: '' });
+    expect(run.toolInvocations[1].outcome).toEqual({ name: 'updateRoutine', detail: '' });
+    // What the model reads is what it read before: the refusal as the dispatcher's 2-space JSON text.
+    expect(toolResultTexts(run.prompts[1].prompt)).toEqual([JSON.stringify({ changed: false }, null, 2)]);
+  }, 20_000);
+
+  test('the same refusal and landing with no budget host and no label', async () => {
+    const run = await refusedThenLanded({});
+    expect(settledOk(run.parts)).toEqual([false, true]);
+    expect(run.toolInvocations[0].outcome).toEqual({ ok: false, name: 'updateRoutine', detail: '' });
+    expect(toolResultTexts(run.prompts[1].prompt)).toEqual([JSON.stringify({ changed: false }, null, 2)]);
+  }, 20_000);
+
+  test('a count read from an ARRAY result is the count: the same list tool called directly and through the dispatcher settles with the same detail', async () => {
+    const list: Function = {
+      definition: tool('listRoutines'),
+      getTimelineOutcome: (_args: unknown, result: unknown) =>
+        Array.isArray(result) ? { detail: `${result.length} routines` } : undefined,
+      call: async () => [{ id: 'r-1' }, { id: 'r-2' }, { id: 'r-3' }],
+    };
+    const direct = await runLoop({
+      fns: [list],
+      steps: [() => toolCallStep('listRoutines', ['tc-1']), () => textStep('x')],
+    });
+    const dispatched = await runLoop({
+      fns: catalog([list]).getFunctions(),
+      steps: [() => toolCallStep('useSkill', ['tc-1'], dispatch('listRoutines', {})), () => textStep('x')],
+    });
+    expect(outcomeDetail(direct.parts)).toEqual(['3 routines']);
+    expect(outcomeDetail(dispatched.parts)).toEqual(['3 routines']);
+  }, 20_000);
+
+  test('the stream’s outcome is the executor’s ONE reading — the same answer the invocation record holds — for a function of the conversation and for one handed for this call', async () => {
+    // A hook whose answer differs on a second ask shows which reading each reader holds.
+    const counting = (name: string) => {
+      let asks = 0;
+      const fn: Function = {
+        definition: tool(name),
+        getTimelineOutcome: () => ({ detail: `ask ${++asks}` }),
+        call: async () => 'read',
+      };
+      return fn;
+    };
+    const own = await runLoop({
+      fns: [counting('countedRead')],
+      steps: [() => toolCallStep('countedRead', ['tc-1']), () => textStep('x')],
+    });
+    expect(own.toolInvocations[0].outcome).toEqual({ detail: 'ask 1' });
+    expect(outcomeDetail(own.parts)).toEqual(['ask 1']);
+
+    // A function handed for this one call (`GenerateStreamParams.tools`) settles from its hook on the stream too.
+    const handed = await runLoop({
+      fns: [],
+      tools: [counting('handedRead')],
+      steps: [() => toolCallStep('handedRead', ['tc-1']), () => textStep('x')],
+    });
+    expect(handed.toolInvocations[0].outcome).toEqual({ detail: 'ask 1' });
+    expect(outcomeDetail(handed.parts)).toEqual(['ask 1']);
+  }, 20_000);
+
+  test('WHAT MUST NOT CHANGE: an empty detail still rides the stream as given, and stays out of the invocation record', async () => {
+    // An empty detail says "no subject" to the timeline; the invocation record keeps only an answer that names,
+    // describes or fails the call.
+    const quiet: Function = {
+      definition: tool('quietRead'),
+      getTimelineOutcome: () => ({ detail: '' }),
+      call: async () => 'read',
+    };
+    const silent = await runLoop({
+      fns: [quiet],
+      steps: [() => toolCallStep('quietRead', ['tc-1']), () => textStep('x')],
+    });
+    expect(silent.parts.find((p) => p.type === 'tool-outcome')).toEqual({
+      type: 'tool-outcome',
+      toolName: 'quietRead',
+      detail: '',
+    });
+    expect(silent.toolInvocations[0].outcome).toBeUndefined();
+  }, 20_000);
+
+  test('a dispatched tool that THROWS settles not done under the tool’s name with its own subject — its hook is not asked — and the model still reads the dispatcher’s error sentence', async () => {
+    const broken: Function = {
+      definition: tool('brokenWrite', { title: { type: 'string' } }),
+      getTimelineDetail: (args: { title?: string }) => args.title,
+      // A hook that cards the thing its call made: asked about a call that threw, it would card it as done.
+      getTimelineOutcome: () => ({ detail: { text: 'Notes', href: 'app://notes/1' } }),
+      call: async () => {
+        throw new Error('the disk is full');
+      },
+    };
+    const run = await runLoop({
+      fns: catalog([broken]).getFunctions(),
+      host: recordingHost().host,
+      steps: [
+        () => toolCallStep('useSkill', ['tc-1'], dispatch('brokenWrite', { title: 'Notes' })),
+        () => textStep('x'),
+      ],
+    });
+    expect(run.parts.find((p) => p.type === 'tool-settled')).toMatchObject({
+      id: 'tc-1',
+      toolName: 'useSkill',
+      ok: false,
+    });
+    expect(run.parts.find((p) => p.type === 'tool-outcome')).toEqual({
+      type: 'tool-outcome',
+      toolName: 'useSkill',
+      name: 'brokenWrite',
+      detail: 'Notes',
+    });
+    expect(run.toolInvocations[0].outcome).toEqual({ ok: false, name: 'brokenWrite', detail: 'Notes' });
+    expect(toolResultTexts(run.prompts[1].prompt)).toEqual(['Error invoking writer.brokenWrite: the disk is full']);
   }, 20_000);
 });
 

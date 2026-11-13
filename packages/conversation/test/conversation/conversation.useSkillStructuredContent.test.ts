@@ -4,7 +4,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { createXai } from '@ai-sdk/xai';
-import { Conversation } from '../../src/Conversation';
+import { Conversation, type StreamPart } from '../../src/Conversation';
 import { ConversationSkill } from '../../src/ConversationSkill';
 import { ChatCompletionMessageParamFactory } from '../../src/ChatCompletionMessageParamFactory';
 import { Function } from '../../src/Function';
@@ -122,16 +122,14 @@ type PromptPart = {
 };
 type PromptMessage = { role: string; content: string | PromptPart[] };
 
+type Turn = { family: string; modelId: string; skills: ConversationSkill[]; calls: ToolCall[] };
+
 /**
  * Play one turn: the model's first step makes `calls`, and the SECOND request's prompt — the one
- * that carries the tool results back to the model — is returned as the adapter receives it.
+ * that carries the tool results back to the model — is returned as the adapter receives it, with
+ * the parts the turn streamed.
  */
-const secondRequestPrompt = async (args: {
-  family: string;
-  modelId: string;
-  skills: ConversationSkill[];
-  calls: ToolCall[];
-}): Promise<PromptMessage[]> => {
+const playTurn = async (args: Turn): Promise<{ prompt: PromptMessage[]; parts: StreamPart[] }> => {
   const prompts: PromptMessage[][] = [];
   const model = new MockLanguageModelV3({
     provider: args.family,
@@ -149,12 +147,15 @@ const secondRequestPrompt = async (args: {
     skills: args.skills,
   });
   const result = await conversation.generateStream({ messages: ['what is on my screen?'], model: model as never });
+  const parts: StreamPart[] = [];
   for await (const part of result.fullStream) {
-    void part;
+    parts.push(part);
   }
   expect(prompts).toHaveLength(2);
-  return prompts[1];
+  return { prompt: prompts[1], parts };
 };
+
+const secondRequestPrompt = async (args: Turn): Promise<PromptMessage[]> => (await playTurn(args)).prompt;
 
 const toolResult = (prompt: PromptMessage[], toolCallId: string): PromptPart => {
   for (const message of prompt) {
@@ -381,6 +382,65 @@ describe('useSkill — a picture reaches the model as a picture, on every provid
       });
     }
   }
+});
+
+/**
+ * A tool that returns a picture SETTLES FROM THE PICTURE IT RETURNED (row 3531). The executor wraps
+ * a picture in an object of its own before the SDK sees it, so a hook asked with the SDK's copy of
+ * the result was handed that wrapper; the outcome is read once, from what the tool returned.
+ *
+ * RED at 6.20.10, called directly and through `useSkill`: the stream's outcome read `none`.
+ */
+describe('a tool that returns a picture settles from the picture it returned', () => {
+  // A picture search's own test of its result: found only when it is the factory the tool returned.
+  const findPicture = (): Function => ({
+    ...takeScreenshot(() => new ScreenPictureFactory()),
+    getTimelineOutcome: (_args: unknown, result: unknown) => ({
+      detail: result instanceof ChatCompletionMessageParamFactory ? 'found' : 'none',
+    }),
+  });
+  const outcomeDetails = (parts: StreamPart[]) => parts.flatMap((p) => (p.type === 'tool-outcome' ? [p.detail] : []));
+  const provider = PROVIDERS[0];
+
+  it(
+    'called directly: the stream’s outcome reads the picture, and the model still reads it as a picture',
+    async () => {
+      const direct = await playTurn({
+        ...provider,
+        skills: [skill('vision', [findPicture()])],
+        calls: [{ id: 'call-1', name: 'takeScreenshot', input: {} }],
+      });
+      expect(outcomeDetails(direct.parts)).toEqual(['found']);
+      expect(toolResult(direct.prompt, 'call-1').output).toEqual({
+        type: 'content',
+        value: [
+          { type: 'text', text: CAPTION },
+          { type: 'image-data', data: PNG_BASE64, mediaType: 'image/png' },
+        ],
+      });
+    },
+    TIMEOUT
+  );
+
+  it(
+    'through useSkill: the same outcome, and the same picture in the tool result',
+    async () => {
+      const dispatched = await playTurn({
+        ...provider,
+        skills: [new SkillDispatcherSkill([skill('vision', [findPicture()])])],
+        calls: [{ id: 'call-1', name: 'useSkill', input: { skill: 'vision', tool: 'takeScreenshot', args: {} } }],
+      });
+      expect(outcomeDetails(dispatched.parts)).toEqual(['found']);
+      expect(toolResult(dispatched.prompt, 'call-1').output).toEqual({
+        type: 'content',
+        value: [
+          { type: 'text', text: CAPTION },
+          { type: 'image-data', data: PNG_BASE64, mediaType: 'image/png' },
+        ],
+      });
+    },
+    TIMEOUT
+  );
 });
 
 describe('useSkill — inside a multi-tool step', () => {

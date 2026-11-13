@@ -42,7 +42,8 @@ export interface SkillDispatcherOptions {
  * called directly: text as text, and structured content (a picture a vision
  * tool returns) as structured content — `useSkill` never serializes it. It is also CALLED as it
  * would be directly: `useSkill` hands it the tool-call context (the abort signal, the phase
- * reporter) the executor handed `useSkill`.
+ * reporter) the executor handed `useSkill`. And its outcome hook (`getTimelineOutcome`) is ASKED as
+ * it would be directly: with the value the tool returned, not the text the model reads.
  *
  * Only function tools (from `getFunctions()`) are dispatcher-reachable.
  * Provider-defined tools (Anthropic's native `text_editor` / `bash`, etc.)
@@ -58,6 +59,13 @@ export interface SkillDispatcherOptions {
 export class SkillDispatcherSkill implements ConversationSkill {
   private readonly skills = new Map<string, ConversationSkill>();
   private readonly onSkillUsed?: SkillDispatcherOptions['onSkillUsed'];
+  /**
+   * What each `useSkill` call's tool answered, kept under the ARGUMENT OBJECT the call was handed: the value the
+   * tool returned, or that it threw. The executor asks the call's outcome hook with that same object, so the hook
+   * reads the tool's own result — never the text `dispatch` hands on for the model. A record lives as long as its
+   * argument object does.
+   */
+  private readonly answered = new WeakMap<object, { result?: unknown; threw?: true }>();
 
   constructor(skills: ConversationSkill[], options: SkillDispatcherOptions = {}) {
     for (const skill of skills) {
@@ -236,17 +244,29 @@ export class SkillDispatcherSkill implements ConversationSkill {
       // tool names no subject ("Read a note · Journal → readNote"), where a direct call of that
       // tool carries no subject at all. A timeline consumer keeps the call-time detail only when
       // the outcome leaves `detail` off — so the dispatcher never leaves it off.
+      //
+      // THE TOOL'S HOOK IS HANDED THE TOOL'S OWN RESULT, as on a direct call: `dispatch` keeps what the tool
+      // answered under the argument object the call was handed (`answered`), and the executor asks this hook with
+      // that same object — so a hook that reads an object or an array reads the one its tool returned, where the
+      // value handed in here is the text `dispatch` made of it for the model. A tool that THREW settles not done
+      // under its name with its own subject, as a direct call's throw does, and its hook is not asked. With no
+      // record (the hook asked by hand, no call behind it) the value handed in is passed on.
       getTimelineOutcome: async (input: { skill?: string; tool?: string; args?: unknown }, result: unknown) => {
         const fn = this.resolve(input);
         if (!fn) {
           return undefined;
         }
-        const outcome = fn.getTimelineOutcome ? await fn.getTimelineOutcome(input.args ?? {}, result) : undefined;
+        const answered = this.answered.get(input);
+        const outcome: Awaited<ReturnType<NonNullable<ConvFunction['getTimelineOutcome']>>> = answered?.threw
+          ? { ok: false }
+          : fn.getTimelineOutcome
+            ? await fn.getTimelineOutcome(input.args ?? {}, answered ? answered.result : result)
+            : undefined;
         const detail = outcome?.detail !== undefined ? outcome.detail : await this.ownSubject(fn, input.args ?? {});
         return { ...(outcome ?? {}), name: outcome?.name ?? fn.definition.name, detail: detail ?? '' };
       },
-      call: async ({ skill, tool, args }: { skill?: string; tool?: string; args?: unknown }, ctx?: ToolCallContext) =>
-        this.dispatch(skill, tool, args, ctx),
+      call: async (input: { skill?: string; tool?: string; args?: unknown }, ctx?: ToolCallContext) =>
+        this.dispatch(input, ctx),
     };
   }
 
@@ -360,13 +380,15 @@ export class SkillDispatcherSkill implements ConversationSkill {
    * The tool-call context the executor handed `useSkill` (the call's abort signal and its phase
    * reporter) is handed on to the tool as it is: a dispatched tool is still that tool, so it sees
    * Stop and reports its phases exactly as it does when called directly.
+   *
+   * `input` is the argument object `useSkill` was called with: what the tool answered — its return value, or
+   * that it threw — is kept under it for the call's outcome hook (`answered`). Nothing returned here changes.
    */
   private async dispatch(
-    skillId: string | undefined,
-    toolName: string | undefined,
-    args: unknown,
+    input: { skill?: string; tool?: string; args?: unknown },
     ctx: ToolCallContext | undefined
   ): Promise<unknown> {
+    const { skill: skillId, tool: toolName, args } = input;
     if (!skillId) {
       return this.errorMissing('skill');
     }
@@ -390,9 +412,11 @@ export class SkillDispatcherSkill implements ConversationSkill {
     try {
       result = await tool.call(args ?? {}, ctx);
     } catch (error: unknown) {
+      this.answered.set(input, { threw: true });
       const msg = error instanceof Error ? error.message : String(error);
       return `Error invoking ${skillId}.${toolName}: ${msg}`;
     }
+    this.answered.set(input, { result });
 
     if (this.onSkillUsed) {
       try {

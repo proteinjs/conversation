@@ -780,12 +780,16 @@ export class Conversation {
     // Calls the tool-call budget converted to jobs this loop (by tool-call id) — the settle part
     // of each carries its job so timeline consumers know the node's kind moved (§M.3 part 3).
     const convertedCalls = new Map<string, { jobId: string; title: string; deduped?: boolean }>();
+    // What each call's outcome hook answered (by tool-call id), asked ONCE by the execute wrapper —
+    // the frame that holds the tool's own result. The settle part of each call takes this reading.
+    const callOutcomes = new Map<string, NonNullable<ToolInvocationResult['outcome']>>();
     const tools = this.buildAiSdkTools(allFunctions, provider, {
       pendingImageInjections,
       onToolInvocation: params.onToolInvocation,
       recordInvocation: (r) => capturedInvocations.push(r),
       toolBudget: params.toolBudget,
       convertedCalls,
+      callOutcomes,
     });
 
     // Build provider options
@@ -1850,7 +1854,7 @@ export class Conversation {
       })(),
       // Liveness is guarded per round INSIDE the combined stream (each continuation call gets its
       // own guarded iteration; one idle window spans them via the shared controller).
-      fullStream: this.mapFullStream(combinedSdkStream, provider, modelString, convertedCalls),
+      fullStream: this.mapFullStream(combinedSdkStream, provider, modelString, convertedCalls, callOutcomes),
       // Lazy getters: only start consuming the AI SDK stream when accessed.
       // This prevents dual-consumption when the caller uses fullStream instead.
       get text() {
@@ -2530,6 +2534,8 @@ export class Conversation {
       toolBudget?: ToolBudgetHost;
       /** Calls converted to jobs this loop, by tool-call id — read by `mapFullStream` at the settle part. */
       convertedCalls?: Map<string, { jobId: string; title: string; deduped?: boolean }>;
+      /** What each call's outcome hook answered here, by tool-call id — read by `mapFullStream` at the settle part. */
+      callOutcomes?: Map<string, NonNullable<ToolInvocationResult['outcome']>>;
     }
   ): ToolSet {
     const tools: ToolSet = {};
@@ -2538,6 +2544,7 @@ export class Conversation {
     const recordInvocation = options?.recordInvocation;
     const toolBudget = options?.toolBudget;
     const convertedCalls = options?.convertedCalls;
+    const callOutcomes = options?.callOutcomes;
     const imageRedirectEnabled = !!pendingImageInjections;
 
     // Sentinel for tool returns that produced multimodal content parts.
@@ -2647,10 +2654,20 @@ export class Conversation {
           // Carried on the invocation so the flow lane's tool-progress events and recorded
           // invocations see the same outcome mapFullStream surfaces on the streaming path.
           // Best-effort — never let it break a tool call.
+          //
+          // THE ONE ASK: this frame holds the tool's own result (before the no-result fallback, the
+          // picture sentinel and the per-result ceiling shape what the model reads) and the arguments
+          // without the `task` label, so the hook is asked here, once — the stream never asks it
+          // again. The stream takes the answer AS GIVEN (`callOutcomes` — an empty detail still says
+          // "no subject" there); the invocation record keeps only an answer that names, describes
+          // or fails the call.
           let outcome: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined;
           if (f.getTimelineOutcome) {
             try {
               const resolved = await f.getTimelineOutcome(args, result);
+              if (resolved) {
+                callOutcomes?.set(executionOptions.toolCallId, resolved);
+              }
               if (resolved && (resolved.name || resolved.detail || resolved.ok === false)) {
                 outcome = resolved;
               }
@@ -4710,7 +4727,8 @@ export class Conversation {
     aiSdkFullStream: AsyncIterable<any>,
     provider: string,
     modelString: string,
-    convertedCalls?: ReadonlyMap<string, { jobId: string; title: string; deduped?: boolean }>
+    convertedCalls?: ReadonlyMap<string, { jobId: string; title: string; deduped?: boolean }>,
+    callOutcomes?: ReadonlyMap<string, NonNullable<ToolInvocationResult['outcome']>>
   ): AsyncIterable<StreamPart> {
     const logger = this.logger;
     const functions = this.functions;
@@ -4846,14 +4864,14 @@ export class Conversation {
               // conversion (`ToolBudgetConversion.outcome`, the hook bound to the call's arguments)
               // for the host to settle the job's node with when the tool's own result arrives.
               const converted = convertedCalls?.get(String(part.toolCallId ?? ''));
-              let outcome: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined;
-              if (fn?.getTimelineOutcome && !converted) {
-                try {
-                  outcome = (await fn.getTimelineOutcome(part.input, part.output)) || undefined;
-                } catch {
-                  // outcome is best-effort — never let it break the stream
-                }
-              }
+              // THE OUTCOME IS THE EXECUTOR'S READING, by the call's id (`callOutcomes`): the hook was
+              // asked once, in the frame that held the tool's own result. This part's `output` is the
+              // SDK's copy of what the MODEL reads — a dispatcher's JSON text, the head and pointer of
+              // a result over the ceiling, the no-result sentence, a picture's wrapper — and its
+              // `input` still carries the `task` label, so the hook is never asked with them. A
+              // converted call has no reading (its hook rides the conversion, above); a function
+              // handed for this one call (`GenerateStreamParams.tools`) has one like any other.
+              const outcome = callOutcomes?.get(String(part.toolCallId ?? ''));
               yield {
                 type: 'tool-settled' as const,
                 id: String(part.toolCallId ?? ''),
