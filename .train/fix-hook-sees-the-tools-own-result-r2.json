@@ -1,5 +1,5 @@
 {
-  "branch": "fix/hook-sees-the-tools-own-result",
+  "branch": "fix/hook-sees-the-tools-own-result-r2",
   "packages": ["conversation"],
   "suites": [
     "packages/conversation/test/SkillDispatcherSkill.test.ts",
@@ -64,8 +64,11 @@
     "packages/conversation/test/conversation/toolBudget.test.ts",
     "packages/conversation/test/conversation/utterance.test.ts",
     "packages/conversation/test/conversation/utteranceCachePrefix.test.ts",
+    "packages/conversation/test/createKeywordFilesIndex.test.ts",
     "packages/conversation/test/openai/openAiResponses.citationMarkers.test.ts",
     "packages/conversation/test/openai/openAiResponses.stateless.test.ts",
+    "packages/conversation/test/openai/openai.generateList.test.ts",
+    "packages/conversation/test/openai/openai.parseCodeFromMarkdown.test.ts",
     "packages/conversation/test/openai/openai.toolStrictness.live.test.ts",
     "packages/conversation/test/repo/repo.test.ts"
   ],

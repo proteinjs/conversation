@@ -2661,7 +2661,14 @@ export class Conversation {
           // again. The stream takes the answer AS GIVEN (`callOutcomes` — an empty detail still says
           // "no subject" there); the invocation record keeps only an answer that names, describes
           // or fails the call.
+          //
+          // A REUSED ID NEVER CARRIES AN EARLIER ANSWER: the reading kept under this call's id is
+          // this call's or none. Whatever an earlier call under the same id answered goes before
+          // this call's hook is asked — a hook that answers nothing, a hook that throws and a tool
+          // with no hook all leave no reading. (The adapters this library ships mint a fresh id per
+          // call; a mock, a replay or another adapter may not.)
           let outcome: { name?: string; detail?: string | ToolTimelineDetail; ok?: boolean } | undefined;
+          callOutcomes?.delete(executionOptions.toolCallId);
           if (f.getTimelineOutcome) {
             try {
               const resolved = await f.getTimelineOutcome(args, result);
@@ -4869,9 +4876,11 @@ export class Conversation {
               // SDK's copy of what the MODEL reads — a dispatcher's JSON text, the head and pointer of
               // a result over the ceiling, the no-result sentence, a picture's wrapper — and its
               // `input` still carries the `task` label, so the hook is never asked with them. A
-              // converted call has no reading (its hook rides the conversion, above); a function
-              // handed for this one call (`GenerateStreamParams.tools`) has one like any other.
-              const outcome = callOutcomes?.get(String(part.toolCallId ?? ''));
+              // converted call TAKES no reading (its hook rides the conversion, above): its `execute`
+              // returned at the hand-off, before the ask, so a reading under its id could only be
+              // an earlier call's. A function handed for this one call (`GenerateStreamParams.tools`)
+              // has one like any other.
+              const outcome = converted ? undefined : callOutcomes?.get(String(part.toolCallId ?? ''));
               yield {
                 type: 'tool-settled' as const,
                 id: String(part.toolCallId ?? ''),

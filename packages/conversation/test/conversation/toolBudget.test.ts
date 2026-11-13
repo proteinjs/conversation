@@ -1112,6 +1112,106 @@ describe('a dispatching function takes its TARGET’s declaration and identity (
     expect(run.toolInvocations[0].outcome).toEqual({ ok: false, name: 'brokenWrite', detail: 'Notes' });
     expect(toolResultTexts(run.prompts[1].prompt)).toEqual(['Error invoking writer.brokenWrite: the disk is full']);
   }, 20_000);
+
+  test('a tool that returns NOTHING has its hook handed nothing — never the sentence the model reads in its place — through the dispatcher under a budget host with the `task` label, and called directly', async () => {
+    // A hook that tells "no result" from anything put in its place.
+    const quiet: Function = {
+      definition: tool('voidWrite'),
+      getTimelineOutcome: (_args: unknown, result: unknown) => ({
+        detail: result === undefined ? 'handed nothing' : `handed ${JSON.stringify(result)}`,
+      }),
+      call: async () => undefined,
+    };
+    const dispatched = await runLoop({
+      fns: catalog([quiet]).getFunctions(),
+      host: recordingHost().host,
+      steps: [() => toolCallStep('useSkill', ['tc-1'], dispatch('voidWrite', {}, 'Writing it')), () => textStep('x')],
+    });
+    expect(outcomeDetail(dispatched.parts)).toEqual(['handed nothing']);
+    expect(dispatched.toolInvocations[0].outcome).toEqual({ name: 'voidWrite', detail: 'handed nothing' });
+
+    const direct = await runLoop({
+      fns: [quiet],
+      steps: [() => toolCallStep('voidWrite', ['tc-1']), () => textStep('x')],
+    });
+    expect(outcomeDetail(direct.parts)).toEqual(['handed nothing']);
+    expect(direct.toolInvocations[0].outcome).toEqual({ detail: 'handed nothing' });
+    // The model still reads a result in the call's place: the sentence, which the hook is never handed.
+    expect(toolResultTexts(direct.prompts[1].prompt)[0]).toContain('Function executed successfully');
+  }, 20_000);
+
+  /**
+   * A TOOL-CALL ID USED TWICE NEVER CARRIES THE EARLIER CALL'S ANSWER (row 3531, the closing). The stream's reading
+   * is kept by the call's id. The provider adapters the library ships mint a fresh id for every call; a mock, a
+   * replay or another adapter may hand one id to two calls of a loop, and the later call must not settle from what
+   * the earlier one answered: an awaited call's reading is its own or none, and a call the host converted has none.
+   *
+   * RED at the fix's first round (b5165f0e): the call that landed settled not done under the refused call's name,
+   * and a converted call settled not done with the earlier call's outcome.
+   */
+  const outcomeNames = (parts: StreamPart[]) => parts.flatMap((p) => (p.type === 'tool-outcome' ? [p.name] : []));
+
+  /** A DIRECT tool refused, then landed — its hook answers only for the refusal — the two calls under the given ids. */
+  const refusedThenLandedDirect = async (ids: [string, string]) => {
+    let calls = 0;
+    const update: Function = {
+      definition: tool('updateRoutine', { id: { type: 'string' } }),
+      getTimelineOutcome: (_args: unknown, result: unknown) =>
+        (result as { changed?: boolean } | undefined)?.changed === false
+          ? { ok: false, name: 'updateRoutine:refused' }
+          : undefined,
+      call: async () => ({ changed: calls++ > 0 }),
+    };
+    return runLoop({
+      fns: [update],
+      steps: [
+        () => toolCallStep('updateRoutine', [ids[0]], '{"id":"r-1"}'),
+        () => toolCallStep('updateRoutine', [ids[1]], '{"id":"r-1"}'),
+        () => textStep('changed'),
+      ],
+    });
+  };
+
+  test('a direct tool refused and then landed under ONE tool-call id settles not done, then done: the call that landed carries nothing of the refusal', async () => {
+    const run = await refusedThenLandedDirect(['tc-1', 'tc-1']);
+    expect(settledOk(run.parts)).toEqual([false, true]);
+    expect(outcomeNames(run.parts)).toEqual(['updateRoutine:refused']);
+  }, 20_000);
+
+  test('the same refusal and landing under two ids settles the same way (the control)', async () => {
+    const run = await refusedThenLandedDirect(['tc-1', 'tc-2']);
+    expect(settledOk(run.parts)).toEqual([false, true]);
+    expect(outcomeNames(run.parts)).toEqual(['updateRoutine:refused']);
+  }, 20_000);
+
+  test('a call the host converted carries no outcome on the stream, whatever an earlier awaited call under its id answered: its settle is the hand-off’s', async () => {
+    const quick: Function = {
+      definition: tool('quickRead'),
+      getTimelineOutcome: () => ({ ok: false, name: 'quickRead:refused', detail: 'not read' }),
+      call: async () => 'read',
+    };
+    const slow: Function = { definition: tool('slowBuild'), job: { kind: 'agent' }, call: async () => 'built' };
+    const run = await runLoop({
+      fns: [quick, slow],
+      host: recordingHost().host,
+      steps: [
+        () => toolCallStep('quickRead', ['tc-1']),
+        () => toolCallStep('slowBuild', ['tc-1']),
+        () => textStep('x'),
+      ],
+    });
+    expect(
+      run.parts.flatMap((p) =>
+        p.type === 'tool-settled' ? [{ toolName: p.toolName, ok: p.ok, converted: !!p.converted }] : []
+      )
+    ).toEqual([
+      { toolName: 'quickRead', ok: false, converted: false },
+      { toolName: 'slowBuild', ok: true, converted: true },
+    ]);
+    expect(run.parts.filter((p) => p.type === 'tool-outcome')).toEqual([
+      { type: 'tool-outcome', toolName: 'quickRead', name: 'quickRead:refused', detail: 'not read' },
+    ]);
+  }, 20_000);
 });
 
 /**
