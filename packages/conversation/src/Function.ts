@@ -133,6 +133,23 @@ export interface Function {
    * the SDK sees a successful result either way) use it so their node settles `errored`
    * instead of rendering as done, and a follow-up same-tool call is treated as the retry of
    * the same intent. Purely presentational — it never changes what the model receives.
+   *
+   * WHAT IT IS HANDED: `result` is the tool's OWN return value — what `call` resolved to, be it
+   * an object, an array, a picture or nothing at all (`undefined`) — never what the model reads
+   * in its place (a dispatcher's JSON text, the head and pointer of a result set aside over the
+   * ceiling, the no-result sentence, a picture's wrapper). `args` are the tool's own arguments,
+   * without the harness's `task` label. The hook is asked ONCE for an awaited call, and every
+   * reader of the outcome (the stream's settle, the invocation record) takes that one answer; a
+   * call converted to a job is asked by its host, when the tool's own result arrives.
+   *
+   * THE CONTRACT FOR A WRAPPER — a function that stands in front of another and re-calls it (a
+   * relabel, a gate, a road that bounds the call): hand `call` and this hook the `args` object
+   * exactly as it was received — the SAME object, never a copy and never a rebuilt one. A
+   * dispatching function keeps what its tool returned under the argument object its `call` was
+   * handed (`SkillDispatcherSkill`'s `useSkill`) and finds it again only by that object. A
+   * wrapper that hands this hook `{ ...args }`, or strips a field first, gets no error: the
+   * dispatched tool's hook is handed the text the model reads, and a hook that reads an object
+   * or an array answers as if its tool had returned neither.
    */
   getTimelineOutcome?(
     args: any,

@@ -97,8 +97,9 @@ const recordingHost = () => {
 
 /**
  * Run a scripted loop: `steps` scripts each model call; returns the prompts each step saw (with
- * the wall-clock ms of the call relative to `t0`), the streamed parts, the final text and the
- * recorded tool invocations.
+ * the wall-clock ms of the call relative to `t0`), the streamed parts, the final text, the
+ * recorded tool invocations, and how many model calls had been made when the reader read the
+ * first `tool-settled` part (`undefined` when no call settles).
  */
 const runLoop = async (args: {
   fns: Function[];
@@ -106,6 +107,8 @@ const runLoop = async (args: {
   tools?: Function[];
   host?: ToolBudgetHost;
   steps: Array<() => ReturnType<typeof toolCallStep> | ReturnType<typeof textStep>>;
+  /** How long the reader of `fullStream` waits after every part before it asks for the next. Absent, it never waits. */
+  readerWaitMs?: number;
 }) => {
   const prompts: Array<{ atMs: number; prompt: Prompt }> = [];
   const t0 = Date.now();
@@ -132,8 +135,15 @@ const runLoop = async (args: {
     ...(args.host ? { toolBudget: args.host } : {}),
   });
   const parts: StreamPart[] = [];
+  let modelCallsAtFirstSettle: number | undefined;
   for await (const part of result.fullStream) {
     parts.push(part);
+    if (part.type === 'tool-settled' && modelCallsAtFirstSettle === undefined) {
+      modelCallsAtFirstSettle = call;
+    }
+    if (args.readerWaitMs) {
+      await sleep(args.readerWaitMs);
+    }
   }
   return {
     prompts,
@@ -141,6 +151,7 @@ const runLoop = async (args: {
     text: await result.text,
     toolInvocations: await result.toolInvocations,
     t0,
+    modelCallsAtFirstSettle,
   };
 };
 
@@ -1112,6 +1123,138 @@ describe('a dispatching function takes its TARGET’s declaration and identity (
     expect(run.toolInvocations[0].outcome).toEqual({ ok: false, name: 'brokenWrite', detail: 'Notes' });
     expect(toolResultTexts(run.prompts[1].prompt)).toEqual(['Error invoking writer.brokenWrite: the disk is full']);
   }, 20_000);
+
+  test('a tool that returns NOTHING has its hook handed nothing — never the sentence the model reads in its place — through the dispatcher under a budget host with the `task` label, and called directly', async () => {
+    // A hook that tells "no result" from anything put in its place.
+    const quiet: Function = {
+      definition: tool('voidWrite'),
+      getTimelineOutcome: (_args: unknown, result: unknown) => ({
+        detail: result === undefined ? 'handed nothing' : `handed ${JSON.stringify(result)}`,
+      }),
+      call: async () => undefined,
+    };
+    const dispatched = await runLoop({
+      fns: catalog([quiet]).getFunctions(),
+      host: recordingHost().host,
+      steps: [() => toolCallStep('useSkill', ['tc-1'], dispatch('voidWrite', {}, 'Writing it')), () => textStep('x')],
+    });
+    expect(outcomeDetail(dispatched.parts)).toEqual(['handed nothing']);
+    expect(dispatched.toolInvocations[0].outcome).toEqual({ name: 'voidWrite', detail: 'handed nothing' });
+
+    const direct = await runLoop({
+      fns: [quiet],
+      steps: [() => toolCallStep('voidWrite', ['tc-1']), () => textStep('x')],
+    });
+    expect(outcomeDetail(direct.parts)).toEqual(['handed nothing']);
+    expect(direct.toolInvocations[0].outcome).toEqual({ detail: 'handed nothing' });
+    // The model still reads a result in the call's place: the sentence, which the hook is never handed.
+    expect(toolResultTexts(direct.prompts[1].prompt)[0]).toContain('Function executed successfully');
+  }, 20_000);
+
+  /**
+   * WHAT A CALL SETTLES AS ON THE STREAM IS ITS OWN, WHATEVER TOOL-CALL ID IT CARRIES AND HOWEVER SLOWLY THE STREAM
+   * IS READ (row 3531, the closing). The provider adapters the library ships mint a fresh id for every call; a mock,
+   * a replay or another adapter may hand one id to two calls of a loop. Each call's settle, its outcome and its job
+   * stamp are its own: a refusal is never hidden by a later landing, a landing never wears an earlier refusal, an
+   * awaited call never wears a job's stamp, a job never wears an awaited call's outcome. Every case is read by a
+   * consumer that never waits and by one that waits between parts, which lets the loop run ahead of it: every tool
+   * has run before it reads the first settle. The two-id arm is the control, green at every source.
+   *
+   * RED at the fix's first round (b5165f0e, the reading kept by the id): under one id both calls settled not done
+   * with the refusal twice, and the job and the awaited call wore each other's stamp and outcome. RED at its second
+   * round (f4763093, the id's reading cleared at the next call): under one id in two steps the consumer that waits
+   * read both calls done with no outcome, as did both consumers under one id in one step, and the awaited call lost
+   * its outcome to the job's stamp. RED at main (9261af0a) with the job first, and with the awaited call first for
+   * the consumer that waits: the awaited call wore the job's stamp and lost its outcome.
+   */
+  const readers = [
+    { reader: 'a consumer that never waits', readerWaitMs: 0 },
+    { reader: 'a consumer that waits between parts', readerWaitMs: 5 },
+  ];
+  const outcomeNames = (parts: StreamPart[]) => parts.flatMap((p) => (p.type === 'tool-outcome' ? [p.name] : []));
+
+  describe.each(readers)('a change refused and then landed, read by $reader', ({ readerWaitMs }) => {
+    test.each([
+      { arm: 'under two tool-call ids, in two steps', steps: [['tc-1'], ['tc-2']] },
+      { arm: 'under ONE tool-call id, in two steps', steps: [['tc-1'], ['tc-1']] },
+      { arm: 'under ONE tool-call id, in one step', steps: [['tc-1', 'tc-1']] },
+    ])(
+      '$arm: one call settles not done and one done, and the only outcome is the refusal’s',
+      async ({ steps }) => {
+        let calls = 0;
+        // A direct tool: the first call is refused, the second lands; its hook answers only for the refusal.
+        const update: Function = {
+          definition: tool('updateRoutine', { id: { type: 'string' } }),
+          getTimelineOutcome: (_args: unknown, result: unknown) =>
+            (result as { changed?: boolean } | undefined)?.changed === false
+              ? { ok: false, name: 'updateRoutine:refused' }
+              : undefined,
+          call: async () => ({ changed: calls++ > 0 }),
+        };
+        const run = await runLoop({
+          fns: [update],
+          readerWaitMs,
+          steps: [
+            ...steps.map((ids) => () => toolCallStep('updateRoutine', ids, '{"id":"r-1"}')),
+            () => textStep('changed'),
+          ],
+        });
+        if (readerWaitMs && steps.length === 2) {
+          // This is the case's premise, not its claim: every step had been asked for, so every tool had run,
+          // before this reader read the first settle. If it fails, the reader is no longer behind the loop and the
+          // answer is a slower reader, never a deleted line.
+          expect(run.modelCallsAtFirstSettle).toBe(3);
+        }
+        // Two steps settle in call order. Two calls of one step run side by side, so their order is not pinned.
+        const settled = settledOk(run.parts);
+        expect(steps.length === 2 ? settled : [...settled].sort()).toEqual([false, true]);
+        expect(outcomeNames(run.parts)).toEqual(['updateRoutine:refused']);
+      },
+      20_000
+    );
+  });
+
+  describe.each(readers)('a job and an awaited call under one tool-call id, read by $reader', ({ readerWaitMs }) => {
+    test.each([
+      { arm: 'the awaited call first, then the job', order: ['quickRead', 'slowBuild'] as const },
+      { arm: 'the job first, then the awaited call', order: ['slowBuild', 'quickRead'] as const },
+    ])(
+      '$arm: the awaited call settles not done with its own outcome, the job settles as the hand-off with none',
+      async ({ order }) => {
+        const quick: Function = {
+          definition: tool('quickRead'),
+          getTimelineOutcome: () => ({ ok: false, name: 'quickRead:refused', detail: 'not read' }),
+          call: async () => 'read',
+        };
+        const slow: Function = { definition: tool('slowBuild'), job: { kind: 'agent' }, call: async () => 'built' };
+        const run = await runLoop({
+          fns: [quick, slow],
+          host: recordingHost().host,
+          readerWaitMs,
+          steps: [...order.map((toolName) => () => toolCallStep(toolName, ['tc-1'])), () => textStep('x')],
+        });
+        if (readerWaitMs) {
+          // This is the case's premise, not its claim: every step had been asked for, so every tool had run,
+          // before this reader read the first settle. If it fails, the reader is no longer behind the loop and the
+          // answer is a slower reader, never a deleted line.
+          expect(run.modelCallsAtFirstSettle).toBe(3);
+        }
+        const asItself = {
+          quickRead: { toolName: 'quickRead', ok: false, converted: false },
+          slowBuild: { toolName: 'slowBuild', ok: true, converted: true },
+        };
+        expect(
+          run.parts.flatMap((p) =>
+            p.type === 'tool-settled' ? [{ toolName: p.toolName, ok: p.ok, converted: !!p.converted }] : []
+          )
+        ).toEqual(order.map((toolName) => asItself[toolName]));
+        expect(run.parts.filter((p) => p.type === 'tool-outcome')).toEqual([
+          { type: 'tool-outcome', toolName: 'quickRead', name: 'quickRead:refused', detail: 'not read' },
+        ]);
+      },
+      20_000
+    );
+  });
 });
 
 /**
