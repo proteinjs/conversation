@@ -1255,6 +1255,81 @@ describe('a dispatching function takes its TARGET’s declaration and identity (
       20_000
     );
   });
+
+  /**
+   * A CALL WHOSE ARGUMENTS ARE NOT AN OBJECT (`null`, a string, a number: the SDK hands `execute` whatever JSON value
+   * the provider sent) can hold no record on the stream, since a call's record there is kept under its argument
+   * object. What its caller still gets: nothing throws, the model reads each call's result, and the invocation
+   * records carry the hook's refusal and the job's stamp. What the stream gives such a call is the loss accepted with
+   * the fix (row 3531), pinned as it stands: both calls settle done, the refusal sends no outcome part and the job's
+   * settle carries no stamp (main and the fix's first round settled the refusal not done and stamped the job).
+   *
+   * RED with the execute wrapper's guard removed (`typeof rawArgs === 'object' && rawArgs !== null`): the record's
+   * store refuses the value, so the job's call throws after its host took the job (its record a failure with no
+   * stamp) and the awaited call's refusal is lost before its invocation record takes it.
+   */
+  test.each([
+    { kind: 'null', input: 'null' },
+    { kind: 'a string', input: '"r-1"' },
+    { kind: 'a number', input: '7' },
+  ])(
+    'a tool called with $kind for its arguments, as an awaited call whose hook refuses and as a job: nothing throws, the invocation records carry the refusal and the job, and the stream settles both done with neither',
+    async ({ input }) => {
+      const quick: Function = {
+        definition: tool('quickRead'),
+        getTimelineOutcome: () => ({ ok: false, name: 'quickRead:refused', detail: 'not read' }),
+        call: async () => 'read',
+      };
+      const slow: Function = { definition: tool('slowBuild'), job: { kind: 'agent' }, call: async () => 'built' };
+      const { host, conversions } = recordingHost();
+      const run = await runLoop({
+        fns: [quick, slow],
+        host,
+        steps: [
+          () => toolCallStep('quickRead', ['tc-1'], input),
+          () => toolCallStep('slowBuild', ['tc-2'], input),
+          () => textStep('x'),
+        ],
+      });
+      // What is kept, read as one so a red shows every call that lost it: nothing throws (the turn ends on its text,
+      // the host took the job, the model read each call's own result), and the invocation records carry the
+      // refusal and the job.
+      const record = (name: string) => {
+        const invocation = run.toolInvocations.find((i) => i.name === name);
+        return {
+          ok: invocation?.ok,
+          outcome: invocation?.outcome,
+          jobId: invocation?.converted?.jobId,
+          error: invocation?.error?.message,
+        };
+      };
+      expect({
+        text: run.text,
+        hostTook: conversions.map((c) => c.name),
+        modelRead: toolResultTexts(run.prompts[2].prompt),
+        records: { quickRead: record('quickRead'), slowBuild: record('slowBuild') },
+      }).toEqual({
+        text: 'x',
+        hostTook: ['slowBuild'],
+        modelRead: ['read', expect.stringContaining('job job-1')],
+        records: {
+          quickRead: { ok: true, outcome: { ok: false, name: 'quickRead:refused', detail: 'not read' } },
+          slowBuild: { ok: true, jobId: 'job-1' },
+        },
+      });
+      // The stream, as the accepted loss leaves it: both calls settle done, with no job stamp and no outcome part.
+      expect(
+        run.parts.flatMap((p) =>
+          p.type === 'tool-settled' ? [{ toolName: p.toolName, ok: p.ok, converted: !!p.converted }] : []
+        )
+      ).toEqual([
+        { toolName: 'quickRead', ok: true, converted: false },
+        { toolName: 'slowBuild', ok: true, converted: false },
+      ]);
+      expect(run.parts.filter((p) => p.type === 'tool-outcome')).toEqual([]);
+    },
+    20_000
+  );
 });
 
 /**

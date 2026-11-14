@@ -1,5 +1,5 @@
 {
-  "branch": "fix/hook-sees-the-tools-own-result-r3",
+  "branch": "fix/hook-sees-the-tools-own-result-r4",
   "packages": ["conversation"],
   "suites": [
     "packages/conversation/test/SkillDispatcherSkill.test.ts",

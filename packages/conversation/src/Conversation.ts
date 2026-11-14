@@ -424,7 +424,10 @@ export type StreamPart =
        * The library takes the id the provider sends and expects it to be one call's within a
        * `generateStream` call. Each call's `tool-settled` and `tool-outcome` parts are its own whatever id it
        * carries; the invocation records, the per-step tool usage and a result set aside over the ceiling are
-       * matched by id, so two calls that share one are reported there as one.
+       * matched by id, so two calls that share one are reported there as one. A call whose arguments are not
+       * an object (`null`, a string, a number) has no record of its own on the stream: it settles done with
+       * no `tool-outcome` part and no `converted` stamp, whatever its outcome hook answered and whether or not
+       * it became a job; its invocation record still carries both.
        */
       id: string;
       /**
@@ -651,7 +654,10 @@ type AccountedRound = {
 /**
  * What one call the loop executed SETTLES AS on the stream: the job it became (the hand-off settled,
  * the job carries the work), or what its outcome hook answered about the tool's own result. Made in
- * the execute wrapper, read at that call's settle part (`mapFullStream`).
+ * the execute wrapper, read at that call's settle part (`mapFullStream`). It is kept under the call's
+ * argument object, so a call whose arguments are not an object (`null`, a string, a number) has none:
+ * it settles done on the stream with no outcome part and no job stamp, whatever its hook answered and
+ * whether or not it became a job; its invocation record still carries both.
  */
 type CallSettle = {
   converted?: { jobId: string; title: string; deduped?: boolean };
@@ -2596,7 +2602,8 @@ export class Conversation {
           const { args, task } = toolBudget ? ToolBudget.splitTask(rawArgs) : { args: rawArgs, task: undefined };
           // This call's record rides its ARGUMENT OBJECT AS THE SDK HANDED IT (`rawArgs` — never `args`,
           // which is a copy once the `task` label is split off): that object is the one on this call's
-          // result part. A call whose arguments are not an object keeps no record.
+          // result part. A call whose arguments are not an object keeps no record. A call writes its record
+          // once (a conversion returns before the ask); a second write replaces the first, it never merges.
           const keepSettle = (settle: CallSettle) => {
             if (callSettles && typeof rawArgs === 'object' && rawArgs !== null) {
               callSettles.set(rawArgs, settle);

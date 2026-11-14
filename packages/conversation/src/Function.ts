@@ -140,7 +140,10 @@ export interface Function {
    * ceiling, the no-result sentence, a picture's wrapper). `args` are the tool's own arguments,
    * without the harness's `task` label. The hook is asked ONCE for an awaited call, and every
    * reader of the outcome (the stream's settle, the invocation record) takes that one answer; a
-   * call converted to a job is asked by its host, when the tool's own result arrives.
+   * call converted to a job is asked by its host, when the tool's own result arrives. The exception:
+   * a call whose arguments are not an object (`null`, a string, a number) has no record on the
+   * stream, so its settle takes no answer (it settles done, with no outcome and, for a job, no job
+   * stamp); only its invocation record carries the answer and the job.
    *
    * THE CONTRACT FOR A WRAPPER — a function that stands in front of another and re-calls it (a
    * relabel, a gate, a road that bounds the call): hand `call` and this hook the `args` object
