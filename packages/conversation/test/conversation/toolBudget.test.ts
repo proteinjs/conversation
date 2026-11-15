@@ -1090,3 +1090,100 @@ describe('the awaited call’s progress words and its own Stop (DECISIONS 630, t
     expect(run.text).toBe('all right, no deck');
   });
 });
+
+/**
+ * A call's `tool-outcome` carries no call id: a consumer that relabels a call's node pairs the
+ * outcome with the call that settled just before it. So for every tool result the stream yields
+ * that call's `tool-settled` and then its own `tool-outcome` as the very next part, with no part of
+ * another call between them, however the calls of one step finish; a call whose tool gives no
+ * outcome settles alone.
+ */
+describe('a call’s outcome is the very next part after its own settle', () => {
+  /** One model step that calls each of `calls`, side by side, in the order given. */
+  const callsStep = (calls: Array<{ id: string; toolName: string; input?: Record<string, unknown> }>) =>
+    convertArrayToReadableStream([
+      { type: 'stream-start' as const, warnings: [] },
+      ...calls.map((c) => ({
+        type: 'tool-call' as const,
+        toolCallId: c.id,
+        toolName: c.toolName,
+        input: JSON.stringify(c.input ?? {}),
+      })),
+      { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool_use' }, usage },
+    ]);
+
+  test('side by side in one step and one after another: each settle is followed by its own outcome, never by another call’s part; a call with no outcome yields none', async () => {
+    // Two calls of the same tool, so the outcome's tool name cannot tell them apart. The first runs
+    // longer, so the results land out of call order; reading an outcome takes a moment, so the next
+    // call's result is already waiting while one call's outcome is read.
+    const readNote: Function = {
+      definition: {
+        name: 'readNote',
+        description: 'Read a note',
+        parameters: { type: 'object', properties: { label: { type: 'string' } } },
+      },
+      call: async ({ label }: { label: string }) => {
+        if (label === 'first') {
+          await sleep(20);
+        }
+        return `note ${label}`;
+      },
+      getTimelineOutcome: async ({ label }: { label: string }) => {
+        await sleep(50);
+        return { detail: `read ${label}` };
+      },
+    };
+    const ping: Function = {
+      definition: { name: 'ping', description: 'Ping', parameters: { type: 'object', properties: {} } },
+      call: async () => 'pong',
+    };
+    const run = await runLoop({
+      fns: [readNote, ping],
+      host: recordingHost().host,
+      steps: [
+        () =>
+          callsStep([
+            { id: 'tc-1', toolName: 'readNote', input: { label: 'first' } },
+            { id: 'tc-2', toolName: 'readNote', input: { label: 'second' } },
+            { id: 'tc-3', toolName: 'ping' },
+          ]),
+        () => callsStep([{ id: 'tc-4', toolName: 'readNote', input: { label: 'third' } }]),
+        () => callsStep([{ id: 'tc-5', toolName: 'ping' }]),
+        () => callsStep([{ id: 'tc-6', toolName: 'readNote', input: { label: 'fourth' } }]),
+        () => textStep('done'),
+      ],
+    });
+
+    // The part yielded right after each call's settle, when it is an outcome.
+    const afterSettle = Object.fromEntries(
+      run.parts.flatMap((part, i) => {
+        if (part.type !== 'tool-settled') {
+          return [];
+        }
+        const next = run.parts[i + 1];
+        return [[part.id, next?.type === 'tool-outcome' ? next : null]];
+      })
+    );
+    const outcome = (label: string) => ({ type: 'tool-outcome', toolName: 'readNote', detail: `read ${label}` });
+    expect(afterSettle).toEqual({
+      'tc-1': outcome('first'),
+      'tc-2': outcome('second'),
+      'tc-3': null,
+      'tc-4': outcome('third'),
+      'tc-5': null,
+      'tc-6': outcome('fourth'),
+    });
+    // No outcome anywhere else.
+    expect(run.parts.filter((p) => p.type === 'tool-outcome')).toHaveLength(4);
+    // The side-by-side calls settled out of call order, so their order alone could not pair them.
+    expect(run.parts.flatMap((p) => (p.type === 'tool-settled' ? [p.id] : []))).toEqual([
+      'tc-3',
+      'tc-2',
+      'tc-1',
+      'tc-4',
+      'tc-5',
+      'tc-6',
+    ]);
+    expect(run.text).toBe('done');
+  }, 20_000);
+});
