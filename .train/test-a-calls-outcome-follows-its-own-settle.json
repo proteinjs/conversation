@@ -1,0 +1,6 @@
+{
+  "branch": "test/a-calls-outcome-follows-its-own-settle",
+  "packages": ["conversation"],
+  "suites": ["packages/conversation/test/conversation/toolBudget.test.ts"],
+  "removes": []
+}
