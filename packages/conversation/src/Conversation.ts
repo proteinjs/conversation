@@ -4404,9 +4404,10 @@ export class Conversation {
    * The side utterance's call (plans/FREE_AGENT.md §M.3 part 5; {@link Utterance}): one
    * least-thinking call (the effort the caller named — {@link GenerateStreamParams.utteranceEffort})
    * over `transcript` + the input + its own ask. Returns the line, or nothing when the call
-   * produced no line — no text, a failure, the provider's output limit reached before the
-   * line's end, or a first paragraph that is a block of several lines and no line at all
-   * ({@link Utterance.isLine}) (logged — nothing is said, the round runs on).
+   * produced no line — no text, a failure, the call's output limit reached before the line's
+   * end ({@link Utterance.MAX_CALL_OUTPUT_TOKENS}), or a first paragraph that is no line at all:
+   * several lines, a paragraph's length, or the opening of an answer ({@link Utterance.isLine})
+   * (logged — nothing is said, the round runs on).
    *
    * THE REQUEST'S ENVELOPE IS THE STEP'S. The call rides the same tool roster as the round it is
    * said beside, over the same projected transcript (the same system prefix, the same cache
@@ -4444,15 +4445,18 @@ export class Conversation {
     const tools = Conversation.unexecutableTools(args.tools);
     const startedAt = Date.now();
     // The LINE is the first paragraph of what the model writes, WHOLE or nothing (the ruling
-    // 2026-09-13: the length is guidance in the ask — "one short sentence" — never a cut). No
-    // output cap rides the request; the line is held until it is complete — the model's own
-    // paragraph break, or the model's own stop. At the paragraph break the line is DONE: it is
-    // returned at once and the rest of the call (a caveat the model wrote past the ask) drains in
-    // the background — never shown, never waited for, still read to its end so its usage rides the
-    // turn's. A call that reaches the provider's output limit before the line ended ('length' — a
-    // failure, never a normal stop) or fails mid-stream has NO line: nothing is said, not even the
-    // whole sentences before the cut. Retries stay off (maxRetries 0): the degradation is free —
-    // the round runs on. The call asks for the LEAST thinking the model in hand offers, as the
+    // 2026-09-13: the length is guidance in the ask — "one short sentence" — never a cut): it is
+    // held until it is complete — the model's own paragraph break, or the model's own stop. At
+    // the paragraph break the line is DONE: it is returned at once and the rest of the call (a
+    // caveat the model wrote past the ask) drains in the background — never shown, never waited
+    // for, still read to its end so its usage rides the turn's. The request carries the call's own
+    // output limit (`Utterance.MAX_CALL_OUTPUT_TOKENS`): a ceiling on what a model that begins its
+    // answer here can spend, set far above any line so that it is never what shapes one. A call
+    // that reaches a limit before the line ended ('length' — a failure, never a normal stop) or
+    // fails mid-stream has NO line: nothing is said, not even the whole sentences before the cut —
+    // the limit ends a call, it never trims a line. Retries stay off (maxRetries 0): the
+    // degradation is free — the round runs on.
+    // The call asks for the LEAST thinking the model in hand offers, as the
     // caller's catalog names it (`utteranceEffort`: `none` only where that is a real off switch — a
     // listed level, or the explicit off an Anthropic family takes (`AnthropicModelRules.thinkingOff`;
     // a request with no thinking block THINKS from the fifth generation on) — else the model's
@@ -4476,6 +4480,7 @@ export class Conversation {
         tools,
         onError: this.streamErrorLine({ modelId: args.modelString, provider: args.provider }),
         maxRetries: 0,
+        maxOutputTokens: Utterance.MAX_CALL_OUTPUT_TOKENS,
         abortSignal: args.abortSignal,
         providerOptions: this.buildProviderOptions(
           args.provider,
@@ -4538,9 +4543,11 @@ export class Conversation {
       failure = 'the model answered the ask with a tool call instead of a line (nothing ran)';
     }
     if (!failure && !Utterance.isLine(text)) {
-      // A first paragraph over several lines (a heading with a list under it) is the model
-      // beginning something else in the line's place — its reply, a plan. Never said aside.
-      failure = 'the model answered the ask with a block of several lines instead of a line';
+      // A first paragraph that is no line — several lines, a paragraph's length, or the opening
+      // of a heading, a list, a table or a quote — is the model beginning something else in the
+      // line's place: its reply, a plan. Never said aside, never cut down to a line.
+      failure =
+        'the model answered the ask with something that is not a line (several lines, too long, or the opening of an answer)';
     }
     if (failure) {
       this.logger.warn({

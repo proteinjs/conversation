@@ -202,6 +202,12 @@ const PART_ONE = [
   '* The catch is the cost.',
 ].join('\n');
 const PART_TWO = ['### 2. Is switching a big commitment?', 'It depends on which one you drop.'].join('\n');
+/** A reply's opening paragraph as prose: one line, far longer than any sentence about what is being done. */
+const LONG_OPENING =
+  'Yes, it is very manageable for a weekly baker: a fridge-kept starter only needs to be fed once a week with about ' +
+  'fifty grams of flour, it forgives several missed weeks and usually revives in two feedings, and the weekly discard ' +
+  'costs only a few cents, so for one loaf a week the upkeep is small next to what you gain in flavor and keeping ' +
+  'quality, and the only real cost is remembering the feed on the same day you bake.';
 
 /**
  * A model goes on from what its transcript says it has already written: with the reply's first section there as its
@@ -471,6 +477,97 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
     TIMEOUT
   );
 
+  test.each([
+    [
+      "the reply's first heading on a line of its own",
+      `### 1. Is it worth it?\n\n**Yes, with one caveat.**\n\n${PART_TWO}`,
+    ],
+    ["a whole paragraph of the reply's prose, one long line", `${LONG_OPENING}\n\n${PART_TWO}`],
+  ])(
+    "A SIDE CALL THAT WRITES THE REPLY'S OPENING ON ONE LINE — %s: one line is not enough to be the line; a heading or a paragraph is the answer begun, so nothing is said aside (it would stand in the timeline and again at the top of the reply), and the reply is whole",
+    async (_shape, sideText) => {
+      const nudger = new Nudger();
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            return { stream: textStep(sideText) };
+          }
+          mainStep++;
+          if (mainStep === 1) {
+            setTimeout(() => nudger.push(NUDGE), 100);
+            return { stream: stalledStream(600, toolCallParts('tc-1', 'doWork')) };
+          }
+          return { stream: textStep(goesOnFromItsTranscript(options.prompt)) };
+        },
+      });
+      const result = await conversation('utterance-side-opening', true).generateStream({
+        messages: ['is it worth it, and is switching a big commitment?'],
+        model: model as never,
+        ...new Inbox().params(),
+        sideUtterance: () => nudger.wait(),
+      });
+      const { text, parts } = await collect(result.fullStream);
+
+      expect(sideCalls(calls)).toHaveLength(1);
+      expect(parts.filter((part) => part.type === 'side-utterance').map((part) => part.text)).toEqual([]);
+      expect(text).toBe(`${PART_ONE}\n\n${PART_TWO}`);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'THE SIDE CALL CARRIES ITS OWN OUTPUT LIMIT: its request names one and no step of the round does; a call the limit ends has no line — what it wrote so far is never shown cut down — and the round runs on',
+    async () => {
+      const nudger = new Nudger();
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            // The answer begun in the line's place, stopped by the limit before its first paragraph ended.
+            return {
+              stream: convertArrayToReadableStream([
+                { type: 'stream-start' as const, warnings: [] },
+                { type: 'text-start' as const, id: 't1' },
+                { type: 'text-delta' as const, id: 't1', delta: 'Yes, it is very manageable for a weekly' },
+                { type: 'text-end' as const, id: 't1' },
+                { type: 'finish' as const, finishReason: { unified: 'length' as const, raw: 'max_tokens' }, usage },
+              ]),
+            };
+          }
+          mainStep++;
+          if (mainStep === 1) {
+            setTimeout(() => nudger.push(NUDGE), 100);
+            return { stream: stalledStream(600, toolCallParts('tc-1', 'doWork')) };
+          }
+          return { stream: textStep('THE ANSWER') };
+        },
+      });
+      const result = await conversation('utterance-side-limit', true).generateStream({
+        messages: ['is it worth it?'],
+        model: model as never,
+        ...new Inbox().params(),
+        sideUtterance: () => nudger.wait(),
+      });
+      const { text, parts } = await collect(result.fullStream);
+
+      const side = sideCalls(calls);
+      expect(side).toHaveLength(1);
+      expect(side[0].maxOutputTokens).toBeGreaterThan(0);
+      expect(calls.filter((call) => !side.includes(call)).map((call) => call.maxOutputTokens)).toEqual([
+        undefined,
+        undefined,
+      ]);
+      expect(parts.filter((part) => part.type === 'side-utterance')).toEqual([]);
+      expect(text).toBe('THE ANSWER');
+    },
+    TIMEOUT
+  );
+
   test(
     'SIDE UTTERANCE HELD: a nudge that lands while the transcript is open on a server tool is not asked there (that request 400s) — it is asked at the next closed boundary, its part on the stream, nothing of it in the step after',
     async () => {
@@ -550,5 +647,29 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
     expect(Utterance.lineEnd('Got it — no break yet')).toBe(-1);
     expect(Utterance.isLine(' Got it. \n')).toBe(true);
     expect(Utterance.isLine('### A heading\n* and a list under it')).toBe(false);
+  });
+
+  test('Utterance.isLine — a line is a short sentence: emphasis inside it is still a line; a heading, a list item, a table row, a quote or a line that is only bold is the answer begun, and so is a line as long as a paragraph', () => {
+    const lines = [
+      'Comparing weekly sourdough upkeep and the cost per loaf.',
+      '*Reading the sign-in audit.*',
+      'Checking the **cost** figures against the three sources.',
+      '3 pages read, comparing their prices now.',
+    ];
+    const notLines = [
+      '### 1. Is it worth it?',
+      '# Sourdough for one loaf a week',
+      '1. Is it worth it?',
+      '2) Switching is a small commitment.',
+      '- It pays for itself early.',
+      '* The catch is the cost.',
+      '| Option | Cost per loaf |',
+      '> A starter kept in the fridge needs one feeding a week.',
+      '**1. Is keeping a starter worth it?**',
+      '__Yes, with one caveat.__',
+      LONG_OPENING,
+    ];
+    expect(lines.filter((line) => !Utterance.isLine(line))).toEqual([]);
+    expect(notLines.filter((line) => Utterance.isLine(line))).toEqual([]);
   });
 });

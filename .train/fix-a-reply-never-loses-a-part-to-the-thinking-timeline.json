@@ -73,7 +73,7 @@
   "removes": [],
   "section": {
     "heading": "## Chat — a reply is whole: none of it ends up in the thinking timeline",
-    "text": "- A long reply no longer loses its first part to the thinking timeline: the whole answer is in the reply.",
+    "text": "- A long reply no longer loses its first part to the thinking timeline, and the timeline no longer shows the opening of the answer as if it were a status line.",
     "smoke": [
       "- Ask a Google model a question with several parts that takes over a minute to research. When it finishes, the reply starts at its first part, and the thinking timeline holds no part of the answer."
     ]

@@ -47,6 +47,28 @@ export class Utterance {
   static readonly PARAGRAPH_BREAK = '\n\n';
 
   /**
+   * The most characters a line may have ({@link Utterance.isLine}). Chosen from what real models
+   * wrote when asked for the line (2026-11-23: Gemini 4 Hydrogen, Claude Opus 5, Claude Fable 5.1,
+   * GPT-5.6 Sol and GPT-5.5 Pro, under three wordings of the ask): the sentences about what was
+   * being done ran 26 to 123 characters; the paragraphs of an answer written in the line's place
+   * ran 323 to 349. 140 clears every sentence seen and is under half the shortest of those
+   * paragraphs. A line over it is not shown and not cut down: the length is guidance in the ask,
+   * never a cut.
+   */
+  static readonly MAX_LINE_CHARS = 140;
+
+  /**
+   * The most output tokens the side call's own request allows (`Conversation.utter`) — a ceiling
+   * on what a model that begins its answer in the line's place can spend there, never what shapes
+   * a line: a call the limit ends has no line at all. A provider counts a model's thinking against
+   * the same limit as its words (seen on Google and on OpenAI), and the least thinking some models
+   * offer is not none, so the ceiling cannot sit at a line's own size: the largest real call seen
+   * was 342 tokens, 331 of them a model's thinking before a line of 33 characters. 1024 is three
+   * times that.
+   */
+  static readonly MAX_CALL_OUTPUT_TOKENS = 1024;
+
+  /**
    * The request: the transcript as the next step will see it, plus the input being asked about and
    * its ask — one user message. A side utterance is always asked FOR something: an empty input set
    * is a programming error, never a request.
@@ -115,18 +137,40 @@ export class Utterance {
   }
 
   /**
-   * Whether the model's first paragraph IS a line: words on one line. A paragraph that runs over
-   * several lines — a heading with a list under it, a table, a code fence — is a block: the model
-   * began something else in the line's place (the reply itself, a plan), and a block is never said
-   * aside. Whole or nothing: a block is not cut down to its first line (that line would be the
-   * block's heading, shown as if it were what the mind is doing) — the call has no line.
+   * Whether the model's first paragraph IS a line — the ONE rule for what is said aside. A line is
+   * a short sentence:
+   *  - words on one line. A paragraph that runs over several lines — a heading with a list under
+   *    it, a table, a code fence — is a block: the model began something else in the line's place
+   *    (the reply itself, a plan);
+   *  - at most {@link Utterance.MAX_LINE_CHARS} characters. A paragraph of prose is one line too,
+   *    and it is no sentence about what the mind is doing;
+   *  - not opening as the answer's own structure: a heading, a list item, a table row, a quote, or
+   *    a line that is nothing but bold (a heading in all but name).
+   * Whole or nothing: what is not a line is never said aside and never cut down to fit (a block's
+   * first line would be its heading, a long paragraph's first words its opening — shown as if they
+   * were what the mind is doing, and again where the reply begins) — the call has no line.
    */
   static isLine(paragraph: string): boolean {
-    return !/[\r\n]/.test(paragraph.trim());
+    const line = paragraph.trim();
+    return !/[\r\n]/.test(line) && line.length <= Utterance.MAX_LINE_CHARS && !Utterance.opensAsAnswerStructure(line);
   }
 
   /** Inputs as {@link DrainedInput}s — a bare string is an input with no ask of its own. */
   static inputs(inputs: Array<string | DrainedInput>): DrainedInput[] {
     return inputs.map((input) => (typeof input === 'string' ? { text: input } : input));
+  }
+
+  /**
+   * Whether one line opens the way a part of an answer does, in the markdown models write: a
+   * heading (`# `), a list item (`- `, `* `, `+ `, `1. `, `1) `), a table row (`|`), a quote (`>`),
+   * or one bold span and nothing else (`**…**`, `__…__`). Emphasis inside a sentence is not
+   * structure, and neither is a sentence set in italics.
+   */
+  private static opensAsAnswerStructure(line: string): boolean {
+    if (/^(?:#{1,6}(?:\s|$)|(?:[-*+]|\d{1,9}[.)])\s|\||>)/.test(line)) {
+      return true;
+    }
+    const bold = /^(\*\*|__)(.+)\1$/.exec(line);
+    return !!bold && !bold[2].includes(bold[1]);
   }
 }
