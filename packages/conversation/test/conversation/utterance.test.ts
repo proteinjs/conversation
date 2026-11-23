@@ -6,11 +6,11 @@ import { fixtureModelData } from './fixtureModelData';
 /**
  * THE SIDE UTTERANCE (plans/FREE_AGENT.md §M.3 part 5 — the nudge's door): when the host asks
  * mid-round, the loop asks the mind for ONE LINE in a separate call over the round's transcript on
- * the step's own tool roster (nothing runnable on it) with the input's OWN ask, yields it as ONE
- * `side-utterance` part the moment it lands, and runs the next step with the input spliced and the
- * line riding as the agent's own prior message + the continue framing. The round is never
- * restarted for it. One predicate guards every door against an open server tool (§M.16 found (2)):
- * the side utterance, the side framing, the cut.
+ * the step's own tool roster (nothing runnable on it) with the input's OWN ask, and yields it as
+ * ONE `side-utterance` part the moment it lands. The round is never restarted for it, and what is
+ * said aside stays aside: no step is sent the ask or the line, so the reply is the round's own
+ * words, whole. One predicate guards every door against an open server tool (§M.16 found (2)):
+ * the side utterance, the cut.
  *
  * THE BOUNDED UTTERANCE IS GONE (2026-11-05, DECISIONS 1099): no separate call precedes a step
  * that takes an input in — at turn start, at a boundary drain, at a restart, a cut or the exit
@@ -178,21 +178,14 @@ async function collect(fullStream: AsyncIterable<unknown>): Promise<{ text: stri
   return { text, parts };
 }
 
-/** The framing at the END of a prompt: …, user(input?), assistant(line), user(continue). */
-const expectFraming = (prompt: Prompt, line: string, input?: string): void => {
-  const tail = prompt.slice(input ? -3 : -2);
-  if (input) {
-    expect(tail[0].role).toBe('user');
-    expect(messageText(tail[0] as never)).toContain(input);
-  }
-  const lineMessage = tail[tail.length - 2];
-  const continueMessage = tail[tail.length - 1];
-  expect(lineMessage.role).toBe('assistant');
-  expect(messageText(lineMessage as never)).toBe(line);
-  expect(continueMessage.role).toBe('user');
-  expect(messageText(continueMessage as never)).toBe(Utterance.continueFraming(line));
-  // Never a prefill: the prompt ends on a user turn.
-  expect(prompt[prompt.length - 1].role).toBe('user');
+/**
+ * What is said aside stays aside: a step's prompt holds nothing of the side call — not the host's
+ * input, not the line — and ends where the round's own transcript ends (a tool result).
+ */
+const expectNothingOfTheAside = (prompt: Prompt, line: string, input: string): void => {
+  expect(prompt.filter((message) => messageText(message as never).includes(input))).toEqual([]);
+  expect(prompt.filter((message) => messageText(message as never).includes(line))).toEqual([]);
+  expect(prompt[prompt.length - 1].role).toBe('tool');
 };
 
 const NUDGE: DrainedInput = {
@@ -200,6 +193,24 @@ const NUDGE: DrainedInput = {
   ask: 'In one short sentence, say what you are doing right now.',
 };
 const LINE = 'Still comparing the two.';
+
+/** A reply's first section as a model writes one: a heading, a bold line and bullets on consecutive lines — one paragraph. */
+const PART_ONE = [
+  '### 1. Is it worth it?',
+  '**Yes, with one caveat.**',
+  '* It pays for itself early.',
+  '* The catch is the cost.',
+].join('\n');
+const PART_TWO = ['### 2. Is switching a big commitment?', 'It depends on which one you drop.'].join('\n');
+
+/**
+ * A model goes on from what its transcript says it has already written: with the reply's first section there as its
+ * own words it writes the second only; with nothing of the reply there it writes the reply whole.
+ */
+const goesOnFromItsTranscript = (prompt: Prompt): string =>
+  prompt.some((message) => message.role === 'assistant' && messageText(message as never).includes(PART_ONE))
+    ? PART_TWO
+    : `${PART_ONE}\n\n${PART_TWO}`;
 
 /** A step that batches web_search (server, deferred — no result in the message) with doWork (client). */
 const openOnSearchParts = (serverId: string, clientId: string) => [
@@ -269,7 +280,7 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
   });
 
   test(
-    "THE NUDGE: the host asks mid-round while the model is silent; the line lands as ONE side-utterance part before the provider's first part, the round is not restarted, and the next step runs under its framing",
+    "THE NUDGE: the host asks mid-round while the model is silent; the line lands as ONE side-utterance part before the provider's first part, the round is not restarted, and the next step is sent nothing of it",
     async () => {
       const nudger = new Nudger();
       const calls: CallOptions[] = [];
@@ -318,9 +329,14 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
       expect(sidePart).toBeLessThan(types.indexOf('step-finish'));
       expect(parts[sidePart].text).toBe(LINE);
       expect(parts.filter((part) => part.type === 'side-utterance')).toHaveLength(1);
-      // Step 2 runs under the framing: the nudge as a user message, the line as the agent's own,
-      // the continue instruction — after step 1's tool result, before anything else.
-      expectFraming(calls[2].prompt, LINE, NUDGE.text);
+      // Step 2 is sent what it would have been sent had nothing been asked: step 1's prompt, its
+      // tool call and the result — nothing of the nudge, nothing of the line.
+      expectNothingOfTheAside(calls[2].prompt, LINE, NUDGE.text);
+      expect(calls[2].prompt.slice(0, calls[0].prompt.length)).toEqual(calls[0].prompt);
+      expect(calls[2].prompt.slice(calls[0].prompt.length).map((message) => message.role)).toEqual([
+        'assistant',
+        'tool',
+      ]);
       // The side call's usage rides the turn's: three requests, three input tokens.
       const usageData = await result.usage;
       expect(usageData.totalTokenUsage.inputTokens).toBe(3);
@@ -365,14 +381,12 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
       expect(mainStep).toBe(2);
       expect(calls).toHaveLength(2);
       expect(calls.some((call) => Utterance.isRequest(call.prompt))).toBe(false);
-      // The note rides step 2 as a plain user message — the last message, after the tool result,
-      // no framing around it.
+      // The note rides step 2 as a plain user message — the last message, right after the tool
+      // result, nothing around it.
       const last = calls[1].prompt[calls[1].prompt.length - 1];
       expect(last.role).toBe('user');
       expect(messageText(last as never)).toBe(NOTE);
-      expect(calls[1].prompt.some((m) => messageText(m as never).includes('You have already told the user'))).toBe(
-        false
-      );
+      expect(calls[1].prompt[calls[1].prompt.length - 2].role).toBe('tool');
       // No step-finish carries a flag: every step's text is the step's own.
       expect(parts.filter((part) => part.type === 'step-finish')).toHaveLength(2);
       expect(parts.some((part) => 'utterance' in part)).toBe(false);
@@ -381,7 +395,7 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
   );
 
   test(
-    'A FAILED SIDE CALL: nothing is said — no side-utterance part, no framing in the step after — and the round runs on',
+    'A FAILED SIDE CALL: nothing is said — no side-utterance part, nothing of the ask in the step after — and the round runs on',
     async () => {
       const nudger = new Nudger();
       const calls: CallOptions[] = [];
@@ -414,13 +428,51 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
       expect(parts.some((part) => part.type === 'side-utterance')).toBe(false);
       const step2 = calls[calls.length - 1].prompt;
       expect(step2.some((m) => messageText(m as never).includes(NUDGE.text))).toBe(false);
-      expect(step2.some((m) => messageText(m as never).includes('You have already told the user'))).toBe(false);
     },
     TIMEOUT
   );
 
   test(
-    'SIDE UTTERANCE HELD: a nudge that lands while the transcript is open on a server tool is not asked there (that request 400s) — it is asked at the next closed boundary, its part on the stream, its framing in the step after',
+    "A SIDE CALL THAT WRITES THE REPLY'S FIRST PART (prod, 2026-11-22: asked what it was doing, a Google model wrote its answer's first section — a heading with a bold line and bullets under it — and the reply a person read began at its second section): a block is never the line, so nothing is said aside, and the reply is whole",
+    async () => {
+      const nudger = new Nudger();
+      const calls: CallOptions[] = [];
+      let mainStep = 0;
+      const model = new MockLanguageModelV3({
+        doStream: async (options: CallOptions) => {
+          calls.push(options);
+          if (Utterance.isRequest(options.prompt)) {
+            // The side ask answered with the reply itself: its first section, then on to the second.
+            return { stream: textStep(`${PART_ONE}\n\n${PART_TWO}`) };
+          }
+          mainStep++;
+          if (mainStep === 1) {
+            setTimeout(() => nudger.push(NUDGE), 100);
+            return { stream: stalledStream(600, toolCallParts('tc-1', 'doWork')) };
+          }
+          return { stream: textStep(goesOnFromItsTranscript(options.prompt)) };
+        },
+      });
+      const result = await conversation('utterance-side-block', true).generateStream({
+        messages: ['is it worth it, and is switching a big commitment?'],
+        model: model as never,
+        ...new Inbox().params(),
+        sideUtterance: () => nudger.wait(),
+      });
+      const { text, parts } = await collect(result.fullStream);
+
+      expect(mainStep).toBe(2);
+      expect(sideCalls(calls)).toHaveLength(1);
+      // The reply a person reads is the whole answer, from its first section.
+      expect(text).toBe(`${PART_ONE}\n\n${PART_TWO}`);
+      // And the section is not said aside: a block is not a line.
+      expect(parts.filter((part) => part.type === 'side-utterance')).toEqual([]);
+    },
+    TIMEOUT
+  );
+
+  test(
+    'SIDE UTTERANCE HELD: a nudge that lands while the transcript is open on a server tool is not asked there (that request 400s) — it is asked at the next closed boundary, its part on the stream, nothing of it in the step after',
     async () => {
       const nudger = new Nudger();
       const calls: CallOptions[] = [];
@@ -468,56 +520,7 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
       const sideParts = parts.filter((part) => part.type === 'side-utterance');
       expect(sideParts).toHaveLength(1);
       expect(sideParts[0].text).toBe(LINE);
-      expectFraming(calls[calls.length - 1].prompt, LINE, NUDGE.text);
-    },
-    TIMEOUT
-  );
-
-  test(
-    'SIDE FRAMING HELD: a line said over a closed transcript whose step then batches a server tool with a client tool is not spliced at that open boundary (the main request would 400) — it rides the boundary after the search settles',
-    async () => {
-      const nudger = new Nudger();
-      const calls: CallOptions[] = [];
-      let mainStep = 0;
-      const model = new MockLanguageModelV3({
-        doStream: async (options: CallOptions) => {
-          calls.push(options);
-          if (Utterance.isRequest(options.prompt)) {
-            return { stream: textStep(LINE) };
-          }
-          mainStep++;
-          if (mainStep === 1) {
-            // A silent think (closed transcript), the nudge 100 ms in — the line is said; then the
-            // step batches the search with a client tool, so the boundary after it is OPEN.
-            setTimeout(() => nudger.push(NUDGE), 100);
-            return { stream: stalledStream(400, openOnSearchParts('srv-1', 'tc-1')) };
-          }
-          if (mainStep === 2) {
-            return { stream: convertArrayToReadableStream(searchResultThenCallParts('srv-1', 'tc-2')) };
-          }
-          return { stream: textStep('THE ANSWER') };
-        },
-      });
-      const result = await conversation('utterance-side-framing-held', true).generateStream({
-        messages: ['research the frontier models'],
-        model: model as never,
-        ...new Inbox().params(),
-        sideUtterance: () => nudger.wait(),
-      });
-      await collect(result.fullStream);
-
-      for (const call of calls) {
-        expectNoBlockBeyondToolResultsAfterOpenServerTool(call.prompt);
-      }
-      expect(mainStep).toBe(3);
-      expect(sideCalls(calls)).toHaveLength(1);
-      const mainPrompts = calls.filter((call) => !Utterance.isRequest(call.prompt)).map((call) => call.prompt);
-      // Step 2's request: the client tool result only — the framing waits.
-      const step2 = mainPrompts[1];
-      expect(step2[step2.length - 1].role).toBe('tool');
-      expect(step2.some((m) => messageText(m as never).includes(NUDGE.text))).toBe(false);
-      // Step 3's request: the framing, after the settled search and step 2's tool result.
-      expectFraming(mainPrompts[2], LINE, NUDGE.text);
+      expectNothingOfTheAside(calls[calls.length - 1].prompt, LINE, NUDGE.text);
     },
     TIMEOUT
   );
@@ -534,7 +537,7 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
     expect(() => Utterance.askFor([{ text: 'a note' }, { text: 'b' }])).toThrow(/own ask/);
   });
 
-  test('Utterance.request / framing / isRequest / lineEnd — the shapes; a request with no input is an error', () => {
+  test('Utterance.request / isRequest / lineEnd / isLine — the shapes; a request with no input is an error', () => {
     const transcript = [{ role: 'user', content: 'hello' }] as never[];
     const request = Utterance.request(transcript, [{ text: 'n', ask: 'Do X.' }]);
     expect(request).toHaveLength(2);
@@ -542,11 +545,10 @@ describe('the side utterance — one line said mid-round at the host’s ask (FR
     expect(messageText(request[1] as never)).toBe(`n\n\nDo X. ${Utterance.REPLY_WITH_THE_LINE_ONLY}`);
     expect(Utterance.isRequest(transcript as never)).toBe(false);
     expect(() => Utterance.request(transcript, [])).toThrow(/none was given/);
-    const framing = Utterance.framing(['a note'], 'Got it.');
-    expect(framing.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
-    expect(messageText(framing[2] as never)).toContain('Got it.');
     expect(Utterance.lineEnd('Got it.\n\nCaveat')).toBe(7);
     expect(Utterance.lineEnd('\n\nGot it.')).toBe(-1);
     expect(Utterance.lineEnd('Got it — no break yet')).toBe(-1);
+    expect(Utterance.isLine(' Got it. \n')).toBe(true);
+    expect(Utterance.isLine('### A heading\n* and a list under it')).toBe(false);
   });
 });

@@ -324,7 +324,7 @@ describe('the side utterance rides the same cache prefix as the step it is said 
   );
 
   test(
-    'NOTHING RUNS ON THE ASK: a tool-call answer to the side ask runs no tool — no line is said, and the step after carries no framing',
+    'NOTHING RUNS ON THE ASK: a tool-call answer to the side ask runs no tool — no line is said, and the step after carries nothing of the ask',
     async () => {
       const transport = new ScriptedAnthropicTransport();
       transport.answerSideWithTool = 'doWork';
@@ -333,13 +333,11 @@ describe('the side utterance rides the same cache prefix as the step it is said 
       expect(transport.requests).toHaveLength(3);
       // The roster rode the ask; the call it drew ran nothing — the one run is step 1's own call.
       expect(toolCalls.count).toBe(1);
-      // No line, no part; step 2's request carries no framing (nothing about the nudge, no
-      // continue instruction).
+      // No line, no part; step 2's request carries nothing about the nudge.
       expect(parts.some((part) => part.type === 'side-utterance')).toBe(false);
       const step2 = transport.requests[2];
       const body = JSON.stringify(step2.messages);
       expect(body).not.toContain(NUDGE.text);
-      expect(body).not.toContain('You have already told the user');
     },
     TIMEOUT
   );

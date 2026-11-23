@@ -6,11 +6,19 @@ import type { ModelMessage } from 'ai';
  * is doing after a long silence — the loop asks for it in a separate call on the same model over
  * the round's transcript and the step's tool roster (the step's cache prefix; no tool runs on the
  * call), with the input appended and the input's OWN ask. The line lands as one `side-utterance`
- * part, and the next step runs with the input spliced and the line riding as the agent's own prior
- * message followed by the continue framing — roles alternate, so it works with thinking on (a
- * prefill would not), and the mind never says the line twice.
+ * part, and that is all it does.
  *
- * One owner for the words: the ask's marker, the request shape and the framing live here; the loop
+ * WHAT IS SAID ASIDE STAYS ASIDE. The round's transcript never carries the ask or the line: the
+ * steps that follow are sent exactly what they would have been sent had nothing been asked, so the
+ * reply is the round's own words, whole, whatever the side call wrote. The line once rode into the
+ * next step as the agent's own prior message under "that line is on their screen as part of this
+ * response. Do not repeat it" — true of the acknowledgment it was written for (retired below),
+ * false of a line a host shows as a passing status, and the way a reply lost its beginning: asked
+ * what it was doing, a model wrote its answer's first section; the section was taken as the line,
+ * and the round, told the section was already in the response, began the reply at its second
+ * (prod, 2026-11-22).
+ *
+ * One owner for the words: the ask's marker, the request shape and what a line is live here; the loop
  * (`Conversation.generateStream`) owns when a side utterance runs (`GenerateStreamParams.sideUtterance`).
  *
  * The BOUNDED utterance (part 2c — a separate no-tools call for a one-line acknowledgment before
@@ -22,9 +30,10 @@ import type { ModelMessage } from 'ai';
  */
 /**
  * An input the mind takes in (what `GenerateStreamParams.drainInjectedContext` hands the loop, and
- * what a side utterance is asked for): its text, spliced into the next step as a user message, and
- * — for a side utterance — the instruction the one line is asked with (`ask`: the nudge's "what are
- * you doing right now", plans/FREE_AGENT.md §3.4). Every ask ends with
+ * what a side utterance is asked for): its text — spliced into the next step as a user message when
+ * a drain hands it over; read by the side call alone when it is a side utterance's — and, for a
+ * side utterance, the instruction the one line is asked with (`ask`: the nudge's "what are you
+ * doing right now", plans/FREE_AGENT.md §3.4). Every ask ends with
  * {@link Utterance.REPLY_WITH_THE_LINE_ONLY} — the marker {@link Utterance.isRequest} reads. An
  * input a drain hands the loop carries no ask: it is spliced, never uttered.
  */
@@ -55,28 +64,6 @@ export class Utterance {
         content: `${drained.map((input) => input.text).join('\n\n')}\n\n${instruction}`,
       } as ModelMessage,
     ];
-  }
-
-  /**
-   * The framing the next step runs under once the line is said: the inputs as user messages, the
-   * line as the agent's own prior message, then the continue instruction — so the step's prompt
-   * ends on a user turn (never a prefill) and the mind knows the line is already on the user's
-   * screen.
-   */
-  static framing(inputs: Array<string | DrainedInput>, line: string): ModelMessage[] {
-    return [
-      ...Utterance.inputs(inputs).map((input) => ({ role: 'user', content: input.text }) as ModelMessage),
-      { role: 'assistant', content: line } as ModelMessage,
-      { role: 'user', content: Utterance.continueFraming(line) } as ModelMessage,
-    ];
-  }
-
-  /** The continue framing's text — what the mind reads after its own line. */
-  static continueFraming(line: string): string {
-    return (
-      `You have already told the user: “${line}” — that line is on their screen as part of this ` +
-      `response. Do not repeat it and do not acknowledge again; continue the work from here.`
-    );
   }
 
   /**
@@ -125,6 +112,17 @@ export class Utterance {
   static lineEnd(text: string): number {
     const lead = text.length - text.trimStart().length;
     return text.indexOf(Utterance.PARAGRAPH_BREAK, lead);
+  }
+
+  /**
+   * Whether the model's first paragraph IS a line: words on one line. A paragraph that runs over
+   * several lines — a heading with a list under it, a table, a code fence — is a block: the model
+   * began something else in the line's place (the reply itself, a plan), and a block is never said
+   * aside. Whole or nothing: a block is not cut down to its first line (that line would be the
+   * block's heading, shown as if it were what the mind is doing) — the call has no line.
+   */
+  static isLine(paragraph: string): boolean {
+    return !/[\r\n]/.test(paragraph.trim());
   }
 
   /** Inputs as {@link DrainedInput}s — a bare string is an input with no ask of its own. */

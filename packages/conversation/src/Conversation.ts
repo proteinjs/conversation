@@ -350,10 +350,11 @@ export type GenerateStreamParams = {
    * when the host wants ONE LINE said right now, mid-round, without touching the round — the harness
    * asking the mind what it is doing after a long silence. The loop asks the mind for the line over
    * the round's transcript with the input's own ask ({@link DrainedInput.ask}), on the step's own
-   * tool roster (its cache prefix; nothing runnable on the call), yields it as ONE `side-utterance`
-   * part the moment it lands (no restart, no cut, no boundary needed), and frames it into the next
-   * step (the input as a user message, the line as the agent's own prior message, the continue
-   * instruction — {@link Utterance.framing}). Re-asked after each resolution; only raced while a
+   * tool roster (its cache prefix; nothing runnable on the call) and yields it as ONE `side-utterance`
+   * part the moment it lands (no restart, no cut, no boundary needed). What is said aside stays
+   * aside: neither the ask nor the line ever enters the round's transcript, so every step is sent
+   * what it would have been sent had nothing been asked and the response is the round's own words,
+   * whole ({@link Utterance}). Re-asked after each resolution; only raced while a
    * round is being consumed. Streaming consumers only. The bounded utterance — a separate call for
    * a one-line acknowledgment before every step that took an input in — was retired 2026-11-05
    * (DECISIONS 1099; see {@link Utterance}): the first words about an input are the step's own.
@@ -836,17 +837,14 @@ export class Conversation {
     // then re-projected at that anchor on every subsequent step. Steps only append raw messages, so
     // the projection is deterministic and the prefix stays byte-stable between steps.
     const injectedContextSplices: Array<{ anchorIndex: number; message: ModelMessage }> = [];
-    // The side utterance's queue + its pending framing (plans/FREE_AGENT.md §M.3 part 5): a line said
-    // mid-round at the host's ask is yielded from here the moment it lands (raced beside the provider's
-    // parts, boundary or not), and rides into the transcript at the next step — the ask as a user
-    // message, the line as the agent's own, the continue instruction — ahead of anything that
-    // boundary drains (the restart, cut and exit paths carry it the same way).
+    // The side utterance's queue (plans/FREE_AGENT.md §M.3 part 5): a line said mid-round at the
+    // host's ask is yielded from here the moment it lands (raced beside the provider's parts,
+    // boundary or not). It is said ASIDE: nothing of it — the ask, the line — ever enters the
+    // round's transcript, at a step, a restart, a cut or the exit (see Utterance).
     const sideQueue = new StreamPartQueue();
-    const pendingSideFramings: ModelMessage[] = [];
-    const takeSideFramings = (): ModelMessage[] => pendingSideFramings.splice(0, pendingSideFramings.length);
     // Side asks that arrived while the transcript was OPEN on a server tool (R7 finding 9, at
-    // prepareStep below): no request may carry a user block there — not the main step's, not a
-    // side utterance's — so the ask waits for the next closed transcript (the boundary after the
+    // prepareStep below): no request may carry a user block there — the side call's own request
+    // ends on one — so the ask waits for the next closed transcript (the boundary after the
     // server tool's result lands, or the exit continuation) and is said over that one.
     const heldSideAsks: DrainedInput[] = [];
     // The raw messages of the CURRENT round's latest step (what prepareStep was handed) — the
@@ -948,8 +946,8 @@ export class Conversation {
           // found without a corresponding `web_search_tool_result` block" — R7 finding 9, the
           // follow-up that killed the research turn; plans/FREE_AGENT.md §M.16 found (2), the nudge's
           // line asked over the same open transcript). Nothing is consumed here: the notes wait in
-          // the caller's inbox, a side line's framing and a held side ask wait in theirs — all for
-          // the next boundary (after the server tool's result has landed) or the exit absorption.
+          // the caller's inbox and a held side ask waits in its own — for the next boundary (after
+          // the server tool's result has landed) or the exit absorption.
           const openServerTools = Conversation.openServerToolCallIds(stepMessages);
           stepOpenOnServerTool = openServerTools.length > 0;
           if (stepOpenOnServerTool) {
@@ -958,13 +956,12 @@ export class Conversation {
               obj: {
                 openServerTools,
                 inputsWaiting: params.peekInjectedContext?.(),
-                sideFramingsWaiting: pendingSideFramings.length,
                 sideAsksHeld: heldSideAsks.length,
               },
             });
           } else {
             // A side ask held at an open boundary is said now, over this closed transcript, ahead
-            // of anything this boundary drains; its framing then rides with the others.
+            // of anything this boundary drains — aside, as every line is: the step is sent nothing of it.
             for (const ask of heldSideAsks.splice(0, heldSideAsks.length)) {
               await sayAside(
                 ask,
@@ -973,9 +970,6 @@ export class Conversation {
                   projection
                 )
               );
-            }
-            for (const message of takeSideFramings()) {
-              injectedContextSplices.push({ anchorIndex: stepMessages.length, message });
             }
             if (params.drainInjectedContext) {
               const drained = Conversation.drainTexts(params.drainInjectedContext);
@@ -1046,8 +1040,8 @@ export class Conversation {
     let liveResult: ReturnType<typeof startCall> | undefined;
     // The side utterance said over a transcript (plans/FREE_AGENT.md §M.3 part 5): one call over the
     // step's roster (nothing runnable on it) with the input's own ask; the line lands as ONE
-    // `side-utterance` part and its framing rides
-    // the next step (`pendingSideFramings`). The transcript must be CLOSED (no server tool open —
+    // `side-utterance` part, and nothing of the call rides any step (what is said aside stays
+    // aside — Utterance). The transcript must be CLOSED (no server tool open —
     // `openServerToolCallIds`); the callers own that check.
     const sayAside = async (ask: DrainedInput, transcript: ModelMessage[]): Promise<void> => {
       const line = await this.utter({
@@ -1065,7 +1059,6 @@ export class Conversation {
         return;
       }
       sideQueue.push({ type: 'side-utterance', text: line });
-      pendingSideFramings.push(...Utterance.framing([ask], line));
       this.logger.info({ message: 'Side utterance said mid-round', obj: { chars: line.length } });
     };
     const startRound = (roundMessages: ModelMessage[], roundRung?: DispatchRung): ReturnType<typeof startCall> => {
@@ -1509,7 +1502,7 @@ export class Conversation {
               nextMessages = Conversation.spliceInjectedContext(nextMessages, injectedContextSplices);
               injectedContextSplices.length = 0;
             }
-            nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained)];
+            nextMessages = [...nextMessages, ...Conversation.inputMessages(drained)];
             self.logger.info({
               message: 'Restarting thinking-phase round with mid-turn notes',
               obj: { noteCount: drained.length, round: rounds + 1 },
@@ -1541,7 +1534,7 @@ export class Conversation {
             if (stepText.trim().length > 0) {
               nextMessages = [...nextMessages, { role: 'assistant', content: stepText.trimEnd() } as ModelMessage];
             }
-            nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained)];
+            nextMessages = [...nextMessages, ...Conversation.inputMessages(drained)];
             self.logger.info({
               message: 'Cut the streaming round for mid-turn notes — the text so far committed, continuing',
               obj: { noteCount: drained.length, round: rounds + 1, textChars: stepText.length },
@@ -1721,11 +1714,11 @@ export class Conversation {
             injectedContextSplices.length = 0;
           }
           // A side ask held at an open boundary: this transcript is closed (checked above) — said
-          // here, ahead of the inputs, its framing riding with theirs.
+          // here, ahead of the inputs, and aside: the continuation is sent nothing of it.
           for (const ask of heldSideAsks.splice(0, heldSideAsks.length)) {
             await sayAside(ask, self.projectOutgoingStepMessages(nextMessages, projection));
           }
-          nextMessages = [...nextMessages, ...takeSideFramings(), ...Conversation.inputMessages(drained)];
+          nextMessages = [...nextMessages, ...Conversation.inputMessages(drained)];
           self.logger.info({
             message: 'Absorbing boundary notes into the same response',
             obj: { noteCount: drained.length, round: rounds + 1 },
@@ -4411,8 +4404,9 @@ export class Conversation {
    * The side utterance's call (plans/FREE_AGENT.md §M.3 part 5; {@link Utterance}): one
    * least-thinking call (the effort the caller named — {@link GenerateStreamParams.utteranceEffort})
    * over `transcript` + the input + its own ask. Returns the line, or nothing when the call
-   * produced no line — no text, a failure, or the provider's output limit reached before the
-   * line's end (logged — nothing is said, the round runs on).
+   * produced no line — no text, a failure, the provider's output limit reached before the
+   * line's end, or a first paragraph that is a block of several lines and no line at all
+   * ({@link Utterance.isLine}) (logged — nothing is said, the round runs on).
    *
    * THE REQUEST'S ENVELOPE IS THE STEP'S. The call rides the same tool roster as the round it is
    * said beside, over the same projected transcript (the same system prefix, the same cache
@@ -4542,6 +4536,11 @@ export class Conversation {
     }
     if (!failure && toolCallAnswer && !text.trim()) {
       failure = 'the model answered the ask with a tool call instead of a line (nothing ran)';
+    }
+    if (!failure && !Utterance.isLine(text)) {
+      // A first paragraph over several lines (a heading with a list under it) is the model
+      // beginning something else in the line's place — its reply, a plan. Never said aside.
+      failure = 'the model answered the ask with a block of several lines instead of a line';
     }
     if (failure) {
       this.logger.warn({
