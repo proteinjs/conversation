@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+## [6.20.11](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.10...@proteinjs/conversation@6.20.11) (2026-11-24)
+
+
+### Bug Fixes
+
+* **conversation:** the row's thinking level is sent as asked, and each request reports the word its body carried ([8a80ec3](https://github.com/proteinjs/conversation/commit/8a80ec3157cea451603a5eca8cb0770e3deef0d4))
+* **conversation:** who refused a level is fields on the warning, and forget takes the model as a caller names it ([e263001](https://github.com/proteinjs/conversation/commit/e263001faea8a4552c7198658d39d14db529fbea))
+
+
+
+
+
 ## [6.20.10](https://github.com/proteinjs/conversation/compare/@proteinjs/conversation@6.20.9...@proteinjs/conversation@6.20.10) (2026-11-07)
 
 
